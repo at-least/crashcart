@@ -28,7 +28,8 @@ type proguardMethod struct {
 	ClassName  string
 	MethodName string
 	Args       string
-	ObfStart   int // obfuscated line range, 0 = unbounded
+	HasRange   bool // an obfuscated line range is present (R8 ranges start at 0)
+	ObfStart   int
 	ObfEnd     int
 	OrigStart  int // original line range, 0 = none
 	OrigEnd    int
@@ -59,11 +60,16 @@ func ParseProGuard(content string) *ProGuardMapping {
 		if mm := pgMethodRe.FindStringSubmatch(line); mm != nil && obfClass != "" {
 			key := obfClass + "." + mm[7]
 			pm := proguardMethod{
-				ClassName: origClass, MethodName: mm[3], Args: mm[4],
+				ClassName: origClass, MethodName: mm[3], Args: mm[4], HasRange: mm[1] != "",
 				ObfStart: atoi(mm[1]), ObfEnd: atoi(mm[2]), OrigStart: atoi(mm[5]), OrigEnd: atoi(mm[6]),
 			}
-			// Inlined callees repeat the obfuscated range with a different
-			// original method; keep the outermost (first) per range.
+			// An inlined callee from another class is written fully
+			// qualified: "int a.b.Repo.load(java.lang.String)".
+			if i := strings.LastIndexByte(pm.MethodName, '.'); i > 0 {
+				pm.ClassName, pm.MethodName = pm.MethodName[:i], pm.MethodName[i+1:]
+			}
+			// R8 repeats one obfuscated range once per inlined call level,
+			// innermost callee first; Expand walks them back out.
 			m.Methods[key] = append(m.Methods[key], pm)
 		}
 	}
@@ -75,47 +81,83 @@ func atoi(s string) int {
 	return n
 }
 
-// Resolve maps one frame: module (or filename when module is empty) is the
-// obfuscated class, function the obfuscated method. Resolved frames get the
-// original class in Module, the original method in Function and the
-// remapped line; everything else is kept.
-func (m *ProGuardMapping) Resolve(f Frame) Frame {
+// Expand maps one frame to its original frames. Module (or Filename when
+// Module is empty) is the obfuscated class, Function the obfuscated method.
+// A frame R8 inlined into expands to the whole call chain, outermost
+// caller first and innermost callee last (Sentry frame order). Frames the
+// mapping does not know are returned unchanged.
+func (m *ProGuardMapping) Expand(f Frame) []Frame {
 	class := f.Module
 	if class == "" {
 		class = f.Filename
 	}
 	if class == "" {
-		return f
+		return []Frame{f}
 	}
-	if cands, ok := m.Methods[class+"."+f.Function]; ok && len(cands) > 0 {
-		meth := cands[0]
-		line := f.Lineno
+	cands, ok := m.Methods[class+"."+f.Function]
+	if !ok || len(cands) == 0 {
+		if cls, ok := m.Classes[class]; ok {
+			out := f
+			out.Module = cls
+			out.Filename = deobfuscatedFile(f.Filename, cls)
+			return []Frame{out}
+		}
+		return []Frame{f}
+	}
+	// Entries whose obfuscated range covers the line, in file order
+	// (innermost first); otherwise the range-less declarations.
+	var chain []proguardMethod
+	for _, c := range cands {
+		if c.HasRange && f.Lineno >= c.ObfStart && f.Lineno <= c.ObfEnd {
+			chain = append(chain, c)
+		}
+	}
+	if len(chain) == 0 {
 		for _, c := range cands {
-			if c.ObfStart == 0 || (f.Lineno >= c.ObfStart && f.Lineno <= c.ObfEnd) {
-				meth = c
+			if !c.HasRange {
+				chain = []proguardMethod{c}
 				break
 			}
 		}
-		if meth.OrigStart > 0 {
-			line = meth.OrigStart
-			if meth.ObfStart > 0 && meth.OrigEnd > meth.OrigStart && f.Lineno >= meth.ObfStart {
-				line = meth.OrigStart + (f.Lineno - meth.ObfStart)
-			}
+	}
+	if len(chain) == 0 {
+		chain = cands[:1]
+	}
+	own := m.Classes[class]
+	out := make([]Frame, 0, len(chain))
+	for i := len(chain) - 1; i >= 0; i-- {
+		c := chain[i]
+		fr := f
+		fr.Module = c.ClassName
+		fr.Function = c.MethodName
+		fr.Lineno = c.origLine(f.Lineno)
+		if c.ClassName == own {
+			fr.Filename = deobfuscatedFile(f.Filename, c.ClassName)
+		} else {
+			// Inlined from another class: the SDK's file name belongs to
+			// the class the frame was found in, not to this one.
+			fr.Filename = deobfuscatedFile("", c.ClassName)
 		}
-		out := f
-		out.Module = meth.ClassName
-		out.Function = meth.MethodName
-		out.Lineno = line
-		out.Filename = deobfuscatedFile(f.Filename, meth.ClassName)
-		return out
+		out = append(out, fr)
 	}
-	if cls, ok := m.Classes[class]; ok {
-		out := f
-		out.Module = cls
-		out.Filename = deobfuscatedFile(f.Filename, cls)
-		return out
+	return out
+}
+
+// origLine maps an obfuscated line through the entry's ranges.
+func (c proguardMethod) origLine(line int) int {
+	switch {
+	case c.OrigStart > 0 && c.OrigEnd > c.OrigStart && c.HasRange && line >= c.ObfStart:
+		return c.OrigStart + (line - c.ObfStart)
+	case c.OrigStart > 0:
+		return c.OrigStart
 	}
-	return f
+	return line
+}
+
+// Resolve maps one frame to its innermost original frame (see Expand).
+func (m *ProGuardMapping) Resolve(f Frame) Frame {
+	out := m.Expand(f)
+	return out[len(out)-1]
 }
 
 // deobfuscatedFile keeps a real source file name and replaces the R8
@@ -139,15 +181,16 @@ func deobfuscatedFile(filename, class string) string {
 	return name + ".java"
 }
 
-// ResolveAll maps every frame and reports whether any changed.
+// ResolveAll expands every frame and reports whether anything changed.
 func (m *ProGuardMapping) ResolveAll(frames []Frame) ([]Frame, bool) {
-	out := make([]Frame, len(frames))
+	out := make([]Frame, 0, len(frames))
 	changed := false
-	for i, f := range frames {
-		out[i] = m.Resolve(f)
-		if out[i] != f {
+	for _, f := range frames {
+		ex := m.Expand(f)
+		if len(ex) != 1 || ex[0] != f {
 			changed = true
 		}
+		out = append(out, ex...)
 	}
 	return out, changed
 }

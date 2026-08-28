@@ -68,6 +68,7 @@ type Result struct {
 	Received    int      // events parsed
 	Stored      int      // events written
 	Sampled     int      // events counted but not stored
+	Duplicates  int      // resent events already stored
 	Sessions    int      // session rows written
 	NewIssues   []string // fingerprints created by this envelope
 	Regressions []string // fingerprints flipped to 'regression'
@@ -136,7 +137,7 @@ func (in *Ingester) serveEnvelope(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"too many events"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
-	res, err := in.Ingest(r.Context(), p, env, now)
+	res, err := in.Ingest(detached(r), p, env, now)
 	if err != nil {
 		in.fail(w, err)
 		return
@@ -160,12 +161,21 @@ func (in *Ingester) serveStore(w http.ResponseWriter, r *http.Request) {
 	if ev := sentry.ParseEvent("", now, body, now); ev != nil {
 		env.Events = append(env.Events, ev)
 	}
-	res, err := in.Ingest(r.Context(), p, env, now)
+	res, err := in.Ingest(detached(r), p, env, now)
 	if err != nil {
 		in.fail(w, err)
 		return
 	}
 	in.ok(w, res, firstEventID(env))
+}
+
+// detached is the context for the write once the body is in hand: a crashing
+// mobile process closes its connection right after sending, and that must
+// not roll back the transaction (the SDK would resend from its cache).
+func detached(r *http.Request) context.Context {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+	_ = cancel // bounded by the timeout; nothing to release early
+	return ctx
 }
 
 // readBody reads the request body, transparently decoding the
@@ -226,6 +236,7 @@ func (in *Ingester) fail(w http.ResponseWriter, err error) {
 
 // prepared is one event after analysis, before the write.
 type prepared struct {
+	id           int64
 	ev           *sentry.Event
 	frames       []sentry.Frame // symbolicated when inline succeeded
 	symbolicated bool
@@ -242,16 +253,25 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		return res, nil
 	}
 
+	// 0. Ids are derived from the event's own id, so an envelope the SDK
+	//    resends (after a timeout, or from its crash cache) maps to the same
+	//    rows: those are dropped here, before they could be counted twice.
+	events, dupes, err := in.dedupe(ctx, env.Events)
+	if err != nil {
+		return res, err
+	}
+	res.Duplicates = dupes
+
 	// 1. Analyze. Inline symbolication when a mapping is cached; the
 	//    fingerprint is computed on the best frames we have.
-	preps := make([]*prepared, 0, len(env.Events))
+	preps := make([]*prepared, 0, len(events))
 	groups := map[string][]*prepared{}
 	var order []string
-	for _, ev := range env.Events {
+	for _, ev := range events {
 		if in.Cfg.PIIRedact {
 			redact(ev)
 		}
-		pr := &prepared{ev: ev, frames: ev.Frames()}
+		pr := &prepared{id: eventPK(ev), ev: ev, frames: ev.Frames()}
 		if in.Symbols != nil && ev.NeedsSymbolication() {
 			if fr, ok := in.Symbols.Inline(ctx, p.ID, ev); ok {
 				pr.frames, pr.symbolicated = fr, true
@@ -272,7 +292,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 
 	// 2. One transaction: issues (folded per fingerprint), sampling, events, sessions, jobs.
 	var jobs []sqlc.EnqueueJobParams
-	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+	err = in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		for _, fp := range order {
 			g := groups[fp]
 			first := g[0]
@@ -331,7 +351,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				continue
 			}
 			ev := pr.ev
-			id := pk.New(ev.Timestamp)
+			id := pr.id
 			tags, _ := json.Marshal(ev.Tags)
 			crumbs, _ := json.Marshal(nonNil(ev.Breadcrumbs))
 			var symbols json.RawMessage
@@ -381,6 +401,63 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 // the row is a regression and its updated_at is fresh. Callers already
 // checked the timestamp; this exists to keep the intent readable.
 func regressedNow(row sqlc.UpsertIssueRow) bool { return row.Status == "regression" }
+
+// eventPK derives the primary key from the event's own id: the millisecond
+// from its timestamp, the low part from a hash of event_id. Two deliveries
+// of one event collide (and the second is dropped); two different events
+// in the same millisecond collide with the same 1/1000 odds a random low
+// part had. Within one envelope a collision is bumped to the next slot.
+func eventPK(ev *sentry.Event) int64 {
+	h := fnv.New32a()
+	h.Write([]byte(ev.EventID))
+	return pk.Lower(ev.Timestamp) + int64(h.Sum32()%pk.Scale)
+}
+
+// dedupe resolves in-envelope id collisions and drops events whose id is
+// already stored.
+func (in *Ingester) dedupe(ctx context.Context, events []*sentry.Event) ([]*sentry.Event, int, error) {
+	if len(events) == 0 {
+		return events, 0, nil
+	}
+	seen := map[int64]string{}
+	ids := make([]int64, 0, len(events))
+	var out []*sentry.Event
+	dupes := 0
+	for _, ev := range events {
+		id := eventPK(ev)
+		for prev, ok := seen[id]; ok && prev != ev.EventID && id%pk.Scale < pk.Scale-1; prev, ok = seen[id] {
+			id++ // different event, same slot: next slot in the same millisecond
+		}
+		if prev, ok := seen[id]; ok && prev == ev.EventID {
+			dupes++ // the same event twice in one envelope
+			continue
+		}
+		seen[id] = ev.EventID
+		ev.Timestamp = pk.Time(id) // keep timestamp and id consistent after a bump
+		ids = append(ids, id)
+		out = append(out, ev)
+	}
+	existing, err := in.Store.ExistingEventIDs(ctx, ids)
+	if err != nil {
+		return nil, 0, fmt.Errorf("dedupe: %w", err)
+	}
+	if len(existing) == 0 {
+		return out, dupes, nil
+	}
+	skip := map[int64]bool{}
+	for _, id := range existing {
+		skip[id] = true
+	}
+	kept := out[:0]
+	for i, ev := range out {
+		if skip[ids[i]] {
+			dupes++
+			continue
+		}
+		kept = append(kept, ev)
+	}
+	return kept, dupes, nil
+}
 
 // sessionID makes every update of one session (same sid, same start) land
 // on the same row: the random low part of the id is replaced by a hash of

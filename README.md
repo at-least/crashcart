@@ -169,6 +169,15 @@ POST     /api/0/projects/{org}/{slug}/files/difs/assemble/   sentry-cli assemble
 Transactions, profiles, replays and client reports in envelopes are
 accepted and dropped.
 
+## Verified against
+
+Exercised end to end (real clients, not hand-built envelopes): sentry-python
+2.68 (gzip envelopes), @sentry/node 10.72, sentry-android-core 8.14 on an
+API 35 emulator (crash cache resend, ProGuard/R8 mapping with inlined
+frames), the Sentry Android Gradle plugin 4.14 (automatic mapping upload)
+and sentry-cli 3.7 (`debug-files upload`, `upload-proguard`, chunked
+upload protocol). Not yet: iOS/Cocoa SDK with a dSYM sidecar.
+
 ## Operations
 
 - **TimescaleDB is required.** `events` and `sessions` are hypertables keyed

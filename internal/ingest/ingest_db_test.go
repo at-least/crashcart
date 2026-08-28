@@ -126,6 +126,19 @@ func TestIngestLifecycle(t *testing.T) {
 		t.Fatalf("session dedupe: rows=%d status=%s", rows, status)
 	}
 
+	// A resent envelope (SDK timeout / crash cache) is idempotent for stored
+	// events: same ids, nothing re-counted. (Sampled-out events left no row
+	// to match, so a resend of those is counted again — accepted.)
+	before, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.0", ts, 1)), now), now)
+	if err != nil || res.Duplicates != 1 || res.Stored != 0 {
+		t.Fatalf("resend: %+v %v", res, err)
+	}
+	after, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	if after.EventCount != before.EventCount {
+		t.Fatalf("resend counted: %d → %d", before.EventCount, after.EventCount)
+	}
+
 	// Hourly stats via the continuous aggregate (real-time).
 	var crashes int64
 	st.Pool.QueryRow(ctx, "SELECT sum(crashes) FROM event_stats_hourly WHERE project_id=$1", p.ID).Scan(&crashes)

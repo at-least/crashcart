@@ -10,6 +10,30 @@ import (
 	"encoding/json"
 )
 
+const existingEventIDs = `-- name: ExistingEventIDs :many
+SELECT id FROM events WHERE id = ANY($1::bigint[])
+`
+
+func (q *Queries) ExistingEventIDs(ctx context.Context, dollar_1 []int64) ([]int64, error) {
+	rows, err := q.db.Query(ctx, existingEventIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getEvent = `-- name: GetEvent :one
 SELECT id, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs, payload, symbols FROM events WHERE project_id = $1 AND id = $2
 `

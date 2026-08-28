@@ -79,6 +79,14 @@ func TestChunkUpload(t *testing.T) {
 	if chunks != 0 {
 		t.Fatalf("chunks not cleaned up: %d", chunks)
 	}
+	// The Gradle plugin's follow-up association tags the release.
+	rec, _ = e.do("POST", "/api/0/projects/o/app/files/dsyms/associate/", map[string]any{"checksums": []string{file}, "appId": "com.example", "version": "2.4.1", "build": "9"})
+	if rec.Code != 200 {
+		t.Fatalf("associate: %d %s", rec.Code, rec.Body.String())
+	}
+	if syms := e.get("/api/projects/app/symbols", 200)["symbols"].([]any); syms[0].(map[string]any)["release"] != "com.example@2.4.1+9" {
+		t.Fatalf("release after associate = %v", syms[0])
+	}
 	// sentry-cli's pre-check by debug id finds it, so it is not re-uploaded.
 	rec, _ = e.do("GET", "/api/0/projects/o/app/files/dsyms/?debug_id=564ca29d-9553-5cda-b46b-135303369724", nil)
 	if rec.Code != 200 || !bytes.Contains(rec.Body.Bytes(), []byte(`"objectName":"mapping.txt"`)) {

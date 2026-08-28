@@ -17,3 +17,6 @@ GROUP BY fingerprint;
 -- name: IssueNeighbors :one
 -- Latest and oldest stored event of an issue.
 SELECT max(id)::bigint AS latest, min(id)::bigint AS oldest FROM events WHERE project_id = $1 AND fingerprint = $2;
+
+-- name: ExistingEventIDs :many
+SELECT id FROM events WHERE id = ANY($1::bigint[]);

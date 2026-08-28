@@ -73,6 +73,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"POST /api/0/organizations/{org}/chunk-upload/":              h.sentryChunkUploadPost,
 		"GET /api/0/organizations/{org}/chunk-upload/":               h.sentryChunkUploadOptions,
 		"POST /api/0/projects/{org}/{project}/files/difs/assemble/": h.sentryAssemble,
+		"POST /api/0/projects/{org}/{project}/files/dsyms/associate/": h.sentryAssociate,
+		"POST /api/0/projects/{org}/{project}/files/proguard-artifact-releases": h.sentryProguardArtifactRelease,
 		// CORS preflights
 		"OPTIONS /api/projects":  h.preflight,
 		"OPTIONS /api/projects/": h.preflight,

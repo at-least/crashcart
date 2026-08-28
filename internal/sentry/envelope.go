@@ -46,17 +46,20 @@ func (f Frame) IsInApp() bool { return f.InApp != nil && *f.InApp }
 
 // Exception is one entry of exception.values.
 type Exception struct {
-	Type      string
-	Value     string
-	Frames    []Frame
-	Handled   *bool
-	Mechanism string
+	Type        string
+	Value       string
+	Frames      []Frame
+	Handled     *bool
+	Mechanism   string
+	ExceptionID *int // mechanism.exception_id / parent_id link chained exceptions
+	ParentID    *int
 }
 
 // DebugImage is one debug_meta.images entry (used for dSYM lookup).
 type DebugImage struct {
 	Type      string `json:"type"`
 	DebugID   string `json:"debug_id"`
+	UUID      string `json:"uuid"` // proguard images (Android SDK) carry the id here
 	CodeFile  string `json:"code_file"`
 	ImageAddr string `json:"image_addr"`
 	ImageSize int64  `json:"image_size"`
@@ -83,6 +86,7 @@ type Event struct {
 	Exceptions  []Exception // exception.values in SDK order
 	DebugImages []DebugImage
 	SDKFingerprint []string
+	Primary        int // index into Exceptions of the root cause
 	// Raw is the untouched item body.
 	Raw []byte
 }
@@ -100,7 +104,46 @@ func (e *Event) Frames() []Frame {
 	if len(e.Exceptions) == 0 {
 		return nil
 	}
-	return e.Exceptions[0].Frames
+	return e.Exceptions[e.Primary].Frames
+}
+
+// primaryException picks the root cause of a chain and the exception that
+// was actually thrown. SDKs that link values with mechanism.exception_id /
+// parent_id (Java, .NET) may list the outer exception first; without ids
+// the protocol order is oldest (root cause) to newest (thrown).
+func primaryException(xs []Exception) (root, top int) {
+	if len(xs) == 0 {
+		return 0, 0
+	}
+	linked := false
+	isParent := map[int]bool{}
+	for _, x := range xs {
+		if x.ExceptionID != nil {
+			linked = true
+		}
+		if x.ParentID != nil {
+			isParent[*x.ParentID] = true
+		}
+	}
+	if !linked {
+		return 0, len(xs) - 1
+	}
+	root, top = -1, -1
+	for i, x := range xs {
+		if x.ParentID == nil && top < 0 {
+			top = i
+		}
+		if x.ExceptionID != nil && !isParent[*x.ExceptionID] {
+			root = i // the deepest cause: nobody's parent
+		}
+	}
+	if top < 0 {
+		top = 0
+	}
+	if root < 0 {
+		root = top
+	}
+	return root, top
 }
 
 // Session is one Sentry session (release health) item, or one row of a
@@ -207,8 +250,10 @@ type rawException struct {
 		Frames []Frame `json:"frames"`
 	} `json:"stacktrace"`
 	Mechanism *struct {
-		Type    string `json:"type"`
-		Handled *bool  `json:"handled"`
+		Type        string `json:"type"`
+		Handled     *bool  `json:"handled"`
+		ExceptionID *int   `json:"exception_id"`
+		ParentID    *int   `json:"parent_id"`
 	} `json:"mechanism"`
 }
 
@@ -349,20 +394,26 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 			if x.Mechanism != nil {
 				ex.Handled = x.Mechanism.Handled
 				ex.Mechanism = x.Mechanism.Type
+				ex.ExceptionID, ex.ParentID = x.Mechanism.ExceptionID, x.Mechanism.ParentID
 			}
 			ev.Exceptions = append(ev.Exceptions, ex)
 		}
 	}
-	// Sentry SDKs put the exception whose stack matters last for chained
-	// exceptions but first for single ones; we treat values[0] as primary
-	// and borrow the crashed thread's stack when the exception has none.
+	// The root cause names the issue; the thrown (outermost) exception
+	// carries the handled flag. A cause without its own stack borrows the
+	// crashed thread's.
 	if len(ev.Exceptions) > 0 {
-		ev.ErrorType = ev.Exceptions[0].Type
-		ev.Handled = ev.Exceptions[0].Handled
-		if len(ev.Exceptions[0].Frames) == 0 && re.Threads != nil {
+		root, top := primaryException(ev.Exceptions)
+		ev.Primary = root
+		ev.ErrorType = ev.Exceptions[root].Type
+		ev.Handled = ev.Exceptions[top].Handled
+		if ev.Handled == nil {
+			ev.Handled = ev.Exceptions[root].Handled
+		}
+		if len(ev.Exceptions[root].Frames) == 0 && re.Threads != nil {
 			for _, t := range re.Threads.Values {
 				if t.Crashed && t.Stacktrace != nil {
-					ev.Exceptions[0].Frames = t.Stacktrace.Frames
+					ev.Exceptions[root].Frames = t.Stacktrace.Frames
 					break
 				}
 			}
@@ -370,6 +421,11 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	}
 	if re.DebugMeta != nil {
 		ev.DebugImages = re.DebugMeta.Images
+		for i := range ev.DebugImages {
+			if ev.DebugImages[i].DebugID == "" {
+				ev.DebugImages[i].DebugID = ev.DebugImages[i].UUID
+			}
+		}
 	}
 	if re.SDK != nil {
 		ev.SDKName = re.SDK.Name
@@ -377,7 +433,7 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	if re.User != nil {
 		ev.UserID = scalarString(re.User.ID)
 	}
-	ev.Message = truncate(extractMessage(&re), maxMessage)
+	ev.Message = truncate(extractMessage(&re, ev.Primary), maxMessage)
 	for _, b := range parseRawBreadcrumbs(re.Breadcrumbs) {
 		cat := b.Category
 		if cat == "" {
@@ -411,7 +467,7 @@ func normalizeLevel(l string) string {
 	}
 }
 
-func extractMessage(re *rawEvent) string {
+func extractMessage(re *rawEvent, primary int) string {
 	if re.Logentry != nil {
 		if re.Logentry.Formatted != "" {
 			return re.Logentry.Formatted
@@ -438,8 +494,8 @@ func extractMessage(re *rawEvent) string {
 			}
 		}
 	}
-	if re.Exception != nil && len(re.Exception.Values) > 0 {
-		v := re.Exception.Values[0]
+	if re.Exception != nil && len(re.Exception.Values) > primary {
+		v := re.Exception.Values[primary]
 		t := v.Type
 		if t == "" {
 			t = "Error"

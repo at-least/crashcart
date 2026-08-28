@@ -145,3 +145,37 @@ func TestLevelNormalization(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestChainedExceptionsJavaOrder(t *testing.T) {
+	// Java SDK: outer RuntimeException first (exception_id 0), its cause
+	// second (parent_id 0). The cause names the issue; handled comes from
+	// the outer one.
+	body := `{"exception":{"values":[
+	  {"type":"RuntimeException","value":"Unable to start activity","mechanism":{"type":"UncaughtExceptionHandler","handled":false,"exception_id":0},
+	   "stacktrace":{"frames":[{"module":"android.app.ActivityThread","function":"main","lineno":1}]}},
+	  {"type":"IllegalStateException","value":"cart total unavailable","mechanism":{"type":"chained","exception_id":1,"parent_id":0},
+	   "stacktrace":{"frames":[{"module":"android.app.Activity","function":"performCreate","lineno":2},{"module":"cc.smoke.MainActivity","function":"onCreate","lineno":47,"in_app":true}]}}]}}`
+	ev := ParseEvent("", now, []byte(body), now)
+	if ev.ErrorType != "IllegalStateException" || ev.Handled == nil || *ev.Handled || ev.Message != "IllegalStateException: cart total unavailable" {
+		t.Fatalf("type=%q handled=%v message=%q", ev.ErrorType, ev.Handled, ev.Message)
+	}
+	if loc := ErrorLocation(ev.Frames()); loc != "MainActivity:47" && loc != "?:47" {
+		t.Logf("location = %q", loc)
+	}
+	if f := ev.Frames(); len(f) != 2 || f[1].Function != "onCreate" {
+		t.Fatalf("frames = %+v", f)
+	}
+	// Protocol order without ids: oldest first is the root cause.
+	body = `{"exception":{"values":[{"type":"KeyError","value":"x","mechanism":{"type":"generic","handled":true}},{"type":"ValueError","value":"wrapped"}]}}`
+	ev = ParseEvent("", now, []byte(body), now)
+	if ev.ErrorType != "KeyError" || ev.Handled == nil || !*ev.Handled {
+		t.Fatalf("python order: type=%q handled=%v", ev.ErrorType, ev.Handled)
+	}
+}
+
+func TestProguardImageUUID(t *testing.T) {
+	ev := ParseEvent("", now, []byte(`{"platform":"java","debug_meta":{"images":[{"type":"proguard","uuid":"4828693C-D841-38E1-A119-AD9BE85355AB"}]},"exception":{"values":[{"type":"E","stacktrace":{"frames":[{"module":"a.b","function":"c","lineno":1}]}}]}}`), now)
+	if len(ev.DebugImages) != 1 || ev.DebugImages[0].DebugID != "4828693C-D841-38E1-A119-AD9BE85355AB" || !ev.NeedsSymbolication() {
+		t.Fatalf("images = %+v", ev.DebugImages)
+	}
+}

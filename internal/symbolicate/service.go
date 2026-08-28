@@ -152,7 +152,10 @@ func (s *Service) load(ctx context.Context, k cacheKey) any {
 	}
 	s.mu.Unlock()
 
-	mapping := s.fetch(ctx, k)
+	mapping, err := s.fetch(ctx, k)
+	if err != nil {
+		return nil // transient (cancelled request, database hiccup): do not cache the miss
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -180,22 +183,28 @@ func (s *Service) evictOldestLocked() {
 	}
 }
 
-// fetch reads and parses the symbol file(s) for k. Errors are treated as
-// "no mapping" (the negative entry retries after missTTL).
-func (s *Service) fetch(ctx context.Context, k cacheKey) any {
+// fetch reads and parses the symbol file(s) for k. nil, nil is a definite
+// miss (cached for missTTL); an error is transient and is not cached.
+func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 	var files []sqlc.SymbolFile
 	if strings.HasPrefix(k.key, debugPrefix) {
 		id := strings.TrimPrefix(k.key, debugPrefix)
 		f, err := s.Store.SymbolFileByDebugID(ctx, sqlc.SymbolFileByDebugIDParams{ProjectID: k.projectID, DebugID: &id})
-		if err != nil || f.Kind != k.kind {
-			return nil
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && f.Kind != k.kind) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
 		}
 		files = []sqlc.SymbolFile{f}
 	} else {
 		var err error
 		files, err = s.Store.SymbolFilesForRelease(ctx, sqlc.SymbolFilesForReleaseParams{ProjectID: k.projectID, Release: k.key, Kind: k.kind})
-		if err != nil || len(files) == 0 {
-			return nil
+		if err != nil {
+			return nil, err
+		}
+		if len(files) == 0 {
+			return nil, nil
 		}
 	}
 	switch k.kind {
@@ -209,9 +218,9 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) any {
 		}
 		m := ParseProGuard(sb.String())
 		if len(m.Classes) == 0 {
-			return nil
+			return nil, nil
 		}
-		return m
+		return m, nil
 	case KindSourceMap:
 		byName := make(map[string][]byte, len(files))
 		for _, f := range files {
@@ -219,11 +228,11 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) any {
 		}
 		set := NewSourceMapSet(byName)
 		if set.Len() == 0 {
-			return nil
+			return nil, nil
 		}
-		return set
+		return set, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // Invalidate drops the cached mappings of (project, release) — and every
