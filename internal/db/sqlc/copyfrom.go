@@ -29,7 +29,7 @@ func (r *iteratorForInsertEvents) Next() bool {
 
 func (r iteratorForInsertEvents) Values() ([]interface{}, error) {
 	return []interface{}{
-		r.rows[0].OccurredAt,
+		r.rows[0].ID,
 		r.rows[0].EventID,
 		r.rows[0].Level,
 		r.rows[0].Message,
@@ -56,6 +56,8 @@ func (r iteratorForInsertEvents) Err() error {
 	return nil
 }
 
+// events.id encodes the event time (internal/pk); every query below bounds
+// the scan with an id range so it walks the PK — the table's only index.
 func (q *Queries) InsertEvents(ctx context.Context, arg []InsertEventsParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"events"}, []string{"occurred_at", "event_id", "level", "message", "platform", "environment", "release", "device_id", "device_model", "os_version", "screen", "error_type", "error_location", "handled", "sdk_name", "user_id", "fingerprint", "tags", "breadcrumbs", "payload"}, &iteratorForInsertEvents{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"events"}, []string{"id", "event_id", "level", "message", "platform", "environment", "release", "device_id", "device_model", "os_version", "screen", "error_type", "error_location", "handled", "sdk_name", "user_id", "fingerprint", "tags", "breadcrumbs", "payload"}, &iteratorForInsertEvents{rows: arg})
 }

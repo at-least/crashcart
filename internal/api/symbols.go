@@ -86,7 +86,7 @@ func (h *Handler) Symbolicate(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	data, err := q.GetSymbolFileData(r.Context(), meta.ID)
+	data, err := q.GetSymbolFileData(r.Context(), sqlc.GetSymbolFileDataParams{Platform: meta.Platform, Release: meta.Release, Filename: meta.Filename})
 	if err != nil {
 		h.fail(w, r, err)
 		return

@@ -17,26 +17,15 @@ ON CONFLICT (fingerprint) DO UPDATE SET
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now();
 
--- Optional filters. The event-scoped ones (release/user/device/...) are
--- exact: they look for an event of this fingerprint in the window that
--- matches.
+-- Optional filters. Event-scoped filtering (release/user/device/…) is done
+-- by the caller: FingerprintsInRange → @fingerprints (empty = no filter).
 -- name: ListIssues :many
 SELECT * FROM issues i
 WHERE i.last_seen >= @since
   AND (sqlc.narg('until')::timestamptz IS NULL OR i.first_seen < sqlc.narg('until'))
   AND (sqlc.narg('error_type')::text IS NULL OR i.error_type = sqlc.narg('error_type'))
   AND (sqlc.narg('status')::text IS NULL OR i.status = sqlc.narg('status'))
-  AND (NOT @has_event_filter::boolean OR EXISTS (
-        SELECT 1 FROM events e
-        WHERE e.fingerprint = i.fingerprint
-          AND e.occurred_at >= @since
-          AND (sqlc.narg('until')::timestamptz IS NULL OR e.occurred_at < sqlc.narg('until'))
-          AND (sqlc.narg('release')::text IS NULL OR e.release = sqlc.narg('release'))
-          AND (sqlc.narg('user_id')::text IS NULL OR e.user_id = sqlc.narg('user_id'))
-          AND (sqlc.narg('device_id')::text IS NULL OR e.device_id = sqlc.narg('device_id'))
-          AND (sqlc.narg('device_model')::text IS NULL OR e.device_model = sqlc.narg('device_model'))
-          AND (sqlc.narg('os_version')::text IS NULL OR e.os_version = sqlc.narg('os_version'))
-      ))
+  AND (NOT @by_fingerprint::boolean OR i.fingerprint = ANY(@fingerprints::text[]))
 ORDER BY i.last_seen DESC
 LIMIT @page_limit;
 

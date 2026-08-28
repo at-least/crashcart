@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/newlix/crashcart/internal/pk"
 	"github.com/newlix/crashcart/internal/sentry"
 )
 
@@ -26,6 +28,7 @@ type Options struct {
 	MaxEvents  int // per envelope (default 500)
 	Now        func() time.Time
 	Rand       func() float64
+	RandID     func() int64 // random suffix source for event ids
 }
 
 // Ingester writes envelopes to Postgres.
@@ -59,6 +62,9 @@ func New(pool *pgxpool.Pool, opts Options) *Ingester {
 	if opts.Rand == nil {
 		opts.Rand = rand.Float64
 	}
+	if opts.RandID == nil {
+		opts.RandID = rand.Int64
+	}
 	if opts.SampleRate <= 0 && opts.SampleRate != 0 {
 		opts.SampleRate = 1
 	}
@@ -89,34 +95,70 @@ func (in *Ingester) Ingest(ctx context.Context, body []byte) (Result, error) {
 
 	b := in.build(events, env.Sessions)
 
+	// The id carries the event time plus a random suffix (internal/pk); a
+	// clash with a row from another envelope is a unique violation, so
+	// re-roll the suffixes and try again rather than fail the envelope.
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		in.assignIDs(b.events, b.times)
+		if err = in.write(ctx, b); !isUniqueViolation(err) {
+			break
+		}
+	}
+	return res, err
+}
+
+// assignIDs gives every event an id unique within the batch (the COPY has
+// no ON CONFLICT), bumping the suffix on an in-batch clash.
+func (in *Ingester) assignIDs(events []sqlc.InsertEventsParams, times []time.Time) {
+	seen := make(map[int64]struct{}, len(events))
+	for i := range events {
+		id := pk.New(times[i], in.opts.RandID)
+		for {
+			if _, dup := seen[id]; !dup {
+				break
+			}
+			id = pk.Lower(times[i]) + (id+1)%pk.Scale
+		}
+		seen[id] = struct{}{}
+		events[i].ID = id
+	}
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func (in *Ingester) write(ctx context.Context, b batch) error {
 	tx, err := in.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return res, err
+		return err
 	}
 	defer tx.Rollback(ctx)
 	q := sqlc.New(tx)
 
 	if len(b.events) > 0 {
 		if _, err := q.InsertEvents(ctx, b.events); err != nil {
-			return res, fmt.Errorf("insert events: %w", err)
+			return fmt.Errorf("insert events: %w", err)
 		}
 	}
 	if err := batchErr("user_devices", q.UpsertUserDevice(ctx, b.devices).Exec); err != nil {
-		return res, err
+		return err
 	}
 	if err := batchErr("hourly_stats", q.UpsertHourlyStats(ctx, b.hourly).Exec); err != nil {
-		return res, err
+		return err
 	}
 	if err := batchErr("releases", q.UpsertRelease(ctx, b.releases).Exec); err != nil {
-		return res, err
+		return err
 	}
 	if err := batchErr("issues", q.UpsertIssue(ctx, b.issues).Exec); err != nil {
-		return res, err
+		return err
 	}
 	if err := batchErr("release_health", q.UpsertReleaseHealth(ctx, b.health).Exec); err != nil {
-		return res, err
+		return err
 	}
-	return res, tx.Commit(ctx)
+	return tx.Commit(ctx)
 }
 
 func batchErr(name string, exec func(func(int, error))) error {
@@ -132,7 +174,9 @@ func batchErr(name string, exec func(func(int, error))) error {
 // batch is everything one envelope writes, with aggregate keys sorted so
 // concurrent ingests take row locks in the same order (no deadlocks).
 type batch struct {
-	events   []sqlc.InsertEventsParams
+	events []sqlc.InsertEventsParams // ids assigned by assignIDs from times
+	times  []time.Time
+
 	devices  []sqlc.UpsertUserDeviceParams
 	hourly   []sqlc.UpsertHourlyStatsParams
 	releases []sqlc.UpsertReleaseParams
@@ -177,8 +221,8 @@ func (in *Ingester) build(events []*sentry.Event, sessions []sentry.Session) bat
 		// jsonb rejects NUL characters inside strings.
 		payload := bytes.ReplaceAll(e.Raw, []byte(`\u0000`), nil)
 
+		b.times = append(b.times, ts)
 		b.events = append(b.events, sqlc.InsertEventsParams{
-			OccurredAt:    ts,
 			EventID:       nullable(e.EventID),
 			Level:         e.Level,
 			Message:       message,

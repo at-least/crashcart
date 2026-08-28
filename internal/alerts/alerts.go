@@ -15,6 +15,7 @@ import (
 
 	"github.com/newlix/crashcart/internal/config"
 	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/newlix/crashcart/internal/pk"
 	"github.com/newlix/crashcart/internal/store"
 )
 
@@ -108,7 +109,7 @@ func (c *Checker) detect(ctx context.Context, typ string, now, since time.Time) 
 
 func (c *Checker) crashSpike(ctx context.Context, now time.Time) (string, error) {
 	q := c.Store.Queries()
-	recent, err := q.CountCrashesSince(ctx, now.Add(-10*time.Minute))
+	recent, err := q.CountCrashesSince(ctx, pk.Lower(now.Add(-10*time.Minute)))
 	if err != nil || recent == 0 {
 		return "", err
 	}

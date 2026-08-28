@@ -11,18 +11,24 @@ import (
 )
 
 const getSymbolFileData = `-- name: GetSymbolFileData :one
-SELECT data FROM symbol_files WHERE id = $1
+SELECT data FROM symbol_files WHERE platform = $1 AND release = $2 AND filename = $3
 `
 
-func (q *Queries) GetSymbolFileData(ctx context.Context, id int64) ([]byte, error) {
-	row := q.db.QueryRow(ctx, getSymbolFileData, id)
+type GetSymbolFileDataParams struct {
+	Platform string `json:"platform"`
+	Release  string `json:"release"`
+	Filename string `json:"filename"`
+}
+
+func (q *Queries) GetSymbolFileData(ctx context.Context, arg GetSymbolFileDataParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getSymbolFileData, arg.Platform, arg.Release, arg.Filename)
 	var data []byte
 	err := row.Scan(&data)
 	return data, err
 }
 
 const latestSymbolFile = `-- name: LatestSymbolFile :one
-SELECT id, platform, release, filename, size, uploaded_at
+SELECT platform, release, filename, size, uploaded_at
 FROM symbol_files WHERE platform = $1 AND release = $2
 ORDER BY uploaded_at DESC LIMIT 1
 `
@@ -33,7 +39,6 @@ type LatestSymbolFileParams struct {
 }
 
 type LatestSymbolFileRow struct {
-	ID         int64     `json:"id"`
 	Platform   string    `json:"platform"`
 	Release    string    `json:"release"`
 	Filename   string    `json:"filename"`
@@ -46,7 +51,6 @@ func (q *Queries) LatestSymbolFile(ctx context.Context, arg LatestSymbolFilePara
 	row := q.db.QueryRow(ctx, latestSymbolFile, arg.Platform, arg.Release)
 	var i LatestSymbolFileRow
 	err := row.Scan(
-		&i.ID,
 		&i.Platform,
 		&i.Release,
 		&i.Filename,
@@ -57,12 +61,11 @@ func (q *Queries) LatestSymbolFile(ctx context.Context, arg LatestSymbolFilePara
 }
 
 const listSymbolFiles = `-- name: ListSymbolFiles :many
-SELECT id, platform, release, filename, size, uploaded_at
+SELECT platform, release, filename, size, uploaded_at
 FROM symbol_files ORDER BY platform, release, filename
 `
 
 type ListSymbolFilesRow struct {
-	ID         int64     `json:"id"`
 	Platform   string    `json:"platform"`
 	Release    string    `json:"release"`
 	Filename   string    `json:"filename"`
@@ -80,7 +83,6 @@ func (q *Queries) ListSymbolFiles(ctx context.Context) ([]ListSymbolFilesRow, er
 	for rows.Next() {
 		var i ListSymbolFilesRow
 		if err := rows.Scan(
-			&i.ID,
 			&i.Platform,
 			&i.Release,
 			&i.Filename,
@@ -102,7 +104,7 @@ INSERT INTO symbol_files (platform, release, filename, size, data)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (platform, release, filename) DO UPDATE SET
     size = EXCLUDED.size, data = EXCLUDED.data, uploaded_at = now()
-RETURNING id, platform, release, filename, size, uploaded_at
+RETURNING platform, release, filename, size, uploaded_at
 `
 
 type UpsertSymbolFileParams struct {
@@ -114,7 +116,6 @@ type UpsertSymbolFileParams struct {
 }
 
 type UpsertSymbolFileRow struct {
-	ID         int64     `json:"id"`
 	Platform   string    `json:"platform"`
 	Release    string    `json:"release"`
 	Filename   string    `json:"filename"`
@@ -132,7 +133,6 @@ func (q *Queries) UpsertSymbolFile(ctx context.Context, arg UpsertSymbolFilePara
 	)
 	var i UpsertSymbolFileRow
 	err := row.Scan(
-		&i.ID,
 		&i.Platform,
 		&i.Release,
 		&i.Filename,

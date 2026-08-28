@@ -25,6 +25,10 @@ analysis, issue grouping, release health and alerting — on your own server.
   charts, issue list, dense event table with click-to-filter, detail sheet, dark mode.
 - **PII redaction + sampling** — for compliance and cost.
 
+Storage is write-cost first: every table has only its primary key, and the event time is
+encoded in `events.id`, so an event costs one row + one index entry and every read is a
+bounded primary-key range scan. See [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Quick start
 
 ```bash

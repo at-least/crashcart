@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/newlix/crashcart/internal/pk"
 	"github.com/newlix/crashcart/internal/timerange"
 )
 
@@ -41,7 +42,8 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // ── events ──────────────────────────────────────────────────
 
-// EventFilter selects events. Zero values mean "no filter".
+// EventFilter selects events. Zero values mean "no filter". Without a
+// Range the scan is bounded to the last DefaultLookback.
 type EventFilter struct {
 	Levels        []string
 	Range         timerange.Range
@@ -65,6 +67,24 @@ type EventFilter struct {
 // Event is the list-view projection (no payload / breadcrumbs).
 type Event = sqlc.ListEventsRow
 
+// DefaultLookback bounds unranged event scans (events has no time index
+// other than its PK, so every scan must have a lower bound).
+const DefaultLookback = 30 * 24 * time.Hour
+
+// idRange converts a window to [since, until) ids; an open window ends
+// "far enough in the future" to include clock-skewed events.
+func (s *Store) idRange(r timerange.Range, has bool) (int64, int64) {
+	now := s.now().UTC()
+	if !has {
+		return pk.Lower(now.Add(-DefaultLookback)), pk.Upper(now.Add(24 * time.Hour))
+	}
+	until := now.Add(24 * time.Hour)
+	if r.Until != nil {
+		until = *r.Until
+	}
+	return pk.Lower(r.Since), pk.Upper(until)
+}
+
 // ListEvents returns events newest first.
 func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]Event, error) {
 	p := sqlc.ListEventsParams{
@@ -85,11 +105,7 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]Event, error) 
 		PageLimit:     int32(clamp(f.Limit, 1, 200, 50)),
 		PageOffset:    int32(max(f.Offset, 0)),
 	}
-	if f.HasRange {
-		since := f.Range.Since
-		p.Since = &since
-		p.Until = f.Range.Until
-	}
+	p.SinceID, p.UntilID = s.idRange(f.Range, f.HasRange)
 	if len(f.Tags) > 0 {
 		b, err := json.Marshal(f.Tags)
 		if err != nil {
@@ -113,7 +129,7 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) ([]Event, error) 
 }
 
 // GetEvent returns the full row including payload.
-func (s *Store) GetEvent(ctx context.Context, id int64) (sqlc.Event, error) {
+func (s *Store) GetEvent(ctx context.Context, id int64) (sqlc.GetEventRow, error) {
 	ev, err := s.q.GetEvent(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ev, ErrNotFound
@@ -311,21 +327,38 @@ type IssueFilter struct {
 // ValidIssueStatuses is the lifecycle vocabulary.
 var ValidIssueStatuses = []string{"unresolved", "triaged", "resolved", "ignored", "regression"}
 
-// ListIssues returns issues newest-last-seen first.
+// ListIssues returns issues newest-last-seen first. Event-scoped filters
+// (release/user/device/…) resolve to fingerprints with one PK range scan
+// over events in the window, then issues are fetched by key.
 func (s *Store) ListIssues(ctx context.Context, f IssueFilter) ([]sqlc.Issue, error) {
 	p := sqlc.ListIssuesParams{
-		Since:       f.Range.Since,
-		Until:       f.Range.Until,
-		ErrorType:   opt(f.ErrorType),
-		Status:      opt(f.Status),
-		Release:     opt(f.Release),
-		UserID:      opt(f.UserID),
-		DeviceID:    opt(f.DeviceID),
-		DeviceModel: opt(f.DeviceModel),
-		OsVersion:   opt(f.OSVersion),
-		PageLimit:   int32(clamp(f.Limit, 1, 100, 50)),
+		Since:        f.Range.Since,
+		Until:        f.Range.Until,
+		ErrorType:    opt(f.ErrorType),
+		Status:       opt(f.Status),
+		Fingerprints: []string{},
+		PageLimit:    int32(clamp(f.Limit, 1, 100, 50)),
 	}
-	p.HasEventFilter = p.Release != nil || p.UserID != nil || p.DeviceID != nil || p.DeviceModel != nil || p.OsVersion != nil
+	if f.Release != "" || f.UserID != "" || f.DeviceID != "" || f.DeviceModel != "" || f.OSVersion != "" {
+		sinceID, untilID := s.idRange(f.Range, true)
+		fps, err := s.q.FingerprintsInRange(ctx, sqlc.FingerprintsInRangeParams{
+			SinceID: sinceID, UntilID: untilID,
+			Release: opt(f.Release), UserID: opt(f.UserID), DeviceID: opt(f.DeviceID),
+			DeviceModel: opt(f.DeviceModel), OsVersion: opt(f.OSVersion),
+		})
+		if err != nil {
+			return nil, err
+		}
+		p.ByFingerprint = true
+		for _, fp := range fps {
+			if fp != nil {
+				p.Fingerprints = append(p.Fingerprints, *fp)
+			}
+		}
+		if len(p.Fingerprints) == 0 {
+			return []sqlc.Issue{}, nil
+		}
+	}
 	return s.q.ListIssues(ctx, p)
 }
 

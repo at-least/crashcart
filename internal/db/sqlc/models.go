@@ -18,7 +18,6 @@ type AlertType struct {
 
 type Event struct {
 	ID            int64           `json:"id"`
-	OccurredAt    time.Time       `json:"occurred_at"`
 	ReceivedAt    time.Time       `json:"received_at"`
 	EventID       *string         `json:"event_id"`
 	Level         string          `json:"level"`
@@ -85,7 +84,6 @@ type ReleaseHealth struct {
 }
 
 type SymbolFile struct {
-	ID         int64     `json:"id"`
 	Platform   string    `json:"platform"`
 	Release    string    `json:"release"`
 	Filename   string    `json:"filename"`

@@ -25,13 +25,20 @@ Program    → GET /api/events|stats/*|issues|alerts|symbols, POST /api/symbolic
 Everything lives in Postgres (no object store): `events.payload` is JSONB, TOAST handles
 large payloads; symbol files are `bytea` in `symbol_files`. Tables: `events`,
 `user_devices`, `hourly_stats`, `issues`, `releases`, `release_health`, `alert_types`,
-`symbol_files`, `schema_migrations`.
+`symbol_files` (PK `(platform, release, filename)`), `schema_migrations`.
 
-- `events.occurred_at TIMESTAMPTZ` + `(occurred_at DESC, id DESC)` index — no
-  timestamp-in-PK trick. Partial indexes on device/user/error_type/release/fingerprint.
-- `events.tags JSONB` object with a GIN (`jsonb_path_ops`) index → tag filters are
-  `tags @> '{"k":"v"}'`.
-- `events.fingerprint` links to `issues` → issue drill-downs are exact joins.
+- **No secondary indexes anywhere.** `events.id = unix_ms × 1000 + random(0..999)`
+  (`internal/pk`), so the PK is the chronological index; a write is one heap row + one
+  btree entry. Every read is a bounded PK range scan + filter (`id >= since AND id <
+  until`), which is fine because every dashboard/API query carries a time window and
+  `LIMIT`. Unranged `ListEvents` calls are bounded to `store.DefaultLookback` (30 d).
+- `events.tags JSONB` object; tag filters are `tags @> '{"k":"v"}'` evaluated inside the
+  range scan (no GIN — it cost 2–3 index entries per event).
+- `events.fingerprint` links to `issues`. Event-scoped issue filters run
+  `FingerprintsInRange` (one range scan, DISTINCT) then `issues … = ANY($fps)`.
+- `occurred_at` is not stored; queries derive it: `to_timestamp(id / 1000000.0)`.
+- Ingest de-duplicates ids within a batch and re-rolls suffixes on a `23505` from a
+  concurrent envelope (3 attempts).
 - Fingerprint = sha256(platform:errorType:last-5-frames file:function)[:16] hex; the SDK's
   `fingerprint` array wins when present.
 
@@ -52,6 +59,10 @@ slots. The viewer calls `store` directly — never HTTP to itself.
 
 ## Key decisions
 
+- **Why time-in-PK and zero secondary indexes?** Write cost. Each index is another btree
+  entry (+ WAL) per event; with the time in the PK the dashboard, alerts and retention all
+  walk the PK. Rare filters (a single device id over 30 days) scan more rows, but the scan is
+  always bounded by the window and stops at `LIMIT`. Ids stay < 2^53 (JSON-safe) until 2255.
 - **Why one tx per envelope?** Postgres makes logs + aggregates atomic for free; no
   "aggregate drift" and no partial-failure isolation code.
 - **Why in-memory rate limiting?** Single process; a table would cost a write per request.
@@ -91,7 +102,8 @@ internal/
   auth/         middleware
   config/       env → Config; CUSTOM_TAGS, CSV helpers
   db/           migrations/NNNN_*.sql (embedded), migrate.go, queries/*.sql, sqlc/ (generated)
-  ingest/       ingest.go (tx + folding), pii.go, sampling.go
+  ingest/       ingest.go (id assignment, tx + folding, retry on id clash), pii.go, sampling.go
+  pk/           event id ↔ time encoding
   retention/    bounded deletes
   sentry/       envelope.go (parser), analyze.go (fingerprint, root cause, journey)
   server/       server.New(cfg, store, log) http.Handler  ← tests use this
@@ -110,6 +122,8 @@ container/symbolicate/  dSYM sidecar (Python + llvm-symbolizer); SYMBOLICATE_URL
   `make generate` does both. Generated files are committed.
 - Never hand-write SQL in Go outside `internal/db/queries` (migrations + `db.Migrate` are
   the only exceptions).
+- Time bounds on `events` are ids: `pk.Lower(t)` / `pk.Upper(t)`; never compare
+  `to_timestamp(id/1e6)` in a WHERE clause (it defeats the PK range).
 - Nullable text columns are `*string` (sqlc `emit_pointers_for_null_types`);
   `TIMESTAMPTZ` → `time.Time` / `*time.Time`; `JSONB` → `json.RawMessage`.
 - API JSON is snake_case (sqlc `json_tags_case_style: snake`); times RFC3339 UTC.
@@ -122,7 +136,7 @@ container/symbolicate/  dSYM sidecar (Python + llvm-symbolizer); SYMBOLICATE_URL
 ## Retention
 
 Hourly (`RETENTION_INTERVAL`), cutoff `now - RETENTION_DAYS`: events deleted in batches of
-5000 by `occurred_at`; `hourly_stats` by hour; `issues` by `last_seen`; `user_devices` by
+5000 by PK range (`id < pk.Lower(cutoff)`); `hourly_stats` by hour; `issues` by `last_seen`; `user_devices` by
 `last_seen` (refreshed lazily at ingest, ≤ once/day/pair); `release_health` by day.
 
 ## Terminology

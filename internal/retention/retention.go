@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/newlix/crashcart/internal/pk"
 	"github.com/newlix/crashcart/internal/store"
 )
 
@@ -35,7 +36,7 @@ func (r *Runner) Run(ctx context.Context) (Report, error) {
 	var rep Report
 
 	for {
-		n, err := q.DeleteEventsBefore(ctx, sqlc.DeleteEventsBeforeParams{OccurredAt: cutoff, Limit: batchSize})
+		n, err := q.DeleteEventsBefore(ctx, sqlc.DeleteEventsBeforeParams{CutoffID: pk.Lower(cutoff), Batch: batchSize})
 		if err != nil {
 			return rep, err
 		}

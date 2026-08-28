@@ -54,50 +54,31 @@ WHERE i.last_seen >= $1
   AND ($2::timestamptz IS NULL OR i.first_seen < $2)
   AND ($3::text IS NULL OR i.error_type = $3)
   AND ($4::text IS NULL OR i.status = $4)
-  AND (NOT $5::boolean OR EXISTS (
-        SELECT 1 FROM events e
-        WHERE e.fingerprint = i.fingerprint
-          AND e.occurred_at >= $1
-          AND ($2::timestamptz IS NULL OR e.occurred_at < $2)
-          AND ($6::text IS NULL OR e.release = $6)
-          AND ($7::text IS NULL OR e.user_id = $7)
-          AND ($8::text IS NULL OR e.device_id = $8)
-          AND ($9::text IS NULL OR e.device_model = $9)
-          AND ($10::text IS NULL OR e.os_version = $10)
-      ))
+  AND (NOT $5::boolean OR i.fingerprint = ANY($6::text[]))
 ORDER BY i.last_seen DESC
-LIMIT $11
+LIMIT $7
 `
 
 type ListIssuesParams struct {
-	Since          time.Time  `json:"since"`
-	Until          *time.Time `json:"until"`
-	ErrorType      *string    `json:"error_type"`
-	Status         *string    `json:"status"`
-	HasEventFilter bool       `json:"has_event_filter"`
-	Release        *string    `json:"release"`
-	UserID         *string    `json:"user_id"`
-	DeviceID       *string    `json:"device_id"`
-	DeviceModel    *string    `json:"device_model"`
-	OsVersion      *string    `json:"os_version"`
-	PageLimit      int32      `json:"page_limit"`
+	Since         time.Time  `json:"since"`
+	Until         *time.Time `json:"until"`
+	ErrorType     *string    `json:"error_type"`
+	Status        *string    `json:"status"`
+	ByFingerprint bool       `json:"by_fingerprint"`
+	Fingerprints  []string   `json:"fingerprints"`
+	PageLimit     int32      `json:"page_limit"`
 }
 
-// Optional filters. The event-scoped ones (release/user/device/...) are
-// exact: they look for an event of this fingerprint in the window that
-// matches.
+// Optional filters. Event-scoped filtering (release/user/device/…) is done
+// by the caller: FingerprintsInRange → @fingerprints (empty = no filter).
 func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]Issue, error) {
 	rows, err := q.db.Query(ctx, listIssues,
 		arg.Since,
 		arg.Until,
 		arg.ErrorType,
 		arg.Status,
-		arg.HasEventFilter,
-		arg.Release,
-		arg.UserID,
-		arg.DeviceID,
-		arg.DeviceModel,
-		arg.OsVersion,
+		arg.ByFingerprint,
+		arg.Fingerprints,
 		arg.PageLimit,
 	)
 	if err != nil {

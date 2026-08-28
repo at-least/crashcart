@@ -13,12 +13,12 @@ import (
 
 const countCrashesSince = `-- name: CountCrashesSince :one
 SELECT count(*) FROM events
-WHERE occurred_at >= $1 AND (level = 'fatal' OR handled = false)
+WHERE id >= $1 AND (level = 'fatal' OR handled = false)
 `
 
 // Crash count in a precise window (alerting).
-func (q *Queries) CountCrashesSince(ctx context.Context, occurredAt time.Time) (int64, error) {
-	row := q.db.QueryRow(ctx, countCrashesSince, occurredAt)
+func (q *Queries) CountCrashesSince(ctx context.Context, sinceID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, countCrashesSince, sinceID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -26,18 +26,18 @@ func (q *Queries) CountCrashesSince(ctx context.Context, occurredAt time.Time) (
 
 const deleteEventsBefore = `-- name: DeleteEventsBefore :execrows
 DELETE FROM events WHERE id IN (
-    SELECT old.id FROM events old WHERE old.occurred_at < $1 ORDER BY old.occurred_at LIMIT $2
+    SELECT old.id FROM events old WHERE old.id < $1 ORDER BY old.id LIMIT $2
 )
 `
 
 type DeleteEventsBeforeParams struct {
-	OccurredAt time.Time `json:"occurred_at"`
-	Limit      int32     `json:"limit"`
+	CutoffID int64 `json:"cutoff_id"`
+	Batch    int32 `json:"batch"`
 }
 
 // Retention: bounded delete so a huge backlog never holds one long transaction.
 func (q *Queries) DeleteEventsBefore(ctx context.Context, arg DeleteEventsBeforeParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEventsBefore, arg.OccurredAt, arg.Limit)
+	result, err := q.db.Exec(ctx, deleteEventsBefore, arg.CutoffID, arg.Batch)
 	if err != nil {
 		return 0, err
 	}
@@ -56,16 +56,90 @@ func (q *Queries) DeleteUserDevicesBefore(ctx context.Context, lastSeen time.Tim
 	return result.RowsAffected(), nil
 }
 
-const getEvent = `-- name: GetEvent :one
-SELECT id, occurred_at, received_at, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, tags, breadcrumbs, payload FROM events WHERE id = $1
+const fingerprintsInRange = `-- name: FingerprintsInRange :many
+SELECT DISTINCT fingerprint FROM events
+WHERE id >= $1 AND id < $2 AND fingerprint IS NOT NULL
+  AND ($3::text IS NULL OR release = $3)
+  AND ($4::text IS NULL OR user_id = $4)
+  AND ($5::text IS NULL OR device_id = $5)
+  AND ($6::text IS NULL OR device_model = $6)
+  AND ($7::text IS NULL OR os_version = $7)
 `
 
-func (q *Queries) GetEvent(ctx context.Context, id int64) (Event, error) {
+type FingerprintsInRangeParams struct {
+	SinceID     int64   `json:"since_id"`
+	UntilID     int64   `json:"until_id"`
+	Release     *string `json:"release"`
+	UserID      *string `json:"user_id"`
+	DeviceID    *string `json:"device_id"`
+	DeviceModel *string `json:"device_model"`
+	OsVersion   *string `json:"os_version"`
+}
+
+// Fingerprints of events in a window matching event-level filters — one
+// range scan; the caller then loads issues by key.
+func (q *Queries) FingerprintsInRange(ctx context.Context, arg FingerprintsInRangeParams) ([]*string, error) {
+	rows, err := q.db.Query(ctx, fingerprintsInRange,
+		arg.SinceID,
+		arg.UntilID,
+		arg.Release,
+		arg.UserID,
+		arg.DeviceID,
+		arg.DeviceModel,
+		arg.OsVersion,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*string{}
+	for rows.Next() {
+		var fingerprint *string
+		if err := rows.Scan(&fingerprint); err != nil {
+			return nil, err
+		}
+		items = append(items, fingerprint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getEvent = `-- name: GetEvent :one
+SELECT id, received_at, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, tags, breadcrumbs, payload, to_timestamp(id / 1000000.0)::timestamptz AS occurred_at FROM events WHERE id = $1
+`
+
+type GetEventRow struct {
+	ID            int64           `json:"id"`
+	ReceivedAt    time.Time       `json:"received_at"`
+	EventID       *string         `json:"event_id"`
+	Level         string          `json:"level"`
+	Message       string          `json:"message"`
+	Platform      *string         `json:"platform"`
+	Environment   *string         `json:"environment"`
+	Release       *string         `json:"release"`
+	DeviceID      *string         `json:"device_id"`
+	DeviceModel   *string         `json:"device_model"`
+	OsVersion     *string         `json:"os_version"`
+	Screen        *string         `json:"screen"`
+	ErrorType     *string         `json:"error_type"`
+	ErrorLocation *string         `json:"error_location"`
+	Handled       *bool           `json:"handled"`
+	SdkName       *string         `json:"sdk_name"`
+	UserID        *string         `json:"user_id"`
+	Fingerprint   *string         `json:"fingerprint"`
+	Tags          json.RawMessage `json:"tags"`
+	Breadcrumbs   json.RawMessage `json:"breadcrumbs"`
+	Payload       json.RawMessage `json:"payload"`
+	OccurredAt    time.Time       `json:"occurred_at"`
+}
+
+func (q *Queries) GetEvent(ctx context.Context, id int64) (GetEventRow, error) {
 	row := q.db.QueryRow(ctx, getEvent, id)
-	var i Event
+	var i GetEventRow
 	err := row.Scan(
 		&i.ID,
-		&i.OccurredAt,
 		&i.ReceivedAt,
 		&i.EventID,
 		&i.Level,
@@ -86,12 +160,13 @@ func (q *Queries) GetEvent(ctx context.Context, id int64) (Event, error) {
 		&i.Tags,
 		&i.Breadcrumbs,
 		&i.Payload,
+		&i.OccurredAt,
 	)
 	return i, err
 }
 
 type InsertEventsParams struct {
-	OccurredAt    time.Time       `json:"occurred_at"`
+	ID            int64           `json:"id"`
 	EventID       *string         `json:"event_id"`
 	Level         string          `json:"level"`
 	Message       string          `json:"message"`
@@ -114,13 +189,13 @@ type InsertEventsParams struct {
 }
 
 const listEvents = `-- name: ListEvents :many
-SELECT id, occurred_at, level, message, platform, environment, release,
+SELECT id, to_timestamp(id / 1000000.0)::timestamptz AS occurred_at,
+       level, message, platform, environment, release,
        device_id, device_model, os_version, screen, error_type, error_location,
        handled, sdk_name, user_id, fingerprint, tags
 FROM events
-WHERE (cardinality($1::text[]) = 0 OR level = ANY($1::text[]))
-  AND ($2::timestamptz IS NULL OR occurred_at >= $2)
-  AND ($3::timestamptz IS NULL OR occurred_at < $3)
+WHERE id >= $1 AND id < $2
+  AND (cardinality($3::text[]) = 0 OR level = ANY($3::text[]))
   AND ($4::text IS NULL OR device_id = $4)
   AND ($5::text IS NULL
        OR user_id = $5
@@ -135,14 +210,14 @@ WHERE (cardinality($1::text[]) = 0 OR level = ANY($1::text[]))
   AND ($14::text IS NULL OR error_location ILIKE $14)
   AND ($15::text IS NULL OR message ILIKE $15)
   AND tags @> $16::jsonb
-ORDER BY occurred_at DESC, id DESC
+ORDER BY id DESC
 LIMIT $18 OFFSET $17
 `
 
 type ListEventsParams struct {
+	SinceID       int64           `json:"since_id"`
+	UntilID       int64           `json:"until_id"`
 	Levels        []string        `json:"levels"`
-	Since         *time.Time      `json:"since"`
-	Until         *time.Time      `json:"until"`
 	DeviceID      *string         `json:"device_id"`
 	UserID        *string         `json:"user_id"`
 	UserDevices   []string        `json:"user_devices"`
@@ -185,9 +260,9 @@ type ListEventsRow struct {
 // optional: a NULL / empty-array / empty-object argument disables it.
 func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]ListEventsRow, error) {
 	rows, err := q.db.Query(ctx, listEvents,
+		arg.SinceID,
+		arg.UntilID,
 		arg.Levels,
-		arg.Since,
-		arg.Until,
 		arg.DeviceID,
 		arg.UserID,
 		arg.UserDevices,

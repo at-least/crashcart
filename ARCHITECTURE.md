@@ -3,8 +3,8 @@
 ## Use cases
 
 1. **Dashboard** — stat cards (Crashes / Errors / Issues), crash timeline, error volume,
-   event table. Reads `hourly_stats` (O(hours)), `issues`, `events` (index range walk).
-2. **Device debug** — `device_id` → `events` via the partial index `(device_id, occurred_at)`.
+   event table. Reads `hourly_stats` (O(hours)), `issues`, `events` (PK range walk).
+2. **Device debug** — `device_id` → `events` PK range scan over the window, filtered by device.
 3. **User debug** — `user_id` → `user_devices` → `device_id IN (…)` OR `user_id =`.
 4. **Issue drill-down** — `fingerprint` → events of that issue; exact, not by error type.
 
@@ -12,18 +12,30 @@
 
 | Table | PK | Notes |
 |---|---|---|
-| `events` | `id` identity | `occurred_at`, columns extracted from the envelope, `tags JSONB`, `breadcrumbs JSONB`, `payload JSONB`, `fingerprint` |
+| `events` | `id` = unix_ms×1000+rnd | Time lives in the PK (`internal/pk`); columns extracted from the envelope, `tags JSONB`, `breadcrumbs JSONB`, `payload JSONB`, `fingerprint` |
 | `user_devices` | `(user_id, device_id)` | `last_seen`, refreshed ≤ once/day/pair |
 | `hourly_stats` | `(hour, level)` | `crash_count`, `fatal_count`, `error_count` for error + fatal levels |
 | `issues` | `fingerprint` | title/level/type/screen/platform, status lifecycle, counts, first/last seen + release |
 | `releases` | `version` | crash/error/total counters, first/last seen |
 | `release_health` | `(release, day)` | total/crashed/errored sessions |
 | `alert_types` | `type` | enabled, last_triggered, cooldown_until |
-| `symbol_files` | `id` | `(platform, release, filename)` unique, `data bytea` |
+| `symbol_files` | `(platform, release, filename)` | `data bytea`, `uploaded_at` |
 | `schema_migrations` | `version` | applied migration files |
 
-Indexes: `events(occurred_at DESC, id DESC)`, partial btrees on device/user/error_type/
-release/fingerprint (`… , occurred_at DESC) WHERE col IS NOT NULL`), GIN on `tags`.
+**Indexes: none beyond primary keys.** A write to `events` is one heap row + one btree
+entry. Reads are PK range scans bounded by the query window:
+
+```
+dashboard list   events WHERE id >= lower(since) AND id < upper(until) AND <filters>
+                 ORDER BY id DESC LIMIT 50      -- walks the PK backwards, stops at 50
+issue filters    SELECT DISTINCT fingerprint FROM events WHERE id range AND <filters>
+                 → issues WHERE fingerprint = ANY(…)
+crash spike      COUNT(*) FROM events WHERE id >= lower(now-10m) AND crash
+retention        DELETE … WHERE id < lower(cutoff) LIMIT 5000, repeated
+user → devices   user_devices PK (user_id, device_id)
+```
+
+Cost per event ≈ 1 row + 1 PK entry + the folded aggregate upserts (≈ 0.5 rows/event).
 
 ## Data flow
 
@@ -43,7 +55,7 @@ Ingest (one transaction per envelope):
 Dashboard:
   stats / timeline / volume  → hourly_stats
   issues                     → issues (last_seen in window)
-  events                     → events ORDER BY occurred_at DESC LIMIT 50 OFFSET n
+  events                     → events WHERE id in window ORDER BY id DESC LIMIT 50 OFFSET n
   release picker             → releases active in window
 
 Alerts (every ALERT_INTERVAL, default 10 min):
