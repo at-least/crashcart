@@ -106,6 +106,7 @@ func (e *Event) Frames() []Frame {
 // Session is one Sentry session (release health) item, or one row of a
 // sessions aggregate (then Count > 1 is possible).
 type Session struct {
+	SID         string // session id; updates of one session share it ("" for aggregates)
 	Release     string
 	Environment string
 	Status      string // ok | exited | crashed | errored | abnormal
@@ -553,6 +554,7 @@ func truncate(s string, n int) string {
 // ── sessions ────────────────────────────────────────────────
 
 type rawSession struct {
+	SID     string          `json:"sid"`
 	Status  string          `json:"status"`
 	Release string          `json:"release"`
 	Started json.RawMessage `json:"started"`
@@ -632,5 +634,5 @@ func sessionFrom(s rawSession, now time.Time) (Session, bool) {
 	if ts.IsZero() {
 		ts = now
 	}
-	return Session{Release: rel, Environment: env, Status: s.Status, StartedAt: ts, Count: 1}, true
+	return Session{SID: s.SID, Release: rel, Environment: env, Status: s.Status, StartedAt: ts, Count: 1}, true
 }

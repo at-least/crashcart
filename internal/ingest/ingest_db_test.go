@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -109,6 +110,21 @@ func TestIngestLifecycle(t *testing.T) {
 	if total != 10 || crashed != 1 {
 		t.Fatalf("release health = %d/%d", crashed, total)
 	}
+	// One session reported twice (ok, then crashed) is one row with the final status.
+	started := now.Format(time.RFC3339)
+	one := func(status string) []byte {
+		return []byte(`{}` + "\n" + `{"type":"session"}` + "\n" +
+			`{"sid":"abc-123","status":"` + status + `","started":"` + started + `","attrs":{"release":"1.2"}}` + "\n")
+	}
+	in.Ingest(ctx, p, sentry.Parse(one("ok"), now), now)
+	in.Ingest(ctx, p, sentry.Parse(one("crashed"), now), now)
+	in.Ingest(ctx, p, sentry.Parse(one("ok"), now), now) // late/out-of-order update must not downgrade
+	var rows int64
+	var status string
+	st.Pool.QueryRow(ctx, "SELECT count(*), min(status) FROM sessions WHERE release='1.2'").Scan(&rows, &status)
+	if rows != 1 || status != "crashed" {
+		t.Fatalf("session dedupe: rows=%d status=%s", rows, status)
+	}
 
 	// Hourly stats via the continuous aggregate (real-time).
 	var crashes int64
@@ -148,7 +164,28 @@ func TestIngestHTTP(t *testing.T) {
 	if c := do(fmt.Sprintf("/api/%d/envelope/", p.ID), "Sentry sentry_key=secretkey, sentry_version=7"); c != 200 {
 		t.Fatalf("valid → %d", c)
 	}
-	if c := do(fmt.Sprintf("/api/%d/store/?sentry_key=secretkey", p.ID), ""); c != 200 { // store accepts envelope? no: a bare event
+	if c := do(fmt.Sprintf("/api/%d/store/?sentry_key=secretkey", p.ID), ""); c != 200 {
 		t.Fatalf("store → %d", c)
+	}
+	// sentry-python gzips every envelope.
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	zw.Write(body)
+	zw.Close()
+	req := newRequest("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), gz.Bytes())
+	req.Header.Set("X-Sentry-Auth", "Sentry sentry_key=secretkey")
+	req.Header.Set("Content-Encoding", "gzip")
+	rec := newRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"received":1`) {
+		t.Fatalf("gzip envelope → %d %s", rec.Code, rec.Body.String())
+	}
+	req = newRequest("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), []byte("not gzip"))
+	req.Header.Set("X-Sentry-Auth", "Sentry sentry_key=secretkey")
+	req.Header.Set("Content-Encoding", "gzip")
+	rec = newRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 413 {
+		t.Fatalf("corrupt gzip → %d", rec.Code)
 	}
 }

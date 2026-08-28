@@ -10,10 +10,13 @@
 package ingest
 
 import (
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -122,9 +125,9 @@ func (in *Ingester) serveEnvelope(w http.ResponseWriter, r *http.Request) {
 		in.fail(w, err)
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+	body, err := readBody(w, r)
 	if err != nil {
-		http.Error(w, `{"error":"body too large"}`, http.StatusRequestEntityTooLarge)
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
 	now := time.Now().UTC()
@@ -147,9 +150,9 @@ func (in *Ingester) serveStore(w http.ResponseWriter, r *http.Request) {
 		in.fail(w, err)
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+	body, err := readBody(w, r)
 	if err != nil {
-		http.Error(w, `{"error":"body too large"}`, http.StatusRequestEntityTooLarge)
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
 	now := time.Now().UTC()
@@ -163,6 +166,41 @@ func (in *Ingester) serveStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.ok(w, res, firstEventID(env))
+}
+
+// readBody reads the request body, transparently decoding the
+// Content-Encoding SDKs use (sentry-python gzips every envelope; others
+// send deflate). Both the wire size and the decoded size are capped at
+// MaxBody so a compression bomb cannot exhaust memory.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	var rd io.Reader = http.MaxBytesReader(w, r.Body, MaxBody)
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+	case "gzip":
+		gz, err := gzip.NewReader(rd)
+		if err != nil {
+			return nil, errors.New("invalid gzip body")
+		}
+		defer gz.Close()
+		rd = gz
+	case "deflate":
+		zr, err := zlib.NewReader(rd)
+		if err != nil {
+			return nil, errors.New("invalid deflate body")
+		}
+		defer zr.Close()
+		rd = zr
+	default:
+		return nil, errors.New("unsupported content-encoding")
+	}
+	body, err := io.ReadAll(io.LimitReader(rd, MaxBody+1))
+	if err != nil {
+		return nil, errors.New("body too large or truncated")
+	}
+	if len(body) > MaxBody {
+		return nil, errors.New("body too large")
+	}
+	return body, nil
 }
 
 func firstEventID(env sentry.Envelope) string {
@@ -188,12 +226,12 @@ func (in *Ingester) fail(w http.ResponseWriter, err error) {
 
 // prepared is one event after analysis, before the write.
 type prepared struct {
-	ev          *sentry.Event
-	frames      []sentry.Frame // symbolicated when inline succeeded
+	ev           *sentry.Event
+	frames       []sentry.Frame // symbolicated when inline succeeded
 	symbolicated bool
-	fingerprint string
-	location    string
-	store       bool
+	fingerprint  string
+	location     string
+	store        bool
 }
 
 // Ingest writes one parsed envelope for project p.
@@ -321,7 +359,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 
 		for _, s := range env.Sessions {
 			if err := q.InsertSession(ctx, sqlc.InsertSessionParams{
-				ID: pk.New(s.StartedAt), ProjectID: p.ID, Release: s.Release, Environment: nilIfEmpty(s.Environment),
+				ID: sessionID(s), ProjectID: p.ID, Release: s.Release, Environment: nilIfEmpty(s.Environment),
 				Status: s.Status, Count: int32(max(s.Count, 1)),
 			}); err != nil {
 				return fmt.Errorf("insert session: %w", err)
@@ -343,6 +381,18 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 // the row is a regression and its updated_at is fresh. Callers already
 // checked the timestamp; this exists to keep the intent readable.
 func regressedNow(row sqlc.UpsertIssueRow) bool { return row.Status == "regression" }
+
+// sessionID makes every update of one session (same sid, same start) land
+// on the same row: the random low part of the id is replaced by a hash of
+// the sid, so the upsert in InsertSession dedupes ok → exited/crashed.
+func sessionID(s sentry.Session) int64 {
+	if s.SID == "" {
+		return pk.New(s.StartedAt)
+	}
+	h := fnv.New32a()
+	h.Write([]byte(s.SID))
+	return pk.Lower(s.StartedAt) + int64(h.Sum32()%pk.Scale)
+}
 
 func alertJob(projectID int64, typ, fp string) sqlc.EnqueueJobParams {
 	args, _ := json.Marshal(map[string]any{"type": typ, "fingerprint": fp})

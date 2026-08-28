@@ -11,7 +11,9 @@ import (
 
 const insertSession = `-- name: InsertSession :exec
 INSERT INTO sessions (id, project_id, release, environment, status, count)
-VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (id) DO UPDATE SET
+    status = CASE WHEN sessions.status = 'ok' OR EXCLUDED.status <> 'ok' THEN EXCLUDED.status ELSE sessions.status END
 `
 
 type InsertSessionParams struct {
@@ -23,6 +25,8 @@ type InsertSessionParams struct {
 	Count       int32   `json:"count"`
 }
 
+// Updates of one session (same sid → same id, see ingest) overwrite the
+// status, except that a terminal status is never downgraded to 'ok'.
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
 	_, err := q.db.Exec(ctx, insertSession,
 		arg.ID,
