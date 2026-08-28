@@ -10,16 +10,19 @@ import (
 )
 
 const crashSpikeInputs = `-- name: CrashSpikeInputs :one
-SELECT COALESCE(sum(crashes) FILTER (WHERE bucket >= $3), 0)::bigint AS recent,
-       COALESCE(sum(crashes) FILTER (WHERE bucket < $3), 0)::bigint AS baseline
-FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2
+SELECT (SELECT count(*) FROM events e
+         WHERE e.project_id = $1::bigint AND e.id >= $2::bigint
+           AND (level = 'fatal' OR handled = false))::bigint AS recent,
+       COALESCE((SELECT sum(h.crashes) FROM event_stats_hourly h
+                  WHERE h.project_id = $1::bigint
+                    AND h.bucket >= $3::bigint AND h.bucket < $4::bigint), 0)::bigint AS baseline
 `
 
 type CrashSpikeInputsParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
-	Bucket_2  int64 `json:"bucket_2"`
+	ProjectID    int64 `json:"project_id"`
+	RecentFrom   int64 `json:"recent_from"`
+	BaselineFrom int64 `json:"baseline_from"`
+	BaselineTo   int64 `json:"baseline_to"`
 }
 
 type CrashSpikeInputsRow struct {
@@ -27,9 +30,15 @@ type CrashSpikeInputsRow struct {
 	Baseline int64 `json:"baseline"`
 }
 
-// Crashes in the last hour vs. the hourly mean of the 24 h before it.
+// Crashes in the exact last hour (from the raw table, so the top of the
+// hour does not matter) vs. the 24 full hourly buckets before that hour.
 func (q *Queries) CrashSpikeInputs(ctx context.Context, arg CrashSpikeInputsParams) (CrashSpikeInputsRow, error) {
-	row := q.db.QueryRow(ctx, crashSpikeInputs, arg.ProjectID, arg.Bucket, arg.Bucket_2)
+	row := q.db.QueryRow(ctx, crashSpikeInputs,
+		arg.ProjectID,
+		arg.RecentFrom,
+		arg.BaselineFrom,
+		arg.BaselineTo,
+	)
 	var i CrashSpikeInputsRow
 	err := row.Scan(&i.Recent, &i.Baseline)
 	return i, err

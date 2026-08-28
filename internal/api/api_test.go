@@ -21,6 +21,7 @@ import (
 	"github.com/newlix/crashcart/internal/ingest"
 	"github.com/newlix/crashcart/internal/sentry"
 	"github.com/newlix/crashcart/internal/store"
+	"github.com/newlix/crashcart/internal/symbolicate"
 	"github.com/newlix/crashcart/internal/testdb"
 )
 
@@ -38,7 +39,7 @@ func newEnv(t *testing.T) *env {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	cfg := config.Config{APIKeys: []string{apiKey}, CORSOrigin: "*", Addr: ":8080"}
 	mux := http.NewServeMux()
-	(&Handler{Store: st, Cfg: cfg, Log: log}).Register(mux)
+	(&Handler{Store: st, Cfg: cfg, Log: log, Symbols: &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient("")}}).Register(mux)
 	return &env{t: t, st: st, mux: mux, in: &ingest.Ingester{Store: st, Cfg: cfg, Log: log}}
 }
 

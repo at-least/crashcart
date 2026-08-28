@@ -1,16 +1,11 @@
 package api
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"path"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,113 +15,17 @@ import (
 )
 
 // MaxSymbolUpload caps one symbol upload request (and one zip entry).
-const MaxSymbolUpload = 50 << 20
+const MaxSymbolUpload = symbolicate.MaxUpload
 
-var symbolKinds = map[string]bool{"proguard": true, "sourcemap": true, "dsym": true}
-
-// uuidRe matches the `<uuid>.txt` names sentry-cli gives ProGuard mappings.
-var uuidRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-
-// detectKind guesses a symbol file kind from its name and first bytes,
-// defaulting to dsym for opaque binaries.
-func detectKind(filename string, head []byte) string {
-	if k := symbolicate.DetectKind(filename, head); k != "" {
-		return k
-	}
-	return "dsym"
-}
-
-// debugIDFor derives a debug id when the filename carries one
-// (sentry-cli names ProGuard mappings `<uuid>.txt`).
-func debugIDFor(kind, filename string) *string {
-	base := path.Base(filename)
-	stem := strings.TrimSuffix(base, path.Ext(base))
-	if kind == "proguard" && uuidRe.MatchString(stem) {
-		s := strings.ToLower(stem)
-		return &s
-	}
-	return nil
-}
-
-// storeSymbolFile stores one file (or every entry of a zip) and returns the
-// rows written. kind == "" means detect per file.
+// storeSymbolFile stores one file (or every entry of a zip) through the
+// shared symbolicate.Service path; caller mistakes become 400s.
 func (h *Handler) storeSymbolFile(ctx context.Context, projectID int64, release, kind, filename string, data []byte) ([]sqlc.UpsertSymbolFileRow, error) {
-	if len(data) == 0 {
-		return nil, badRequest("empty file")
+	rows, err := h.Symbols.Upload(ctx, projectID, release, kind, filename, data)
+	var ue symbolicate.UploadError
+	if errors.As(err, &ue) {
+		return nil, badRequest(string(ue))
 	}
-	if kind != "" && !symbolKinds[kind] {
-		return nil, badRequest("kind must be proguard, sourcemap or dsym")
-	}
-	var rows []sqlc.UpsertSymbolFileRow
-	if isZip(filename, data) {
-		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-		if err != nil {
-			return nil, badRequest("invalid zip: " + err.Error())
-		}
-		for _, f := range zr.File {
-			name := path.Clean("/" + f.Name)[1:]
-			if f.FileInfo().IsDir() || name == "" || strings.HasPrefix(name, "__MACOSX/") || strings.HasPrefix(path.Base(name), ".") {
-				continue
-			}
-			if f.UncompressedSize64 > MaxSymbolUpload {
-				return nil, badRequest("zip entry too large: " + name)
-			}
-			rc, err := f.Open()
-			if err != nil {
-				return nil, badRequest("invalid zip entry: " + name)
-			}
-			content, err := io.ReadAll(io.LimitReader(rc, MaxSymbolUpload+1))
-			rc.Close()
-			if err != nil {
-				return nil, err
-			}
-			if len(content) > MaxSymbolUpload {
-				return nil, badRequest("zip entry too large: " + name)
-			}
-			if len(content) == 0 {
-				continue
-			}
-			row, err := h.upsertSymbol(ctx, projectID, release, kind, name, content)
-			if err != nil {
-				return nil, err
-			}
-			rows = append(rows, row)
-		}
-		if len(rows) == 0 {
-			return nil, badRequest("zip contains no files")
-		}
-	} else {
-		row, err := h.upsertSymbol(ctx, projectID, release, kind, path.Base(filename), data)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, row)
-	}
-	// Re-queue the release's unsymbolicated events and drop cached mappings.
-	if release != "" {
-		args, _ := json.Marshal(map[string]string{"release": release})
-		if err := h.Store.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "resymbolicate", ProjectID: projectID, Args: args, RunAfter: time.Now()}); err != nil {
-			return nil, err
-		}
-	}
-	if h.Symbols != nil {
-		h.Symbols.Invalidate(projectID, release)
-	}
-	return rows, nil
-}
-
-func (h *Handler) upsertSymbol(ctx context.Context, projectID int64, release, kind, name string, data []byte) (sqlc.UpsertSymbolFileRow, error) {
-	if kind == "" {
-		kind = detectKind(name, data[:min(len(data), 4096)])
-	}
-	return h.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
-		ProjectID: projectID, Kind: kind, Release: release, DebugID: debugIDFor(kind, name),
-		Filename: name, Size: int64(len(data)), Data: data,
-	})
-}
-
-func isZip(filename string, data []byte) bool {
-	return bytes.HasPrefix(data, []byte("PK\x03\x04")) || strings.HasSuffix(strings.ToLower(filename), ".zip")
+	return rows, err
 }
 
 // readUpload parses a multipart body (bounded by MaxSymbolUpload) and

@@ -5,18 +5,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/a-h/templ"
 	"io"
 	"net/http"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/a-h/templ"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/newlix/crashcart/internal/symbolicate"
 )
 
 // AlertTypes are the rule types in display order (alert_rules CHECK).
@@ -231,16 +232,6 @@ func (w *Web) settingsChannelDelete(rw http.ResponseWriter, r *http.Request) {
 const MaxSymbolUpload = 256 << 20
 
 // symbolKind maps a file name to the symbol_files.kind.
-func symbolKind(name string) string {
-	switch strings.ToLower(path.Ext(name)) {
-	case ".txt":
-		return "proguard"
-	case ".map":
-		return "sourcemap"
-	}
-	return "dsym"
-}
-
 func (w *Web) settingsSymbolUpload(rw http.ResponseWriter, r *http.Request) {
 	p, ok := w.project(rw, r)
 	if !ok {
@@ -265,13 +256,12 @@ func (w *Web) settingsSymbolUpload(rw http.ResponseWriter, r *http.Request) {
 	release := strings.TrimSpace(r.FormValue("release"))
 	name := path.Base(hdr.Filename)
 	ctx := r.Context()
-	if _, err := w.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: symbolKind(name), Release: release,
-		Filename: name, Size: int64(len(data)), Data: data}); err != nil {
-		w.fail(rw, r, err)
-		return
-	}
-	args, _ := json.Marshal(map[string]string{"release": release})
-	if err := w.Store.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "resymbolicate", ProjectID: p.ID, Args: args, RunAfter: time.Now()}); err != nil {
+	if _, err := w.Symbols.Upload(ctx, p.ID, release, "", name, data); err != nil {
+		var ue symbolicate.UploadError
+		if errors.As(err, &ue) {
+			http.Error(rw, string(ue), http.StatusBadRequest)
+			return
+		}
 		w.fail(rw, r, err)
 		return
 	}

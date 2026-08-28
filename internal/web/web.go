@@ -31,13 +31,15 @@ import (
 	"github.com/newlix/crashcart/internal/config"
 	"github.com/newlix/crashcart/internal/db/sqlc"
 	"github.com/newlix/crashcart/internal/store"
+	"github.com/newlix/crashcart/internal/symbolicate"
 )
 
 // Web holds the viewer's dependencies.
 type Web struct {
-	Store *store.Store
-	Cfg   config.Config
-	Log   *slog.Logger
+	Store   *store.Store
+	Cfg     config.Config
+	Log     *slog.Logger
+	Symbols *symbolicate.Service
 }
 
 // Register mounts the HTML routes and /static on mux.

@@ -15,6 +15,7 @@ import (
 	"github.com/newlix/crashcart/internal/db/sqlc"
 	"github.com/newlix/crashcart/internal/ingest"
 	"github.com/newlix/crashcart/internal/sentry"
+	"github.com/newlix/crashcart/internal/symbolicate"
 	"github.com/newlix/crashcart/internal/testdb"
 )
 
@@ -39,7 +40,7 @@ func setup(t *testing.T) (*Web, sqlc.Project, *http.ServeMux) {
 	if err != nil || res.Stored != 1 || res.Sessions != 1 {
 		t.Fatalf("ingest: %+v %v", res, err)
 	}
-	w := &Web{Store: st, Cfg: config.Config{CustomTags: []string{"build"}}, Log: slog.Default()}
+	w := &Web{Store: st, Cfg: config.Config{CustomTags: []string{"build"}}, Log: slog.Default(), Symbols: &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient("")}}
 	mux := http.NewServeMux()
 	w.Register(mux)
 	return w, p, mux

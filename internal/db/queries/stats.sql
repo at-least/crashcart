@@ -35,8 +35,11 @@ WHERE project_id = $1 AND release = $2 AND bucket >= $3 AND bucket < $4
 GROUP BY bucket ORDER BY bucket;
 
 -- name: CrashSpikeInputs :one
--- Crashes in the last hour vs. the hourly mean of the 24 h before it.
-SELECT COALESCE(sum(crashes) FILTER (WHERE bucket >= $3), 0)::bigint AS recent,
-       COALESCE(sum(crashes) FILTER (WHERE bucket < $3), 0)::bigint AS baseline
-FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2;
+-- Crashes in the exact last hour (from the raw table, so the top of the
+-- hour does not matter) vs. the 24 full hourly buckets before that hour.
+SELECT (SELECT count(*) FROM events e
+         WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.id >= sqlc.arg(recent_from)::bigint
+           AND (level = 'fatal' OR handled = false))::bigint AS recent,
+       COALESCE((SELECT sum(h.crashes) FROM event_stats_hourly h
+                  WHERE h.project_id = sqlc.arg(project_id)::bigint
+                    AND h.bucket >= sqlc.arg(baseline_from)::bigint AND h.bucket < sqlc.arg(baseline_to)::bigint), 0)::bigint AS baseline;

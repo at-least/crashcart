@@ -1,0 +1,133 @@
+package symbolicate
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"path"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/newlix/crashcart/internal/db/sqlc"
+)
+
+// MaxUpload caps one symbol upload (and one zip entry).
+const MaxUpload = 50 << 20
+
+// UploadError is a caller mistake (bad kind, empty or malformed file);
+// HTTP handlers map it to 400.
+type UploadError string
+
+func (e UploadError) Error() string { return string(e) }
+
+var kinds = map[string]bool{KindProGuard: true, KindSourceMap: true, KindDSYM: true}
+
+// uuidRe matches the `<uuid>.txt` names sentry-cli gives ProGuard mappings.
+var uuidRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// Upload stores one symbol file — or every entry of a zip — for a release,
+// detecting the kind per file when kind is "", deriving debug ids (Mach-O
+// LC_UUID for dSYMs, `<uuid>.txt` for ProGuard), then re-queues the
+// release's unsymbolicated events and drops cached mappings. This is the
+// single write path used by the JSON API, the sentry-cli endpoint and the
+// viewer.
+func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte) ([]sqlc.UpsertSymbolFileRow, error) {
+	if len(data) == 0 {
+		return nil, UploadError("empty file")
+	}
+	if kind != "" && !kinds[kind] {
+		return nil, UploadError("kind must be proguard, sourcemap or dsym")
+	}
+	var rows []sqlc.UpsertSymbolFileRow
+	if isZip(filename, data) {
+		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			return nil, UploadError("invalid zip: " + err.Error())
+		}
+		for _, f := range zr.File {
+			name := path.Clean("/" + f.Name)[1:]
+			if f.FileInfo().IsDir() || name == "" || strings.HasPrefix(name, "__MACOSX/") || strings.HasPrefix(path.Base(name), ".") {
+				continue
+			}
+			if f.UncompressedSize64 > MaxUpload {
+				return nil, UploadError("zip entry too large: " + name)
+			}
+			rc, err := f.Open()
+			if err != nil {
+				return nil, UploadError("invalid zip entry: " + name)
+			}
+			content, err := io.ReadAll(io.LimitReader(rc, MaxUpload+1))
+			rc.Close()
+			if err != nil {
+				return nil, err
+			}
+			if len(content) > MaxUpload {
+				return nil, UploadError("zip entry too large: " + name)
+			}
+			if len(content) == 0 {
+				continue
+			}
+			row, err := s.upsert(ctx, projectID, release, kind, name, content)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, row)
+		}
+		if len(rows) == 0 {
+			return nil, UploadError("zip contains no files")
+		}
+	} else {
+		row, err := s.upsert(ctx, projectID, release, kind, path.Base(filename), data)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	if release != "" {
+		args, _ := json.Marshal(map[string]string{"release": release})
+		if err := s.Store.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "resymbolicate", ProjectID: projectID, Args: args, RunAfter: time.Now()}); err != nil {
+			return nil, err
+		}
+	}
+	s.Invalidate(projectID, release)
+	return rows, nil
+}
+
+func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte) (sqlc.UpsertSymbolFileRow, error) {
+	if kind == "" {
+		kind = DetectKind(name, data[:min(len(data), 4096)])
+		if kind == "" {
+			kind = KindDSYM
+		}
+	}
+	return s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
+		ProjectID: projectID, Kind: kind, Release: release, DebugID: DebugIDFor(kind, name, data),
+		Filename: name, Size: int64(len(data)), Data: data,
+	})
+}
+
+// DebugIDFor derives the debug id of a symbol file: the Mach-O LC_UUID for
+// dSYM binaries, the `<uuid>` stem sentry-cli gives ProGuard mappings.
+func DebugIDFor(kind, filename string, data []byte) *string {
+	base := path.Base(filename)
+	stem := strings.TrimSuffix(base, path.Ext(base))
+	switch kind {
+	case KindProGuard:
+		if uuidRe.MatchString(stem) {
+			s := strings.ToLower(stem)
+			return &s
+		}
+	case KindDSYM:
+		if id, ok := MachOUUID(data); ok {
+			return &id
+		}
+	}
+	return nil
+}
+
+func isZip(filename string, data []byte) bool {
+	return bytes.HasPrefix(data, []byte("PK\x03\x04")) || strings.HasSuffix(strings.ToLower(filename), ".zip")
+}

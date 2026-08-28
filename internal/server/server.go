@@ -30,7 +30,7 @@ func New(d Deps) http.Handler {
 	mux.Handle("POST /api/{project}/store/{$}", in.Handler())
 	mux.Handle("POST /api/{project}/store", in.Handler())
 	(&api.Handler{Store: d.Store, Cfg: d.Cfg, Symbols: d.Symbols, Log: d.Log}).Register(mux)
-	(&web.Web{Store: d.Store, Cfg: d.Cfg, Log: d.Log}).Register(mux)
+	(&web.Web{Store: d.Store, Cfg: d.Cfg, Log: d.Log, Symbols: d.Symbols}).Register(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		if err := d.Store.Pool.Ping(r.Context()); err != nil {
 			http.Error(w, `{"status":"db unavailable"}`, http.StatusServiceUnavailable)
