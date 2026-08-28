@@ -5,55 +5,77 @@ import (
 	"testing"
 )
 
-func fakeMachO(magic uint32, bo binary.ByteOrder, withUUID bool) []byte {
-	hdr := 28
-	if magic == machoMagic64 {
-		hdr = 32
+// fakeMachO builds a minimal 64-bit image: header, one LC_SEGMENT_64-sized
+// dummy command and (optionally) an LC_UUID.
+func fakeMachO(cpu uint32, uuid []byte) []byte {
+	b := make([]byte, 32)
+	binary.LittleEndian.PutUint32(b, 0xfeedfacf)
+	binary.LittleEndian.PutUint32(b[4:], cpu)
+	ncmds, size := uint32(1), uint32(16)
+	if uuid != nil {
+		ncmds, size = 2, 40
 	}
-	b := make([]byte, hdr)
-	bo.PutUint32(b, magic)
-	cmds := uint32(1)
-	if !withUUID {
-		cmds = 0
-	}
-	bo.PutUint32(b[16:], cmds+1) // +1 for a dummy segment command first
+	binary.LittleEndian.PutUint32(b[16:], ncmds)
+	binary.LittleEndian.PutUint32(b[20:], size)
 	seg := make([]byte, 16)
-	bo.PutUint32(seg, 0x19) // LC_SEGMENT
-	bo.PutUint32(seg[4:], 16)
+	binary.LittleEndian.PutUint32(seg, 0x1d) // LC_ID_DYLINKER-ish: unknown to debug/macho, kept raw
+	binary.LittleEndian.PutUint32(seg[4:], 16)
 	b = append(b, seg...)
-	if withUUID {
+	if uuid != nil {
 		lc := make([]byte, 24)
-		bo.PutUint32(lc, lcUUID)
-		bo.PutUint32(lc[4:], 24)
-		copy(lc[8:], []byte{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88})
+		binary.LittleEndian.PutUint32(lc, uint32(lcUUID))
+		binary.LittleEndian.PutUint32(lc[4:], 24)
+		copy(lc[8:], uuid)
 		b = append(b, lc...)
 	}
 	return b
 }
 
+func fat(slices ...[]byte) []byte {
+	hdr := make([]byte, 8+20*len(slices))
+	binary.BigEndian.PutUint32(hdr, 0xcafebabe)
+	binary.BigEndian.PutUint32(hdr[4:], uint32(len(slices)))
+	out := hdr
+	off := len(hdr)
+	for i, s := range slices {
+		e := 8 + i*20
+		binary.BigEndian.PutUint32(out[e:], binary.LittleEndian.Uint32(s[4:])) // cputype
+		binary.BigEndian.PutUint32(out[e+8:], uint32(off))
+		binary.BigEndian.PutUint32(out[e+12:], uint32(len(s)))
+		off += len(s)
+	}
+	for _, s := range slices {
+		out = append(out, s...)
+	}
+	return out
+}
+
+var (
+	uuidA = []byte{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	uuidB = []byte{0xaa, 0xaa, 0xaa, 0xaa, 0xbb, 0xbb, 0xcc, 0xcc, 0xdd, 0xdd, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee}
+)
+
 func TestMachOUUID(t *testing.T) {
-	want := "12345678-9abc-def0-1122-334455667788"
-	if id, ok := MachOUUID(fakeMachO(machoMagic64, binary.LittleEndian, true)); !ok || id != want {
-		t.Fatalf("64-bit LE: %q %v", id, ok)
+	x86, arm := uint32(0x01000007), uint32(0x0100000c)
+	if id, ok := MachOUUID(fakeMachO(x86, uuidA)); !ok || id != "12345678-9abc-def0-1122-334455667788" {
+		t.Fatalf("thin: %q %v", id, ok)
 	}
-	if id, ok := MachOUUID(fakeMachO(machoMagic32, binary.BigEndian, true)); !ok || id != want {
-		t.Fatalf("32-bit BE: %q %v", id, ok)
-	}
-	if _, ok := MachOUUID(fakeMachO(machoMagic64, binary.LittleEndian, false)); ok {
+	if _, ok := MachOUUID(fakeMachO(x86, nil)); ok {
 		t.Fatal("no LC_UUID should not resolve")
 	}
 	if _, ok := MachOUUID([]byte("not a binary at all")); ok {
 		t.Fatal("garbage should not resolve")
 	}
-	// Fat: header + one arch entry pointing at an embedded thin image.
-	thin := fakeMachO(machoMagic64, binary.LittleEndian, true)
-	fat := make([]byte, 8+20)
-	binary.BigEndian.PutUint32(fat, fatMagic)
-	binary.BigEndian.PutUint32(fat[4:], 1)
-	binary.BigEndian.PutUint32(fat[8+8:], uint32(len(fat)))
-	binary.BigEndian.PutUint32(fat[8+12:], uint32(len(thin)))
-	fat = append(fat, thin...)
-	if id, ok := MachOUUID(fat); !ok || id != want {
-		t.Fatalf("fat: %q %v", id, ok)
+	// Fat: arm64 slice preferred over an earlier x86_64 one.
+	if id, ok := MachOUUID(fat(fakeMachO(x86, uuidA), fakeMachO(arm, uuidB))); !ok || id != "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" {
+		t.Fatalf("fat arm64 preference: %q %v", id, ok)
+	}
+	// A fat header whose slice points back at the whole file must not loop.
+	self := make([]byte, 28)
+	binary.BigEndian.PutUint32(self, 0xcafebabe)
+	binary.BigEndian.PutUint32(self[4:], 1)
+	binary.BigEndian.PutUint32(self[8+12:], 28)
+	if _, ok := MachOUUID(self); ok {
+		t.Fatal("self-referencing fat header should not resolve")
 	}
 }

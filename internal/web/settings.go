@@ -228,16 +228,12 @@ func (w *Web) settingsChannelDelete(rw http.ResponseWriter, r *http.Request) {
 	redirect(rw, r, state(r).Href("/settings"))
 }
 
-// MaxSymbolUpload bounds one symbol file upload.
-const MaxSymbolUpload = 256 << 20
-
-// symbolKind maps a file name to the symbol_files.kind.
 func (w *Web) settingsSymbolUpload(rw http.ResponseWriter, r *http.Request) {
 	p, ok := w.project(rw, r)
 	if !ok {
 		return
 	}
-	r.Body = http.MaxBytesReader(rw, r.Body, MaxSymbolUpload)
+	r.Body = http.MaxBytesReader(rw, r.Body, symbolicate.MaxUpload+1<<20)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(rw, "multipart form with a file is required", http.StatusBadRequest)
 		return
@@ -257,11 +253,6 @@ func (w *Web) settingsSymbolUpload(rw http.ResponseWriter, r *http.Request) {
 	name := path.Base(hdr.Filename)
 	ctx := r.Context()
 	if _, err := w.Symbols.Upload(ctx, p.ID, release, "", name, data); err != nil {
-		var ue symbolicate.UploadError
-		if errors.As(err, &ue) {
-			http.Error(rw, string(ue), http.StatusBadRequest)
-			return
-		}
 		w.fail(rw, r, err)
 		return
 	}

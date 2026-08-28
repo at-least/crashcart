@@ -127,7 +127,7 @@ func (f EventFilter) where() (string, []any) {
 		add("message ILIKE ?", "%"+escapeLike(f.Query)+"%")
 	}
 	if f.Crash {
-		w = append(w, "(level = 'fatal' OR handled = false)")
+		w = append(w, "crashcart_is_crash(level, handled)")
 	}
 	for k, v := range f.Tags {
 		args = append(args, k, v)

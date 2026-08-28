@@ -38,6 +38,9 @@ func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, fi
 	if len(data) == 0 {
 		return nil, UploadError("empty file")
 	}
+	if len(data) > MaxUpload {
+		return nil, UploadError("upload exceeds 50 MB")
+	}
 	if kind != "" && !kinds[kind] {
 		return nil, UploadError("kind must be proguard, sourcemap or dsym")
 	}
@@ -48,7 +51,7 @@ func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, fi
 			return nil, UploadError("invalid zip: " + err.Error())
 		}
 		for _, f := range zr.File {
-			name := path.Clean("/" + f.Name)[1:]
+			name := path.Clean("/" + strings.ReplaceAll(f.Name, "\\", "/"))[1:]
 			if f.FileInfo().IsDir() || name == "" || strings.HasPrefix(name, "__MACOSX/") || strings.HasPrefix(path.Base(name), ".") {
 				continue
 			}
@@ -70,17 +73,28 @@ func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, fi
 			if len(content) == 0 {
 				continue
 			}
-			row, err := s.upsert(ctx, projectID, release, kind, name, content)
+			k := kind
+			if k == "" {
+				if k = classify(name, content); k == "" {
+					continue // Info.plist, Relocations/*.yml, … — not a symbol file
+				}
+			}
+			row, err := s.upsert(ctx, projectID, release, k, name, content)
 			if err != nil {
 				return nil, err
 			}
 			rows = append(rows, row)
 		}
 		if len(rows) == 0 {
-			return nil, UploadError("zip contains no files")
+			return nil, UploadError("zip contains no symbol files")
 		}
 	} else {
-		row, err := s.upsert(ctx, projectID, release, kind, path.Base(filename), data)
+		if kind == "" {
+			if kind = classify(filename, data); kind == "" {
+				return nil, UploadError("unrecognized symbol file (expected a ProGuard mapping, a source map or a Mach-O dSYM)")
+			}
+		}
+		row, err := s.upsert(ctx, projectID, release, kind, baseName(filename), data)
 		if err != nil {
 			return nil, err
 		}
@@ -96,13 +110,25 @@ func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, fi
 	return rows, nil
 }
 
-func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte) (sqlc.UpsertSymbolFileRow, error) {
-	if kind == "" {
-		kind = DetectKind(name, data[:min(len(data), 4096)])
-		if kind == "" {
-			kind = KindDSYM
+// classify is DetectKind plus a content check for binaries: an opaque file
+// only counts as a dSYM when it actually parses as Mach-O.
+func classify(name string, data []byte) string {
+	k := DetectKind(name, data[:min(len(data), 4096)])
+	if k == KindDSYM || k == "" {
+		if IsMachO(data) {
+			return KindDSYM
+		}
+		if isZip(name, data) {
+			return "" // nested archives are not expanded
+		}
+		if k == KindDSYM && !strings.HasSuffix(strings.ToLower(name), ".zip") {
+			return "" // named like a dSYM but not Mach-O
 		}
 	}
+	return k
+}
+
+func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte) (sqlc.UpsertSymbolFileRow, error) {
 	return s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
 		ProjectID: projectID, Kind: kind, Release: release, DebugID: DebugIDFor(kind, name, data),
 		Filename: name, Size: int64(len(data)), Data: data,
@@ -112,7 +138,7 @@ func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, na
 // DebugIDFor derives the debug id of a symbol file: the Mach-O LC_UUID for
 // dSYM binaries, the `<uuid>` stem sentry-cli gives ProGuard mappings.
 func DebugIDFor(kind, filename string, data []byte) *string {
-	base := path.Base(filename)
+	base := baseName(filename)
 	stem := strings.TrimSuffix(base, path.Ext(base))
 	switch kind {
 	case KindProGuard:

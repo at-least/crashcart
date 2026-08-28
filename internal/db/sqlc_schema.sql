@@ -1,3 +1,6 @@
+CREATE FUNCTION crashcart_is_crash(level TEXT, handled BOOLEAN) RETURNS BOOLEAN
+    LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
+
 -- sqlc-only mirror of internal/db/migrations (no TimescaleDB DDL).
 -- Continuous aggregates appear here as plain tables so queries type-check.
 -- Keep in sync with the migrations.

@@ -12,6 +12,11 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE OR REPLACE FUNCTION crashcart_now() RETURNS BIGINT
     LANGUAGE SQL STABLE AS $$ SELECT (extract(epoch FROM now()) * 1000000)::bigint $$;
 
+-- The one definition of "crash": fatal, or an unhandled exception. Used by
+-- the continuous aggregates, the spike check and the event filters.
+CREATE FUNCTION crashcart_is_crash(level TEXT, handled BOOLEAN) RETURNS BOOLEAN
+    LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
+
 -- ── projects ───────────────────────────────────────────────────────────
 
 CREATE TABLE projects (
@@ -57,6 +62,7 @@ SELECT set_integer_now_func('events', 'crashcart_now');
 CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, id DESC);
 CREATE INDEX events_project_user ON events (project_id, user_id, id DESC) WHERE user_id IS NOT NULL;
 CREATE INDEX events_project_id ON events (project_id, id DESC);
+CREATE INDEX events_project_crash ON events (project_id, id DESC) WHERE crashcart_is_crash(level, handled);
 ALTER TABLE events SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'project_id, fingerprint',
@@ -179,7 +185,7 @@ SELECT time_bucket(3600000000::bigint, id) AS bucket,
        COALESCE(platform, '') AS platform,
        level,
        count(*)                                                        AS events,
-       count(*) FILTER (WHERE level = 'fatal' OR handled = false)      AS crashes,
+       count(*) FILTER (WHERE crashcart_is_crash(level, handled))        AS crashes,
        count(*) FILTER (WHERE level = 'error' AND handled IS NOT false) AS errors
 FROM events
 GROUP BY 1, 2, 3, 4, 5

@@ -138,12 +138,13 @@ func (n *Notifier) checkSpike(ctx context.Context, p sqlc.Project) error {
 		return err
 	}
 	// "recent" is the exact last hour from the raw table; the baseline is
-	// the 24 full hourly buckets before the bucket that hour starts in.
+	// the ~24 hourly buckets before it.
 	now := time.Now()
 	recentFrom := pk.Lower(now.Add(-time.Hour))
-	baselineTo := pk.Bucket(recentFrom, pk.Hour)
+	// Bucket keys are start times, so `bucket < recentFrom` includes the
+	// partial bucket the recent hour starts in: no gap between the two.
 	in, err := n.Store.CrashSpikeInputs(ctx, sqlc.CrashSpikeInputsParams{
-		ProjectID: p.ID, RecentFrom: recentFrom, BaselineFrom: baselineTo - 24*pk.Hour, BaselineTo: baselineTo,
+		ProjectID: p.ID, RecentFrom: recentFrom, BaselineFrom: pk.Bucket(recentFrom, pk.Hour) - 24*pk.Hour, BaselineTo: recentFrom,
 	})
 	if err != nil {
 		return err

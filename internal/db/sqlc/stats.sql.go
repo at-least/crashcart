@@ -12,7 +12,7 @@ import (
 const crashSpikeInputs = `-- name: CrashSpikeInputs :one
 SELECT (SELECT count(*) FROM events e
          WHERE e.project_id = $1::bigint AND e.id >= $2::bigint
-           AND (level = 'fatal' OR handled = false))::bigint AS recent,
+           AND crashcart_is_crash(e.level, e.handled))::bigint AS recent,
        COALESCE((SELECT sum(h.crashes) FROM event_stats_hourly h
                   WHERE h.project_id = $1::bigint
                     AND h.bucket >= $3::bigint AND h.bucket < $4::bigint), 0)::bigint AS baseline

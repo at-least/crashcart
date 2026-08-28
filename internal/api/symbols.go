@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -16,17 +15,6 @@ import (
 
 // MaxSymbolUpload caps one symbol upload request (and one zip entry).
 const MaxSymbolUpload = symbolicate.MaxUpload
-
-// storeSymbolFile stores one file (or every entry of a zip) through the
-// shared symbolicate.Service path; caller mistakes become 400s.
-func (h *Handler) storeSymbolFile(ctx context.Context, projectID int64, release, kind, filename string, data []byte) ([]sqlc.UpsertSymbolFileRow, error) {
-	rows, err := h.Symbols.Upload(ctx, projectID, release, kind, filename, data)
-	var ue symbolicate.UploadError
-	if errors.As(err, &ue) {
-		return nil, badRequest(string(ue))
-	}
-	return rows, err
-}
 
 // readUpload parses a multipart body (bounded by MaxSymbolUpload) and
 // returns the `file` part.
@@ -78,7 +66,7 @@ func (h *Handler) uploadSymbols(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	release := strings.TrimSpace(r.FormValue("release"))
-	rows, err := h.storeSymbolFile(r.Context(), p.ID, release, strings.TrimSpace(r.FormValue("kind")), fh.Filename, data)
+	rows, err := h.Symbols.Upload(r.Context(), p.ID, release, strings.TrimSpace(r.FormValue("kind")), fh.Filename, data)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -155,7 +143,7 @@ func (h *Handler) sentryUploadDSYMs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	release := strings.TrimSpace(r.FormValue("release"))
-	rows, err := h.storeSymbolFile(r.Context(), p.ID, release, "", fh.Filename, data)
+	rows, err := h.Symbols.Upload(r.Context(), p.ID, release, "", fh.Filename, data)
 	if err != nil {
 		h.fail(w, err)
 		return

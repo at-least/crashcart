@@ -469,7 +469,7 @@ func TestSymbols(t *testing.T) {
 	if rec, body := e.upload("/api/projects/demo/symbols", "x.bin", nil, nil); rec.Code != 400 {
 		t.Errorf("empty file: %d %s", rec.Code, body)
 	}
-	z := zipOf(t, map[string]string{"App.dSYM/Contents/Resources/DWARF/App": "\xcf\xfa\xed\xfe", "__MACOSX/._x": "junk", "mapping.txt": mapping})
+	z := zipOf(t, map[string]string{"App.dSYM/Contents/Resources/DWARF/App": minimalMachO, "__MACOSX/._x": "junk", "mapping.txt": mapping})
 	rec, body = e.upload("/api/projects/demo/symbols", "bundle.zip", z, map[string]string{"release": "3.0.0"})
 	if rec.Code != 201 {
 		t.Fatalf("zip upload: %d %s", rec.Code, body)
@@ -533,3 +533,8 @@ func TestSymbols(t *testing.T) {
 		t.Errorf("sentry-cli list miss: %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+// minimalMachO is a valid 64-bit little-endian Mach-O header with no load
+// commands: enough for debug/macho to parse, no LC_UUID.
+const minimalMachO = "\xcf\xfa\xed\xfe\x0c\x00\x00\x01\x00\x00\x00\x00\x02\x00\x00\x00" +
+	"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"

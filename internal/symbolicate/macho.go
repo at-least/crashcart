@@ -1,75 +1,67 @@
 package symbolicate
 
 import (
-	"encoding/binary"
+	"bytes"
+	"debug/macho"
 	"fmt"
 	"strings"
 )
 
-// Mach-O magic numbers and the load command we care about.
-const (
-	machoMagic64    = 0xfeedfacf
-	machoMagic32    = 0xfeedface
-	fatMagic        = 0xcafebabe
-	lcUUID          = 0x1b
-	machoHeaderSize = 28 // 32-bit header; 64-bit adds a 4-byte reserved field
-)
+// lcUUID is the LC_UUID load command; debug/macho exposes it only as raw bytes.
+const lcUUID macho.LoadCmd = 0x1b
 
 // MachOUUID returns the LC_UUID of a Mach-O image as a lower-case dashed
-// UUID — the debug_id Sentry SDKs put in debug_meta.images. Fat binaries
-// yield the first architecture's UUID. ok=false when data is not Mach-O or
-// carries no UUID.
+// UUID — the debug_id Sentry SDKs put in debug_meta.images. For fat
+// (universal) binaries the arm64 slice wins, else the first slice with a
+// UUID. ok=false when data is not Mach-O or carries no UUID.
 func MachOUUID(data []byte) (string, bool) {
-	if len(data) < 8 {
-		return "", false
-	}
-	if binary.BigEndian.Uint32(data) == fatMagic {
-		n := binary.BigEndian.Uint32(data[4:])
-		for i := uint32(0); i < n && i < 32; i++ {
-			off := 8 + int(i)*20
-			if off+20 > len(data) {
-				break
-			}
-			start := int(binary.BigEndian.Uint32(data[off+8:]))
-			size := int(binary.BigEndian.Uint32(data[off+12:]))
-			if start < 0 || size < 0 || start+size > len(data) {
+	if fat, err := macho.NewFatFile(bytes.NewReader(data)); err == nil {
+		defer fat.Close()
+		var first string
+		for _, a := range fat.Arches {
+			id, ok := fileUUID(a.File)
+			if !ok {
 				continue
 			}
-			if id, ok := MachOUUID(data[start : start+size]); ok {
+			if a.Cpu == macho.CpuArm64 {
 				return id, true
 			}
+			if first == "" {
+				first = id
+			}
 		}
+		return first, first != ""
+	}
+	f, err := macho.NewFile(bytes.NewReader(data))
+	if err != nil {
 		return "", false
 	}
-	var bo binary.ByteOrder = binary.LittleEndian
-	magic := binary.LittleEndian.Uint32(data)
-	if magic != machoMagic64 && magic != machoMagic32 {
-		bo = binary.BigEndian
-		magic = binary.BigEndian.Uint32(data)
-		if magic != machoMagic64 && magic != machoMagic32 {
-			return "", false
-		}
+	defer f.Close()
+	return fileUUID(f)
+}
+
+// IsMachO reports whether data parses as a thin or fat Mach-O image.
+func IsMachO(data []byte) bool {
+	if f, err := macho.NewFatFile(bytes.NewReader(data)); err == nil {
+		f.Close()
+		return true
 	}
-	hdr := machoHeaderSize
-	if magic == machoMagic64 {
-		hdr += 4
+	f, err := macho.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return false
 	}
-	if len(data) < hdr {
-		return "", false
-	}
-	ncmds := int(bo.Uint32(data[16:]))
-	off := hdr
-	for i := 0; i < ncmds && off+8 <= len(data); i++ {
-		cmd := bo.Uint32(data[off:])
-		size := int(bo.Uint32(data[off+4:]))
-		if size < 8 || off+size > len(data) {
-			return "", false
+	f.Close()
+	return true
+}
+
+func fileUUID(f *macho.File) (string, bool) {
+	for _, l := range f.Loads {
+		raw := l.Raw()
+		if len(raw) < 24 || macho.LoadCmd(f.ByteOrder.Uint32(raw)) != lcUUID {
+			continue
 		}
-		if cmd == lcUUID && size >= 24 {
-			u := data[off+8 : off+24]
-			return strings.ToLower(fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])), true
-		}
-		off += size
+		u := raw[8:24]
+		return strings.ToLower(fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])), true
 	}
 	return "", false
 }

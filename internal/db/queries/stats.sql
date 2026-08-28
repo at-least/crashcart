@@ -39,7 +39,7 @@ GROUP BY bucket ORDER BY bucket;
 -- hour does not matter) vs. the 24 full hourly buckets before that hour.
 SELECT (SELECT count(*) FROM events e
          WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.id >= sqlc.arg(recent_from)::bigint
-           AND (level = 'fatal' OR handled = false))::bigint AS recent,
+           AND crashcart_is_crash(e.level, e.handled))::bigint AS recent,
        COALESCE((SELECT sum(h.crashes) FROM event_stats_hourly h
                   WHERE h.project_id = sqlc.arg(project_id)::bigint
                     AND h.bucket >= sqlc.arg(baseline_from)::bigint AND h.bucket < sqlc.arg(baseline_to)::bigint), 0)::bigint AS baseline;

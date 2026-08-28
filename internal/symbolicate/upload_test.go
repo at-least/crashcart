@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"testing"
 
 	"github.com/newlix/crashcart/internal/db/sqlc"
@@ -21,7 +20,7 @@ func TestUpload(t *testing.T) {
 	s := &Service{Store: st, DSYM: NewDSYMClient("")}
 
 	// A dSYM binary gets its LC_UUID as debug_id.
-	rows, err := s.Upload(ctx, p.ID, "1.0", "", "App", fakeMachO(machoMagic64, binary.LittleEndian, true))
+	rows, err := s.Upload(ctx, p.ID, "1.0", "", "App", fakeMachO(0x0100000c, uuidA))
 	if err != nil || len(rows) != 1 || rows[0].Kind != KindDSYM || rows[0].DebugID == nil || *rows[0].DebugID != "12345678-9abc-def0-1122-334455667788" {
 		t.Fatalf("dsym upload: %+v %v", rows, err)
 	}

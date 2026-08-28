@@ -105,6 +105,11 @@ func (w *Web) project(rw http.ResponseWriter, r *http.Request) (sqlc.Project, bo
 }
 
 func (w *Web) fail(rw http.ResponseWriter, r *http.Request, err error) {
+	var ue symbolicate.UploadError
+	if errors.As(err, &ue) {
+		http.Error(rw, ue.Error(), http.StatusBadRequest)
+		return
+	}
 	w.Log.Error("web", "path", r.URL.Path, "err", err)
 	http.Error(rw, "internal error", http.StatusInternalServerError)
 }

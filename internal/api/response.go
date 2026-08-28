@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/newlix/crashcart/internal/symbolicate"
 )
 
 // maxJSONBody bounds JSON request bodies.
@@ -33,11 +34,14 @@ var errNotFound = errors.New("not found")
 // badRequest → 400, anything else → 500 (logged).
 func (h *Handler) fail(w http.ResponseWriter, err error) {
 	var br badRequest
+	var ue symbolicate.UploadError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows), errors.Is(err, errNotFound):
 		writeErr(w, http.StatusNotFound, "not found")
 	case errors.As(err, &br):
 		writeErr(w, http.StatusBadRequest, br.Error())
+	case errors.As(err, &ue):
+		writeErr(w, http.StatusBadRequest, ue.Error())
 	default:
 		if h.Log != nil {
 			h.Log.Error("api", "err", err)

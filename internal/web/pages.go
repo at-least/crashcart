@@ -3,12 +3,13 @@ package web
 import (
 	"context"
 	"errors"
-	"github.com/a-h/templ"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/a-h/templ"
 
 	"github.com/jackc/pgx/v5"
 
