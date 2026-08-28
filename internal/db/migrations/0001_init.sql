@@ -11,9 +11,10 @@
 -- ── events: one row per Sentry event ────────────────────────
 -- The primary key IS the timestamp: id = event unix-ms × 1000 + random(0..999)
 -- (see internal/pk). A range on id is a range in time, newest events sort
--- last, and there is deliberately NO secondary index: every read path
--- (dashboard, filters, alerts, retention) is a bounded PK range scan, so a
--- write costs exactly one heap row + one btree entry.
+-- last, the table is range-partitioned by day on it, and there is
+-- deliberately NO secondary index: every read path (dashboard, filters,
+-- alerts) is a bounded PK range scan touching only the days in the window,
+-- so a write costs exactly one heap row + one btree entry.
 CREATE TABLE events (
     id             BIGINT PRIMARY KEY,               -- occurred_at µs (ms×1000 + rnd)
     received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -36,7 +37,11 @@ CREATE TABLE events (
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,   -- {"key": "value"}
     breadcrumbs    JSONB NOT NULL DEFAULT '[]'::jsonb,   -- last 20 crumbs, normalized
     payload        JSONB NOT NULL                   -- the untouched Sentry event
-);
+) PARTITION BY RANGE (id);
+-- Daily partitions (events_pYYYYMMDD) are created ahead of time and dropped
+-- by retention (internal/db/partitions.go); anything outside a known day
+-- (clock skew, late uploads) lands here and is trimmed by batched DELETEs.
+CREATE TABLE events_default PARTITION OF events DEFAULT;
 
 -- ── user_devices: user → device mapping ─────────────────────
 CREATE TABLE user_devices (

@@ -65,6 +65,11 @@ func run(cmd string, log *slog.Logger) error {
 	if len(applied) > 0 {
 		log.Info("migrations applied", "versions", applied)
 	}
+	if created, err := db.EnsureUpcomingPartitions(ctx, pool, time.Now()); err != nil {
+		return fmt.Errorf("partitions: %w", err)
+	} else if len(created) > 0 {
+		log.Info("event partitions created", "partitions", created)
+	}
 	st := store.New(pool)
 
 	switch cmd {

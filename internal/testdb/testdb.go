@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -52,6 +53,9 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 	if _, err := db.Migrate(ctx, pool); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := db.EnsureUpcomingPartitions(ctx, pool, time.Now()); err != nil {
+		t.Fatalf("partitions: %v", err)
 	}
 	return pool
 }

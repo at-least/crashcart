@@ -12,7 +12,7 @@
 
 | Table | PK | Notes |
 |---|---|---|
-| `events` | `id` = unix_ms×1000+rnd | Time lives in the PK (`internal/pk`); columns extracted from the envelope, `tags JSONB`, `breadcrumbs JSONB`, `payload JSONB`, `fingerprint` |
+| `events` | `id` = unix_ms×1000+rnd | Time lives in the PK (`internal/pk`); range-partitioned by UTC day on it (`events_pYYYYMMDD` + `events_default`); columns extracted from the envelope, `tags JSONB`, `breadcrumbs JSONB`, `payload JSONB`, `fingerprint` |
 | `user_devices` | `(user_id, device_id)` | `last_seen`, refreshed ≤ once/day/pair |
 | `hourly_stats` | `(hour, level)` | `crash_count`, `fatal_count`, `error_count` for error + fatal levels |
 | `issues` | `fingerprint` | title/level/type/screen/platform, status lifecycle, counts, first/last seen + release |
@@ -31,7 +31,8 @@ dashboard list   events WHERE id >= lower(since) AND id < upper(until) AND <filt
 issue filters    SELECT DISTINCT fingerprint FROM events WHERE id range AND <filters>
                  → issues WHERE fingerprint = ANY(…)
 crash spike      COUNT(*) FROM events WHERE id >= lower(now-10m) AND crash
-retention        DELETE … WHERE id < lower(cutoff) LIMIT 5000, repeated
+retention        DROP TABLE events_pYYYYMMDD for whole days past the cutoff;
+                 DELETE … WHERE id < lower(cutoff) LIMIT 5000 on events_default (strays)
 user → devices   user_devices PK (user_id, device_id)
 ```
 
@@ -65,7 +66,8 @@ Alerts (every ALERT_INTERVAL, default 10 min):
   20 min cooldown per type; channels: Telegram, webhooks, SMTP
 
 Retention (every RETENTION_INTERVAL, default 1 h):
-  events (5000-row batches), hourly_stats, issues, user_devices, release_health
+  drop event partitions past the cutoff day, ensure partitions for the next 3 days,
+  trim events_default in 5000-row batches, then hourly_stats, issues, user_devices, release_health
 ```
 
 ## Envelope handling

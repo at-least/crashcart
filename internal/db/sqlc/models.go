@@ -40,6 +40,30 @@ type Event struct {
 	Payload       json.RawMessage `json:"payload"`
 }
 
+type EventsDefault struct {
+	ID            int64           `json:"id"`
+	ReceivedAt    time.Time       `json:"received_at"`
+	EventID       *string         `json:"event_id"`
+	Level         string          `json:"level"`
+	Message       string          `json:"message"`
+	Platform      *string         `json:"platform"`
+	Environment   *string         `json:"environment"`
+	Release       *string         `json:"release"`
+	DeviceID      *string         `json:"device_id"`
+	DeviceModel   *string         `json:"device_model"`
+	OsVersion     *string         `json:"os_version"`
+	Screen        *string         `json:"screen"`
+	ErrorType     *string         `json:"error_type"`
+	ErrorLocation *string         `json:"error_location"`
+	Handled       *bool           `json:"handled"`
+	SdkName       *string         `json:"sdk_name"`
+	UserID        *string         `json:"user_id"`
+	Fingerprint   *string         `json:"fingerprint"`
+	Tags          json.RawMessage `json:"tags"`
+	Breadcrumbs   json.RawMessage `json:"breadcrumbs"`
+	Payload       json.RawMessage `json:"payload"`
+}
+
 type HourlyStat struct {
 	Hour       time.Time `json:"hour"`
 	Level      string    `json:"level"`

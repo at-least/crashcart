@@ -38,6 +38,10 @@ large payloads; symbol files are `bytea` in `symbol_files`. Tables: `events`,
   range scan (no GIN — it cost 2–3 index entries per event).
 - `events.fingerprint` links to `issues`. Event-scoped issue filters run
   `FingerprintsInRange` (one range scan, DISTINCT) then `issues … = ANY($fps)`.
+- `events` is `PARTITION BY RANGE (id)` into UTC days (`events_pYYYYMMDD`) plus
+  `events_default` for strays. `db.EnsureUpcomingPartitions` runs at startup and from
+  retention (yesterday … now+3d); queries prune to the days in the window; retention drops
+  whole partitions and only batch-DELETEs the default one.
 - `occurred_at` is not stored; queries derive it: `to_timestamp(id / 1000000.0)`.
 - Ingest de-duplicates ids within a batch and re-rolls suffixes on a `23505` from a
   concurrent envelope (3 attempts).
@@ -103,7 +107,7 @@ internal/
   alerts/       alerts.go (detectors, window/cooldown), channels.go (telegram/webhook/smtp)
   auth/         middleware
   config/       env → Config; CUSTOM_TAGS, CSV helpers
-  db/           migrations/NNNN_*.sql (embedded), migrate.go, queries/*.sql, sqlc/ (generated)
+  db/           migrations/NNNN_*.sql (embedded), migrate.go, partitions.go, queries/*.sql, sqlc/ (generated)
   export/       NDJSON dump of every table (backup + cross-edition migration format)
   ingest/       ingest.go (id assignment, tx + folding, retry on id clash), pii.go, sampling.go
   pk/           event id ↔ time encoding
@@ -125,9 +129,11 @@ container/symbolicate/  dSYM sidecar (Python + llvm-symbolizer); SYMBOLICATE_URL
   `make generate` does both. Generated files are committed.
 - Never hand-write SQL in Go outside `internal/db/queries` (exceptions: migrations,
   `db.Migrate`, and the generic full-table scan in `internal/export`).
-- Schema stays portable to SQLite/D1: no arrays, enums, generated columns or partitioning;
-  only BIGINT/TEXT/BOOLEAN/TIMESTAMPTZ/DATE/JSONB/BYTEA, all of which `crashcart export`
-  emits in a neutral NDJSON encoding (unix ms, embedded JSON, base64). Ids stay < 2^53.
+- Schema stays portable to SQLite/D1: no arrays, enums or generated columns; only
+  BIGINT/TEXT/BOOLEAN/TIMESTAMPTZ/DATE/JSONB/BYTEA, all of which `crashcart export` emits
+  in a neutral NDJSON encoding (unix ms, embedded JSON, base64). Ids stay < 2^53. The
+  daily partitioning of `events` is physical only — the logical table and the export are
+  identical to an unpartitioned one.
 - Time bounds on `events` are ids: `pk.Lower(t)` / `pk.Upper(t)`; never compare
   `to_timestamp(id/1e6)` in a WHERE clause (it defeats the PK range).
 - Nullable text columns are `*string` (sqlc `emit_pointers_for_null_types`);
@@ -141,8 +147,9 @@ container/symbolicate/  dSYM sidecar (Python + llvm-symbolizer); SYMBOLICATE_URL
 
 ## Retention
 
-Hourly (`RETENTION_INTERVAL`), cutoff `now - RETENTION_DAYS`: events deleted in batches of
-5000 by PK range (`id < pk.Lower(cutoff)`); `hourly_stats` by hour; `issues` by `last_seen`; `user_devices` by
+Hourly (`RETENTION_INTERVAL`), cutoff `now - RETENTION_DAYS`: event partitions older than
+the cutoff day are dropped, then the default partition is trimmed in 5000-row batches by PK
+range (`id < pk.Lower(cutoff)`); `hourly_stats` by hour; `issues` by `last_seen`; `user_devices` by
 `last_seen` (refreshed lazily at ingest, ≤ once/day/pair); `release_health` by day.
 
 ## Terminology
