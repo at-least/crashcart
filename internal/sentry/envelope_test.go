@@ -45,24 +45,20 @@ func TestParseCrashEvent(t *testing.T) {
 	if string(e.Raw) != crashEvent {
 		t.Error("raw payload altered")
 	}
-	a := e.Analyze()
-	if a.ErrorLocation != "CartFragment.java:142" || a.AppFrameCount != 1 || a.TotalFrames != 3 {
-		t.Errorf("analysis = %+v", a)
-	}
-	if len(a.UserJourney) != 3 || a.UserJourney[0] != "→ /cart" || !strings.HasPrefix(a.UserJourney[1], "🌐 GET /api/cart → 500") || !strings.HasPrefix(a.UserJourney[2], "💥 NullPointerException at CartFragment.java:142") {
-		t.Errorf("journey = %q", a.UserJourney)
+	if loc := ErrorLocation(e.Frames()); loc != "CartFragment.java:142" || len(e.Frames()) != 3 {
+		t.Errorf("error location = %q, frames = %d", loc, len(e.Frames()))
 	}
 	if e.IssueTitle() != "NullPointerException in CartFragment" {
 		t.Errorf("title = %q", e.IssueTitle())
 	}
-	fp := e.Fingerprint()
+	fp := Fingerprint(e, e.Frames())
 	if len(fp) != 32 {
 		t.Errorf("fingerprint = %q", fp)
 	}
 	// Line numbers don't affect grouping.
 	other := strings.Replace(crashEvent, `"lineno":142`, `"lineno":999`, 1)
 	env2 := Parse(envelope(`{"type":"event"}`, other), now)
-	if env2.Events[0].Fingerprint() != fp {
+	if Fingerprint(env2.Events[0], env2.Events[0].Frames()) != fp {
 		t.Error("fingerprint should ignore line numbers")
 	}
 }
@@ -82,7 +78,7 @@ func TestParseFallbacks(t *testing.T) {
 	if e.EventID != "h1" {
 		t.Errorf("header event id fallback = %q", e.EventID)
 	}
-	if e.Fingerprint() != "" {
+	if Fingerprint(e, e.Frames()) != "" {
 		t.Error("no exception → no fingerprint")
 	}
 }
@@ -133,9 +129,9 @@ func TestParseLengthWithNewlines(t *testing.T) {
 
 func TestSDKFingerprint(t *testing.T) {
 	env := Parse(envelope(`{"type":"event"}`, `{"fingerprint":["checkout","timeout"],"exception":{"values":[{"type":"TimeoutError"}]}}`), now)
-	a := env.Events[0].Fingerprint()
+	a := Fingerprint(env.Events[0], env.Events[0].Frames())
 	env2 := Parse(envelope(`{"type":"event"}`, `{"fingerprint":["checkout","timeout"],"exception":{"values":[{"type":"OtherError"}]}}`), now)
-	if a == "" || a != env2.Events[0].Fingerprint() {
+	if a == "" || a != Fingerprint(env2.Events[0], env2.Events[0].Frames()) {
 		t.Error("SDK fingerprint should win over the stack signature")
 	}
 }

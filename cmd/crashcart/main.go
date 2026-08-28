@@ -1,19 +1,11 @@
-// Command crashcart is the CrashCart server: Sentry-compatible ingest,
-// JSON API, server-rendered viewer, and the retention + alert schedulers —
-// one binary in front of one Postgres.
-//
-//	crashcart serve       run the HTTP server (+ schedulers)   [default]
-//	crashcart migrate     apply pending schema migrations and exit
-//	crashcart retention   run one retention pass and exit
-//	crashcart alerts      run one alert check and exit
-//	crashcart seed        write a week of synthetic events (local dev)
-//	crashcart export      stream every table as NDJSON to stdout (backup / migration)
-//	crashcart import      load that NDJSON from stdin (idempotent; the D1 → Go upgrade path)
+// Command crashcart is the CrashCart server and its maintenance commands.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,16 +14,31 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/newlix/crashcart/internal/alerts"
 	"github.com/newlix/crashcart/internal/config"
 	"github.com/newlix/crashcart/internal/db"
+	"github.com/newlix/crashcart/internal/db/sqlc"
 	"github.com/newlix/crashcart/internal/export"
+	"github.com/newlix/crashcart/internal/ingest"
+	"github.com/newlix/crashcart/internal/jobs"
 	"github.com/newlix/crashcart/internal/retention"
+	"github.com/newlix/crashcart/internal/seed"
 	"github.com/newlix/crashcart/internal/server"
 	"github.com/newlix/crashcart/internal/store"
+	"github.com/newlix/crashcart/internal/symbolicate"
 )
+
+const usage = `usage: crashcart <command>
+
+  serve            HTTP server + job worker + schedulers (default)
+  migrate          apply pending migrations and exit
+  retention        reconcile policies and run one sweep
+  alerts           run one crash-spike check
+  seed [slug]      write a week of demo data (default project "demo")
+  export [slug]    stream NDJSON to stdout (all projects, or one)
+  import           load NDJSON from stdin (idempotent)
+  project <slug> <name> [platform]   create a project and print its DSN key
+`
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -39,141 +46,176 @@ func main() {
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]
 	}
-	if err := run(cmd, log); err != nil {
-		log.Error("fatal", "err", err)
-		os.Exit(1)
+	if cmd == "help" || cmd == "-h" || cmd == "--help" {
+		fmt.Print(usage)
+		return
 	}
-}
-
-func run(cmd string, log *slog.Logger) error {
-	cfg, err := config.FromEnv()
+	cfg, err := config.Load()
 	if err != nil {
-		return err
+		fatal(log, err)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if cfg.DatabaseURL == "" {
+		fatal(log, errors.New("DATABASE_URL is required"))
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		fatal(log, err)
 	}
 	defer pool.Close()
-
-	applied, err := db.Migrate(ctx, pool)
+	ran, err := db.Migrate(ctx, pool)
 	if err != nil {
-		return fmt.Errorf("migrate: %w", err)
+		fatal(log, err)
 	}
-	if len(applied) > 0 {
-		log.Info("migrations applied", "versions", applied)
-	}
-	if created, err := db.EnsureUpcomingPartitions(ctx, pool, time.Now()); err != nil {
-		return fmt.Errorf("partitions: %w", err)
-	} else if len(created) > 0 {
-		log.Info("event partitions created", "partitions", created)
+	for _, m := range ran {
+		log.Info("migration applied", "name", m)
 	}
 	st := store.New(pool)
+	syms := &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient(cfg.SymbolicateURL)}
+	in := &ingest.Ingester{Store: st, Cfg: cfg, Symbols: syms, Log: log}
+	notifier := &alerts.Notifier{Store: st, Cfg: cfg, Log: log, HTTP: &http.Client{Timeout: 15 * time.Second}}
 
+	args := os.Args[min(2, len(os.Args)):]
 	switch cmd {
 	case "migrate":
-		return nil
+		return
 	case "retention":
-		_, err := (&retention.Runner{Store: st, Days: cfg.RetentionDays, Log: log, Now: time.Now}).Run(ctx)
-		return err
+		if err := retention.Reconcile(ctx, st, cfg, log); err != nil {
+			fatal(log, err)
+		}
+		if err := retention.Sweep(ctx, st, cfg, log); err != nil {
+			fatal(log, err)
+		}
 	case "alerts":
-		return alerts.New(st, cfg, log).Run(ctx)
+		if err := notifier.CheckSpikes(ctx); err != nil {
+			fatal(log, err)
+		}
 	case "seed":
-		return seed(ctx, cfg, st, log)
+		slug := "demo"
+		if len(args) > 0 {
+			slug = args[0]
+		}
+		if err := seed.Run(ctx, in, slug); err != nil {
+			fatal(log, err)
+		}
 	case "export":
-		return export.All(ctx, pool, os.Stdout)
+		var opt export.Options
+		if len(args) > 0 {
+			opt.Project = args[0]
+		}
+		if err := export.Export(ctx, st, os.Stdout, opt); err != nil {
+			fatal(log, err)
+		}
 	case "import":
-		rep, err := export.Load(ctx, pool, os.Stdin)
-		log.Info("import complete", "rows", rep.Rows, "event_conflicts", rep.Conflict, "skipped_lines", rep.Skipped)
-		return err
+		rep, err := export.Import(ctx, st, os.Stdin)
+		if err != nil {
+			fatal(log, err)
+		}
+		json.NewEncoder(os.Stderr).Encode(rep)
+	case "project":
+		fs := flag.NewFlagSet("project", flag.ExitOnError)
+		fs.Parse(args)
+		if fs.NArg() < 2 {
+			fatal(log, errors.New("usage: crashcart project <slug> <name> [platform]"))
+		}
+		var platform *string
+		if fs.NArg() > 2 {
+			p := fs.Arg(2)
+			platform = &p
+		}
+		p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: fs.Arg(0), Name: fs.Arg(1), Platform: platform, PublicKey: newKey()})
+		if err != nil {
+			fatal(log, err)
+		}
+		fmt.Printf("project %s (id %d)\nDSN: %s\n", p.Slug, p.ID, dsn(cfg, p))
 	case "serve":
-		return serve(ctx, cfg, st, log)
+		serve(ctx, cfg, st, in, syms, notifier, log)
 	default:
-		return fmt.Errorf("unknown command %q (serve | migrate | retention | alerts | seed | export | import)", cmd)
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
 	}
 }
 
-func serve(ctx context.Context, cfg config.Config, st *store.Store, log *slog.Logger) error {
-	mux := server.New(cfg, st, log)
+func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.Ingester, syms *symbolicate.Service, notifier *alerts.Notifier, log *slog.Logger) {
+	if err := retention.Reconcile(ctx, st, cfg, log); err != nil {
+		fatal(log, err)
+	}
+	worker := &jobs.Worker{Store: st, Log: log, Handlers: map[string]jobs.Handler{
+		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
+			var a struct{ Event int64 `json:"event"` }
+			if err := json.Unmarshal(args, &a); err != nil {
+				return err
+			}
+			return syms.Event(ctx, j.ProjectID, a.Event)
+		},
+		"resymbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
+			var a struct{ Release string `json:"release"` }
+			if err := json.Unmarshal(args, &a); err != nil {
+				return err
+			}
+			return syms.Release(ctx, j.ProjectID, a.Release)
+		},
+		"alert": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
+			var a struct {
+				Type        string `json:"type"`
+				Fingerprint string `json:"fingerprint"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return err
+			}
+			return notifier.Issue(ctx, j.ProjectID, a.Type, a.Fingerprint)
+		},
+	}}
+	for i := 0; i < max(cfg.Workers, 1); i++ {
+		go worker.Run(ctx)
+	}
+	go every(ctx, cfg.AlertInterval, func() {
+		if err := notifier.CheckSpikes(ctx); err != nil {
+			log.Error("crash-spike check", "err", err)
+		}
+	})
+	go every(ctx, time.Hour, func() {
+		if err := retention.Sweep(ctx, st, cfg, log); err != nil {
+			log.Error("retention sweep", "err", err)
+		}
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           logRequests(log, mux),
+		Handler:           server.New(server.Deps{Store: st, Cfg: cfg, Log: log, Symbols: syms}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      120 * time.Second,
+		WriteTimeout:      0, // SSE
 		IdleTimeout:       120 * time.Second,
 	}
-
-	// Schedulers: retention (hourly) and alerts (every 10 min), in-process.
-	go schedule(ctx, log, "retention", cfg.RetentionInterval, func(c context.Context) error {
-		_, err := (&retention.Runner{Store: st, Days: cfg.RetentionDays, Log: log, Now: time.Now}).Run(c)
-		return err
-	})
-	go schedule(ctx, log, "alerts", cfg.AlertInterval, alerts.New(st, cfg, log).Run)
-
-	errCh := make(chan error, 1)
 	go func() {
-		log.Info("listening", "addr", cfg.Addr)
-		errCh <- srv.ListenAndServe()
-	}()
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		log.Info("shutting down")
-		return srv.Shutdown(shutdownCtx)
+		srv.Shutdown(shutdown)
+	}()
+	log.Info("listening", "addr", cfg.Addr, "workers", cfg.Workers)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fatal(log, err)
 	}
-	return nil
 }
 
-// schedule runs fn every interval until ctx ends (first run after one interval).
-func schedule(ctx context.Context, log *slog.Logger, name string, interval time.Duration, fn func(context.Context) error) {
-	t := time.NewTicker(interval)
+func every(ctx context.Context, d time.Duration, fn func()) {
+	t := time.NewTicker(d)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			runCtx, cancel := context.WithTimeout(ctx, interval)
-			if err := fn(runCtx); err != nil {
-				log.Error("scheduled job failed", "job", name, "err", err)
-			}
-			cancel()
+			fn()
 		}
 	}
 }
 
-func logRequests(log *slog.Logger, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		if rec.status >= 500 {
-			log.Error("request", "method", r.Method, "path", r.URL.Path, "status", rec.status, "ms", time.Since(start).Milliseconds())
-		} else {
-			log.Debug("request", "method", r.Method, "path", r.URL.Path, "status", rec.status, "ms", time.Since(start).Milliseconds())
-		}
-	})
+func fatal(log *slog.Logger, err error) {
+	log.Error("fatal", "err", err)
+	os.Exit(1)
 }
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (s *statusRecorder) WriteHeader(code int) {
-	s.status = code
-	s.ResponseWriter.WriteHeader(code)
-}
-
-// Unwrap lets http.ResponseController reach the underlying writer.
-func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }

@@ -7,43 +7,90 @@ package sqlc
 
 import (
 	"context"
-	"time"
+	"encoding/json"
 )
 
-const getAlertType = `-- name: GetAlertType :one
-SELECT type, enabled, last_triggered, cooldown_until FROM alert_types WHERE type = $1
+const createAlertChannel = `-- name: CreateAlertChannel :one
+INSERT INTO alert_channels (project_id, kind, config) VALUES ($1, $2, $3) RETURNING id, project_id, kind, config, created_at
 `
 
-func (q *Queries) GetAlertType(ctx context.Context, type_ string) (AlertType, error) {
-	row := q.db.QueryRow(ctx, getAlertType, type_)
-	var i AlertType
+type CreateAlertChannelParams struct {
+	ProjectID int64           `json:"project_id"`
+	Kind      string          `json:"kind"`
+	Config    json.RawMessage `json:"config"`
+}
+
+func (q *Queries) CreateAlertChannel(ctx context.Context, arg CreateAlertChannelParams) (AlertChannel, error) {
+	row := q.db.QueryRow(ctx, createAlertChannel, arg.ProjectID, arg.Kind, arg.Config)
+	var i AlertChannel
 	err := row.Scan(
-		&i.Type,
-		&i.Enabled,
-		&i.LastTriggered,
-		&i.CooldownUntil,
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Config,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
-const listAlertTypes = `-- name: ListAlertTypes :many
-SELECT type, enabled, last_triggered, cooldown_until FROM alert_types ORDER BY type
+const deleteAlertChannel = `-- name: DeleteAlertChannel :execrows
+DELETE FROM alert_channels WHERE project_id = $1 AND id = $2
 `
 
-func (q *Queries) ListAlertTypes(ctx context.Context) ([]AlertType, error) {
-	rows, err := q.db.Query(ctx, listAlertTypes)
+type DeleteAlertChannelParams struct {
+	ProjectID int64 `json:"project_id"`
+	ID        int64 `json:"id"`
+}
+
+func (q *Queries) DeleteAlertChannel(ctx context.Context, arg DeleteAlertChannelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAlertChannel, arg.ProjectID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getAlertRule = `-- name: GetAlertRule :one
+SELECT project_id, type, enabled, cooldown_minutes, last_triggered FROM alert_rules WHERE project_id = $1 AND type = $2
+`
+
+type GetAlertRuleParams struct {
+	ProjectID int64  `json:"project_id"`
+	Type      string `json:"type"`
+}
+
+func (q *Queries) GetAlertRule(ctx context.Context, arg GetAlertRuleParams) (AlertRule, error) {
+	row := q.db.QueryRow(ctx, getAlertRule, arg.ProjectID, arg.Type)
+	var i AlertRule
+	err := row.Scan(
+		&i.ProjectID,
+		&i.Type,
+		&i.Enabled,
+		&i.CooldownMinutes,
+		&i.LastTriggered,
+	)
+	return i, err
+}
+
+const listAlertChannels = `-- name: ListAlertChannels :many
+SELECT id, project_id, kind, config, created_at FROM alert_channels WHERE project_id = $1 ORDER BY id
+`
+
+func (q *Queries) ListAlertChannels(ctx context.Context, projectID int64) ([]AlertChannel, error) {
+	rows, err := q.db.Query(ctx, listAlertChannels, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AlertType{}
+	items := []AlertChannel{}
 	for rows.Next() {
-		var i AlertType
+		var i AlertChannel
 		if err := rows.Scan(
-			&i.Type,
-			&i.Enabled,
-			&i.LastTriggered,
-			&i.CooldownUntil,
+			&i.ID,
+			&i.ProjectID,
+			&i.Kind,
+			&i.Config,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -55,34 +102,83 @@ func (q *Queries) ListAlertTypes(ctx context.Context) ([]AlertType, error) {
 	return items, nil
 }
 
-const markAlertTriggered = `-- name: MarkAlertTriggered :exec
-UPDATE alert_types SET last_triggered = $2, cooldown_until = $3 WHERE type = $1
+const listAlertRules = `-- name: ListAlertRules :many
+SELECT project_id, type, enabled, cooldown_minutes, last_triggered FROM alert_rules WHERE project_id = $1 ORDER BY type
 `
 
-type MarkAlertTriggeredParams struct {
-	Type          string     `json:"type"`
-	LastTriggered *time.Time `json:"last_triggered"`
-	CooldownUntil *time.Time `json:"cooldown_until"`
+func (q *Queries) ListAlertRules(ctx context.Context, projectID int64) ([]AlertRule, error) {
+	rows, err := q.db.Query(ctx, listAlertRules, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AlertRule{}
+	for rows.Next() {
+		var i AlertRule
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.Type,
+			&i.Enabled,
+			&i.CooldownMinutes,
+			&i.LastTriggered,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
-func (q *Queries) MarkAlertTriggered(ctx context.Context, arg MarkAlertTriggeredParams) error {
-	_, err := q.db.Exec(ctx, markAlertTriggered, arg.Type, arg.LastTriggered, arg.CooldownUntil)
-	return err
-}
-
-const setAlertEnabled = `-- name: SetAlertEnabled :execrows
-UPDATE alert_types SET enabled = $2 WHERE type = $1
+const touchAlertRule = `-- name: TouchAlertRule :execrows
+UPDATE alert_rules SET last_triggered = now()
+WHERE project_id = $1 AND type = $2 AND enabled
+  AND (last_triggered IS NULL OR last_triggered < now() - make_interval(mins => cooldown_minutes))
 `
 
-type SetAlertEnabledParams struct {
-	Type    string `json:"type"`
-	Enabled bool   `json:"enabled"`
+type TouchAlertRuleParams struct {
+	ProjectID int64  `json:"project_id"`
+	Type      string `json:"type"`
 }
 
-func (q *Queries) SetAlertEnabled(ctx context.Context, arg SetAlertEnabledParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setAlertEnabled, arg.Type, arg.Enabled)
+// Claims the cooldown atomically: succeeds only if it is not still cooling down.
+func (q *Queries) TouchAlertRule(ctx context.Context, arg TouchAlertRuleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, touchAlertRule, arg.ProjectID, arg.Type)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const upsertAlertRule = `-- name: UpsertAlertRule :one
+INSERT INTO alert_rules (project_id, type, enabled, cooldown_minutes) VALUES ($1, $2, $3, $4)
+ON CONFLICT (project_id, type) DO UPDATE SET enabled = EXCLUDED.enabled, cooldown_minutes = EXCLUDED.cooldown_minutes
+RETURNING project_id, type, enabled, cooldown_minutes, last_triggered
+`
+
+type UpsertAlertRuleParams struct {
+	ProjectID       int64  `json:"project_id"`
+	Type            string `json:"type"`
+	Enabled         bool   `json:"enabled"`
+	CooldownMinutes int32  `json:"cooldown_minutes"`
+}
+
+func (q *Queries) UpsertAlertRule(ctx context.Context, arg UpsertAlertRuleParams) (AlertRule, error) {
+	row := q.db.QueryRow(ctx, upsertAlertRule,
+		arg.ProjectID,
+		arg.Type,
+		arg.Enabled,
+		arg.CooldownMinutes,
+	)
+	var i AlertRule
+	err := row.Scan(
+		&i.ProjectID,
+		&i.Type,
+		&i.Enabled,
+		&i.CooldownMinutes,
+		&i.LastTriggered,
+	)
+	return i, err
 }

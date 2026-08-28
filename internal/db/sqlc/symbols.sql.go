@@ -10,71 +10,53 @@ import (
 	"time"
 )
 
-const getSymbolFileData = `-- name: GetSymbolFileData :one
-SELECT data FROM symbol_files WHERE platform = $1 AND release = $2 AND filename = $3
+const deleteSymbolFile = `-- name: DeleteSymbolFile :execrows
+DELETE FROM symbol_files WHERE project_id = $1 AND id = $2
 `
 
-type GetSymbolFileDataParams struct {
-	Platform string `json:"platform"`
-	Release  string `json:"release"`
-	Filename string `json:"filename"`
+type DeleteSymbolFileParams struct {
+	ProjectID int64 `json:"project_id"`
+	ID        int64 `json:"id"`
 }
 
-func (q *Queries) GetSymbolFileData(ctx context.Context, arg GetSymbolFileDataParams) ([]byte, error) {
-	row := q.db.QueryRow(ctx, getSymbolFileData, arg.Platform, arg.Release, arg.Filename)
-	var data []byte
-	err := row.Scan(&data)
-	return data, err
+func (q *Queries) DeleteSymbolFile(ctx context.Context, arg DeleteSymbolFileParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSymbolFile, arg.ProjectID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const latestSymbolFile = `-- name: LatestSymbolFile :one
-SELECT platform, release, filename, size, uploaded_at
-FROM symbol_files WHERE platform = $1 AND release = $2
-ORDER BY uploaded_at DESC LIMIT 1
+const expireSymbolFiles = `-- name: ExpireSymbolFiles :execrows
+DELETE FROM symbol_files WHERE uploaded_at < $1
 `
 
-type LatestSymbolFileParams struct {
-	Platform string `json:"platform"`
-	Release  string `json:"release"`
-}
-
-type LatestSymbolFileRow struct {
-	Platform   string    `json:"platform"`
-	Release    string    `json:"release"`
-	Filename   string    `json:"filename"`
-	Size       int64     `json:"size"`
-	UploadedAt time.Time `json:"uploaded_at"`
-}
-
-// Newest upload wins when several files exist for a (platform, release).
-func (q *Queries) LatestSymbolFile(ctx context.Context, arg LatestSymbolFileParams) (LatestSymbolFileRow, error) {
-	row := q.db.QueryRow(ctx, latestSymbolFile, arg.Platform, arg.Release)
-	var i LatestSymbolFileRow
-	err := row.Scan(
-		&i.Platform,
-		&i.Release,
-		&i.Filename,
-		&i.Size,
-		&i.UploadedAt,
-	)
-	return i, err
+func (q *Queries) ExpireSymbolFiles(ctx context.Context, uploadedAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, expireSymbolFiles, uploadedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listSymbolFiles = `-- name: ListSymbolFiles :many
-SELECT platform, release, filename, size, uploaded_at
-FROM symbol_files ORDER BY platform, release, filename
+SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
+FROM symbol_files WHERE project_id = $1 ORDER BY uploaded_at DESC
 `
 
 type ListSymbolFilesRow struct {
-	Platform   string    `json:"platform"`
+	ID         int64     `json:"id"`
+	ProjectID  int64     `json:"project_id"`
+	Kind       string    `json:"kind"`
 	Release    string    `json:"release"`
+	DebugID    *string   `json:"debug_id"`
 	Filename   string    `json:"filename"`
 	Size       int64     `json:"size"`
 	UploadedAt time.Time `json:"uploaded_at"`
 }
 
-func (q *Queries) ListSymbolFiles(ctx context.Context) ([]ListSymbolFilesRow, error) {
-	rows, err := q.db.Query(ctx, listSymbolFiles)
+func (q *Queries) ListSymbolFiles(ctx context.Context, projectID int64) ([]ListSymbolFilesRow, error) {
+	rows, err := q.db.Query(ctx, listSymbolFiles, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -83,8 +65,11 @@ func (q *Queries) ListSymbolFiles(ctx context.Context) ([]ListSymbolFilesRow, er
 	for rows.Next() {
 		var i ListSymbolFilesRow
 		if err := rows.Scan(
-			&i.Platform,
+			&i.ID,
+			&i.ProjectID,
+			&i.Kind,
 			&i.Release,
+			&i.DebugID,
 			&i.Filename,
 			&i.Size,
 			&i.UploadedAt,
@@ -99,25 +84,119 @@ func (q *Queries) ListSymbolFiles(ctx context.Context) ([]ListSymbolFilesRow, er
 	return items, nil
 }
 
+const symbolFileByDebugID = `-- name: SymbolFileByDebugID :one
+SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1
+`
+
+type SymbolFileByDebugIDParams struct {
+	ProjectID int64   `json:"project_id"`
+	DebugID   *string `json:"debug_id"`
+}
+
+func (q *Queries) SymbolFileByDebugID(ctx context.Context, arg SymbolFileByDebugIDParams) (SymbolFile, error) {
+	row := q.db.QueryRow(ctx, symbolFileByDebugID, arg.ProjectID, arg.DebugID)
+	var i SymbolFile
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Release,
+		&i.DebugID,
+		&i.Filename,
+		&i.Size,
+		&i.Data,
+		&i.UploadedAt,
+	)
+	return i, err
+}
+
+const symbolFileExists = `-- name: SymbolFileExists :one
+SELECT EXISTS (SELECT 1 FROM symbol_files WHERE project_id = $1 AND kind = $2 AND (release = $3 OR debug_id = ANY($4::text[])))
+`
+
+type SymbolFileExistsParams struct {
+	ProjectID int64    `json:"project_id"`
+	Kind      string   `json:"kind"`
+	Release   string   `json:"release"`
+	Column4   []string `json:"column_4"`
+}
+
+func (q *Queries) SymbolFileExists(ctx context.Context, arg SymbolFileExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, symbolFileExists,
+		arg.ProjectID,
+		arg.Kind,
+		arg.Release,
+		arg.Column4,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const symbolFilesForRelease = `-- name: SymbolFilesForRelease :many
+SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at FROM symbol_files WHERE project_id = $1 AND release = $2 AND kind = $3
+`
+
+type SymbolFilesForReleaseParams struct {
+	ProjectID int64  `json:"project_id"`
+	Release   string `json:"release"`
+	Kind      string `json:"kind"`
+}
+
+func (q *Queries) SymbolFilesForRelease(ctx context.Context, arg SymbolFilesForReleaseParams) ([]SymbolFile, error) {
+	rows, err := q.db.Query(ctx, symbolFilesForRelease, arg.ProjectID, arg.Release, arg.Kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SymbolFile{}
+	for rows.Next() {
+		var i SymbolFile
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Kind,
+			&i.Release,
+			&i.DebugID,
+			&i.Filename,
+			&i.Size,
+			&i.Data,
+			&i.UploadedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertSymbolFile = `-- name: UpsertSymbolFile :one
-INSERT INTO symbol_files (platform, release, filename, size, data)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (platform, release, filename) DO UPDATE SET
-    size = EXCLUDED.size, data = EXCLUDED.data, uploaded_at = now()
-RETURNING platform, release, filename, size, uploaded_at
+INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET
+    debug_id = EXCLUDED.debug_id, size = EXCLUDED.size, data = EXCLUDED.data, uploaded_at = now()
+RETURNING id, project_id, kind, release, debug_id, filename, size, uploaded_at
 `
 
 type UpsertSymbolFileParams struct {
-	Platform string `json:"platform"`
-	Release  string `json:"release"`
-	Filename string `json:"filename"`
-	Size     int64  `json:"size"`
-	Data     []byte `json:"data"`
+	ProjectID int64   `json:"project_id"`
+	Kind      string  `json:"kind"`
+	Release   string  `json:"release"`
+	DebugID   *string `json:"debug_id"`
+	Filename  string  `json:"filename"`
+	Size      int64   `json:"size"`
+	Data      []byte  `json:"data"`
 }
 
 type UpsertSymbolFileRow struct {
-	Platform   string    `json:"platform"`
+	ID         int64     `json:"id"`
+	ProjectID  int64     `json:"project_id"`
+	Kind       string    `json:"kind"`
 	Release    string    `json:"release"`
+	DebugID    *string   `json:"debug_id"`
 	Filename   string    `json:"filename"`
 	Size       int64     `json:"size"`
 	UploadedAt time.Time `json:"uploaded_at"`
@@ -125,16 +204,21 @@ type UpsertSymbolFileRow struct {
 
 func (q *Queries) UpsertSymbolFile(ctx context.Context, arg UpsertSymbolFileParams) (UpsertSymbolFileRow, error) {
 	row := q.db.QueryRow(ctx, upsertSymbolFile,
-		arg.Platform,
+		arg.ProjectID,
+		arg.Kind,
 		arg.Release,
+		arg.DebugID,
 		arg.Filename,
 		arg.Size,
 		arg.Data,
 	)
 	var i UpsertSymbolFileRow
 	err := row.Scan(
-		&i.Platform,
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
 		&i.Release,
+		&i.DebugID,
 		&i.Filename,
 		&i.Size,
 		&i.UploadedAt,

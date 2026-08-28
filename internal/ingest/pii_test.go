@@ -35,19 +35,3 @@ func TestRedactTags(t *testing.T) {
 		t.Errorf("got %v", out)
 	}
 }
-
-func TestKeep(t *testing.T) {
-	always := func() float64 { return 0.99 }
-	if !keep("fatal", 0, always) || !keep("error", 0, always) {
-		t.Error("error/fatal must always be kept")
-	}
-	if keep("info", 0.5, always) {
-		t.Error("info above rate must be dropped")
-	}
-	if !keep("warning", 0.1, func() float64 { return 0.4 }) {
-		t.Error("warning keeps at least 50%")
-	}
-	if !keep("debug", 1, always) {
-		t.Error("rate 1 keeps everything")
-	}
-}

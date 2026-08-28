@@ -1,77 +1,40 @@
-// Package auth holds the HTTP middleware: API bearer keys, the ingest
-// token (DSN-style), rate limiting and CORS.
+// Package auth holds the HTTP middleware: bearer keys for /api, basic auth
+// for the viewer, CORS, and the Postgres-backed rate limiter.
 package auth
 
 import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/newlix/crashcart/internal/ratelimit"
+	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/newlix/crashcart/internal/store"
 )
 
-// equal is a constant-time string comparison.
-func equal(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+// Chain applies middlewares right-to-left (the first listed runs outermost).
+func Chain(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler {
+	for i := len(mws) - 1; i >= 0; i-- {
+		h = mws[i](h)
+	}
+	return h
 }
 
-// APIKey requires `Authorization: Bearer <key>` when keys is non-empty.
-func APIKey(keys []string) func(http.Handler) http.Handler {
+// Bearer requires `Authorization: Bearer <key>` matching one of keys.
+// An empty key list leaves the route open.
+func Bearer(keys []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if len(keys) == 0 {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if !ok {
-				http.Error(w, "missing Authorization header", http.StatusUnauthorized)
-				return
-			}
-			for _, k := range keys {
-				if equal(k, token) {
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-			http.Error(w, "invalid API key", http.StatusUnauthorized)
-		})
-	}
-}
-
-// IngestToken extracts the credential a Sentry SDK sends. Any of:
-//   - ?token=…            (CrashCart DSN: http://TOKEN@host/ingest?token=…)
-//   - ?sentry_key=…       (standard Sentry query auth)
-//   - X-Sentry-Auth: Sentry sentry_key=…, sentry_version=7
-func IngestToken(r *http.Request) string {
-	q := r.URL.Query()
-	if t := q.Get("token"); t != "" {
-		return t
-	}
-	if t := q.Get("sentry_key"); t != "" {
-		return t
-	}
-	for _, part := range strings.Split(r.Header.Get("X-Sentry-Auth"), ",") {
-		part = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), "Sentry "))
-		if v, ok := strings.CutPrefix(part, "sentry_key="); ok {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
-// Ingest requires the ingest token when one is configured.
-func Ingest(token string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		if token == "" {
-			return next
-		}
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !equal(IngestToken(r), token) {
-				http.Error(w, "invalid ingest token", http.StatusUnauthorized)
+			tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+			if tok == "" || !matchAny(tok, keys) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="crashcart"`)
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -79,55 +42,18 @@ func Ingest(token string) func(http.Handler) http.Handler {
 	}
 }
 
-// RateKey identifies the caller for rate limiting: API key, ingest token
-// or client IP — credentials are digested so the key is never the secret.
-func RateKey(r *http.Request) string {
-	if t, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-		return "api:" + digest(t)
-	}
-	if t := IngestToken(r); t != "" {
-		return "ingest:" + digest(t)
-	}
-	return "ip:" + ClientIP(r)
-}
-
-// ClientIP prefers X-Forwarded-For / X-Real-IP (reverse proxy), then RemoteAddr.
-func ClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if first, _, _ := strings.Cut(xff, ","); strings.TrimSpace(first) != "" {
-			return strings.TrimSpace(first)
-		}
-	}
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
-func digest(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:16])
-}
-
-// RateLimit applies l per RateKey and sets X-RateLimit-* headers. Register
-// it AFTER auth so only authenticated callers consume buckets.
-func RateLimit(l *ratelimit.Limiter) func(http.Handler) http.Handler {
+// Basic requires HTTP basic auth with any username and the given password.
+// An empty password leaves the route open.
+func Basic(password string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		if l == nil {
+		if password == "" {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			d := l.Allow(RateKey(r))
-			h := w.Header()
-			h.Set("X-RateLimit-Limit", strconv.Itoa(d.Limit))
-			h.Set("X-RateLimit-Remaining", strconv.Itoa(d.Remaining))
-			h.Set("X-RateLimit-Reset", strconv.FormatInt(d.Reset.Unix(), 10))
-			if !d.Allowed {
-				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			_, pw, ok := r.BasicAuth()
+			if !ok || subtle.ConstantTimeCompare([]byte(pw), []byte(password)) != 1 {
+				w.Header().Set("WWW-Authenticate", `Basic realm="crashcart"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -135,20 +61,24 @@ func RateLimit(l *ratelimit.Limiter) func(http.Handler) http.Handler {
 	}
 }
 
-// CORS answers preflights and stamps Access-Control-* on responses.
+func matchAny(tok string, keys []string) bool {
+	ok := false
+	for _, k := range keys {
+		if subtle.ConstantTimeCompare([]byte(tok), []byte(k)) == 1 {
+			ok = true
+		}
+	}
+	return ok
+}
+
+// CORS answers preflights and stamps the allow headers.
 func CORS(origin string) func(http.Handler) http.Handler {
-	if origin == "" {
-		origin = "*"
-	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", origin)
-			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
-			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Sentry-Auth")
-			if origin != "*" {
-				h.Add("Vary", "Origin")
-			}
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Sentry-Auth, HX-Request")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -158,10 +88,91 @@ func CORS(origin string) func(http.Handler) http.Handler {
 	}
 }
 
-// Chain applies middlewares left-to-right (first wraps outermost).
-func Chain(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler {
-	for i := len(mws) - 1; i >= 0; i-- {
-		h = mws[i](h)
+// Credential extracts the string a rate-limit bucket is keyed by.
+type Credential func(r *http.Request) string
+
+// RateLimit enforces limit requests per fixed 60 s window per credential.
+// Buckets are keyed by the SHA-256 of the credential; limit <= 0 disables.
+func RateLimit(st *store.Store, limit int, cred Credential) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if limit <= 0 {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c := cred(r)
+			if c == "" {
+				c = "anon:" + clientIP(r)
+			}
+			sum := sha256.Sum256([]byte(c))
+			now := time.Now().Unix()
+			window := now - now%60
+			n, err := st.BumpRateLimit(r.Context(), sqlc.BumpRateLimitParams{RlKey: hex.EncodeToString(sum[:]), WindowStart: window})
+			if err != nil {
+				http.Error(w, `{"error":"rate limiter unavailable"}`, http.StatusServiceUnavailable)
+				return
+			}
+			remaining := int64(limit) - int64(n)
+			if remaining < 0 {
+				remaining = 0
+			}
+			h := w.Header()
+			h.Set("X-RateLimit-Limit", strconv.Itoa(limit))
+			h.Set("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
+			h.Set("X-RateLimit-Reset", strconv.FormatInt(window+60, 10))
+			if int(n) > limit {
+				h.Set("Retry-After", strconv.FormatInt(window+60-now, 10))
+				http.Error(w, `{"error":"rate limited"}`, http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
-	return h
+}
+
+// BearerCredential keys buckets by the bearer token.
+func BearerCredential(r *http.Request) string {
+	return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+}
+
+// IPCredential keys buckets by client IP (for unauthenticated HTML routes).
+func IPCredential(r *http.Request) string { return "ip:" + clientIP(r) }
+
+func clientIP(r *http.Request) string {
+	if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
+		if i := strings.IndexByte(xf, ','); i >= 0 {
+			xf = xf[:i]
+		}
+		return strings.TrimSpace(xf)
+	}
+	host := r.RemoteAddr
+	if i := strings.LastIndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	return host
+}
+
+// SentryKey extracts the DSN public key from a Sentry SDK request: the
+// X-Sentry-Auth header, the `sentry_key` query param, or the Authorization
+// header in the same `Sentry sentry_key=…` form.
+func SentryKey(r *http.Request) string {
+	for _, h := range []string{r.Header.Get("X-Sentry-Auth"), r.Header.Get("Authorization")} {
+		if k := sentryKeyFrom(h); k != "" {
+			return k
+		}
+	}
+	return r.URL.Query().Get("sentry_key")
+}
+
+func sentryKeyFrom(h string) string {
+	h = strings.TrimSpace(h)
+	if !strings.HasPrefix(h, "Sentry ") {
+		return ""
+	}
+	for _, kv := range strings.Split(h[len("Sentry "):], ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+		if ok && strings.TrimSpace(k) == "sentry_key" {
+			return strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	return ""
 }

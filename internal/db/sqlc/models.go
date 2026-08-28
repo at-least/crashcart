@@ -9,17 +9,26 @@ import (
 	"time"
 )
 
-type AlertType struct {
-	Type          string     `json:"type"`
-	Enabled       bool       `json:"enabled"`
-	LastTriggered *time.Time `json:"last_triggered"`
-	CooldownUntil *time.Time `json:"cooldown_until"`
+type AlertChannel struct {
+	ID        int64           `json:"id"`
+	ProjectID int64           `json:"project_id"`
+	Kind      string          `json:"kind"`
+	Config    json.RawMessage `json:"config"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+type AlertRule struct {
+	ProjectID       int64      `json:"project_id"`
+	Type            string     `json:"type"`
+	Enabled         bool       `json:"enabled"`
+	CooldownMinutes int32      `json:"cooldown_minutes"`
+	LastTriggered   *time.Time `json:"last_triggered"`
 }
 
 type Event struct {
 	ID            int64           `json:"id"`
-	ReceivedAt    time.Time       `json:"received_at"`
-	EventID       *string         `json:"event_id"`
+	ProjectID     int64           `json:"project_id"`
+	EventID       string          `json:"event_id"`
 	Level         string          `json:"level"`
 	Message       string          `json:"message"`
 	Platform      *string         `json:"platform"`
@@ -35,89 +44,105 @@ type Event struct {
 	SdkName       *string         `json:"sdk_name"`
 	UserID        *string         `json:"user_id"`
 	Fingerprint   *string         `json:"fingerprint"`
+	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
 	Breadcrumbs   json.RawMessage `json:"breadcrumbs"`
 	Payload       json.RawMessage `json:"payload"`
+	Symbols       json.RawMessage `json:"symbols"`
 }
 
-type EventsDefault struct {
-	ID            int64           `json:"id"`
-	ReceivedAt    time.Time       `json:"received_at"`
-	EventID       *string         `json:"event_id"`
-	Level         string          `json:"level"`
-	Message       string          `json:"message"`
-	Platform      *string         `json:"platform"`
-	Environment   *string         `json:"environment"`
-	Release       *string         `json:"release"`
-	DeviceID      *string         `json:"device_id"`
-	DeviceModel   *string         `json:"device_model"`
-	OsVersion     *string         `json:"os_version"`
-	Screen        *string         `json:"screen"`
-	ErrorType     *string         `json:"error_type"`
-	ErrorLocation *string         `json:"error_location"`
-	Handled       *bool           `json:"handled"`
-	SdkName       *string         `json:"sdk_name"`
-	UserID        *string         `json:"user_id"`
-	Fingerprint   *string         `json:"fingerprint"`
-	Tags          json.RawMessage `json:"tags"`
-	Breadcrumbs   json.RawMessage `json:"breadcrumbs"`
-	Payload       json.RawMessage `json:"payload"`
-}
-
-type HourlyStat struct {
-	Hour       time.Time `json:"hour"`
-	Level      string    `json:"level"`
-	CrashCount int64     `json:"crash_count"`
-	FatalCount int64     `json:"fatal_count"`
-	ErrorCount int64     `json:"error_count"`
+type EventStatsHourly struct {
+	Bucket    int64  `json:"bucket"`
+	ProjectID int64  `json:"project_id"`
+	Release   string `json:"release"`
+	Platform  string `json:"platform"`
+	Level     string `json:"level"`
+	Events    int64  `json:"events"`
+	Crashes   int64  `json:"crashes"`
+	Errors    int64  `json:"errors"`
 }
 
 type Issue struct {
-	Fingerprint  string    `json:"fingerprint"`
-	Title        string    `json:"title"`
-	Level        string    `json:"level"`
-	ErrorType    *string   `json:"error_type"`
-	Screen       *string   `json:"screen"`
-	Platform     *string   `json:"platform"`
-	Status       string    `json:"status"`
-	EventCount   int64     `json:"event_count"`
-	FirstSeen    time.Time `json:"first_seen"`
-	LastSeen     time.Time `json:"last_seen"`
-	FirstRelease *string   `json:"first_release"`
-	LastRelease  *string   `json:"last_release"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ProjectID       int64     `json:"project_id"`
+	Fingerprint     string    `json:"fingerprint"`
+	Title           string    `json:"title"`
+	Level           string    `json:"level"`
+	ErrorType       *string   `json:"error_type"`
+	Screen          *string   `json:"screen"`
+	Platform        *string   `json:"platform"`
+	Status          string    `json:"status"`
+	EventCount      int64     `json:"event_count"`
+	StoredCount     int64     `json:"stored_count"`
+	FirstSeen       int64     `json:"first_seen"`
+	LastSeen        int64     `json:"last_seen"`
+	FirstRelease    *string   `json:"first_release"`
+	LastRelease     *string   `json:"last_release"`
+	ResolvedRelease *string   `json:"resolved_release"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-type Release struct {
-	Version     string    `json:"version"`
-	Platform    *string   `json:"platform"`
-	FirstSeen   time.Time `json:"first_seen"`
-	LastSeen    time.Time `json:"last_seen"`
-	CrashCount  int64     `json:"crash_count"`
-	ErrorCount  int64     `json:"error_count"`
-	TotalEvents int64     `json:"total_events"`
+type IssueStatsHourly struct {
+	Bucket      int64  `json:"bucket"`
+	ProjectID   int64  `json:"project_id"`
+	Fingerprint string `json:"fingerprint"`
+	Events      int64  `json:"events"`
 }
 
-type ReleaseHealth struct {
-	Release         string    `json:"release"`
-	Day             time.Time `json:"day"`
-	TotalSessions   int64     `json:"total_sessions"`
-	CrashedSessions int64     `json:"crashed_sessions"`
-	ErroredSessions int64     `json:"errored_sessions"`
+type Job struct {
+	ID        int64           `json:"id"`
+	Kind      string          `json:"kind"`
+	ProjectID int64           `json:"project_id"`
+	Args      json.RawMessage `json:"args"`
+	RunAfter  time.Time       `json:"run_after"`
+	Attempts  int32           `json:"attempts"`
+	LastError *string         `json:"last_error"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+type Project struct {
+	ID              int64     `json:"id"`
+	Slug            string    `json:"slug"`
+	Name            string    `json:"name"`
+	Platform        *string   `json:"platform"`
+	PublicKey       string    `json:"public_key"`
+	SampleKeepFirst int32     `json:"sample_keep_first"`
+	SampleRate      float64   `json:"sample_rate"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type RateLimit struct {
+	RlKey       string `json:"rl_key"`
+	WindowStart int64  `json:"window_start"`
+	Count       int32  `json:"count"`
+}
+
+type ReleaseHealthDaily struct {
+	Bucket    int64  `json:"bucket"`
+	ProjectID int64  `json:"project_id"`
+	Release   string `json:"release"`
+	Total     int64  `json:"total"`
+	Crashed   int64  `json:"crashed"`
+	Errored   int64  `json:"errored"`
+}
+
+type Session struct {
+	ID          int64   `json:"id"`
+	ProjectID   int64   `json:"project_id"`
+	Release     string  `json:"release"`
+	Environment *string `json:"environment"`
+	Status      string  `json:"status"`
+	Count       int32   `json:"count"`
 }
 
 type SymbolFile struct {
-	Platform   string    `json:"platform"`
+	ID         int64     `json:"id"`
+	ProjectID  int64     `json:"project_id"`
+	Kind       string    `json:"kind"`
 	Release    string    `json:"release"`
+	DebugID    *string   `json:"debug_id"`
 	Filename   string    `json:"filename"`
 	Size       int64     `json:"size"`
 	Data       []byte    `json:"data"`
 	UploadedAt time.Time `json:"uploaded_at"`
-}
-
-type UserDevice struct {
-	UserID   string    `json:"user_id"`
-	DeviceID string    `json:"device_id"`
-	LastSeen time.Time `json:"last_seen"`
 }

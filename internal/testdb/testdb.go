@@ -1,7 +1,4 @@
-// Package testdb provides an isolated Postgres schema per test.
-//
-// Set TEST_DATABASE_URL (e.g. a `docker run postgres` instance); tests that
-// need a database skip when it is unset.
+// Package testdb gives DB-backed tests a fresh schema on TEST_DATABASE_URL.
 package testdb
 
 import (
@@ -10,52 +7,47 @@ import (
 	"math/rand/v2"
 	"os"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/newlix/crashcart/internal/db"
+	"github.com/newlix/crashcart/internal/store"
 )
 
-// Pool returns a pool whose search_path is a fresh schema with all
-// migrations applied. The schema is dropped when the test ends.
-func Pool(t *testing.T) *pgxpool.Pool {
+// New returns a Store on a throwaway schema (dropped at cleanup). The test is
+// skipped when TEST_DATABASE_URL is unset.
+func New(t testing.TB) *store.Store {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("TEST_DATABASE_URL not set")
 	}
 	ctx := context.Background()
-	schema := fmt.Sprintf("test_%x", rand.Uint64())
-
-	admin, err := pgx.Connect(ctx, url)
+	schema := fmt.Sprintf("t_%d_%d", os.Getpid(), rand.Int64N(1<<31))
+	admin, err := pgxpool.New(ctx, url)
 	if err != nil {
-		t.Fatalf("connect: %v", err)
+		t.Fatal(err)
 	}
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
-		t.Fatalf("create schema: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
-		_ = admin.Close(ctx)
-	})
-
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
 	if _, err := db.Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := db.EnsureUpcomingPartitions(ctx, pool, time.Now()); err != nil {
-		t.Fatalf("partitions: %v", err)
-	}
-	return pool
+	t.Cleanup(func() {
+		pool.Close()
+		// Continuous aggregates must go before their hypertables.
+		admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+	})
+	return store.New(pool)
 }

@@ -7,344 +7,62 @@ package sqlc
 
 import (
 	"context"
-	"time"
 )
 
-const crashBaselineDailyAvg = `-- name: CrashBaselineDailyAvg :one
-SELECT COALESCE(AVG(daily.crashes), 0)::float8 AS avg
-FROM (
-    SELECT date_trunc('day', hour) AS day, SUM(crash_count) AS crashes
-    FROM hourly_stats
-    WHERE hour >= $1 AND hour < $2
-    GROUP BY 1
-) daily
+const crashSpikeInputs = `-- name: CrashSpikeInputs :one
+SELECT COALESCE(sum(crashes) FILTER (WHERE bucket >= $3), 0)::bigint AS recent,
+       COALESCE(sum(crashes) FILTER (WHERE bucket < $3), 0)::bigint AS baseline
+FROM event_stats_hourly
+WHERE project_id = $1 AND bucket >= $2
 `
 
-type CrashBaselineDailyAvgParams struct {
-	Hour   time.Time `json:"hour"`
-	Hour_2 time.Time `json:"hour_2"`
+type CrashSpikeInputsParams struct {
+	ProjectID int64 `json:"project_id"`
+	Bucket    int64 `json:"bucket"`
+	Bucket_2  int64 `json:"bucket_2"`
 }
 
-// Weekly baseline for crash-spike detection: average daily crashes over
-// [since, until) — the caller excludes the most recent days.
-func (q *Queries) CrashBaselineDailyAvg(ctx context.Context, arg CrashBaselineDailyAvgParams) (float64, error) {
-	row := q.db.QueryRow(ctx, crashBaselineDailyAvg, arg.Hour, arg.Hour_2)
-	var avg float64
-	err := row.Scan(&avg)
-	return avg, err
+type CrashSpikeInputsRow struct {
+	Recent   int64 `json:"recent"`
+	Baseline int64 `json:"baseline"`
 }
 
-const crashesByDay = `-- name: CrashesByDay :many
-SELECT date_trunc('day', hour)::timestamptz AS day, SUM(crash_count)::bigint AS count
-FROM hourly_stats
-WHERE hour >= $1 AND ($2::timestamptz IS NULL OR hour < $2)
-GROUP BY 1
-ORDER BY 1
-`
-
-type CrashesByDayParams struct {
-	Since time.Time  `json:"since"`
-	Until *time.Time `json:"until"`
-}
-
-type CrashesByDayRow struct {
-	Day   time.Time `json:"day"`
-	Count int64     `json:"count"`
-}
-
-func (q *Queries) CrashesByDay(ctx context.Context, arg CrashesByDayParams) ([]CrashesByDayRow, error) {
-	rows, err := q.db.Query(ctx, crashesByDay, arg.Since, arg.Until)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []CrashesByDayRow{}
-	for rows.Next() {
-		var i CrashesByDayRow
-		if err := rows.Scan(&i.Day, &i.Count); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const crashesByHour = `-- name: CrashesByHour :many
-SELECT hour, SUM(crash_count)::bigint AS count
-FROM hourly_stats
-WHERE hour >= $1 AND ($2::timestamptz IS NULL OR hour < $2)
-GROUP BY hour
-ORDER BY hour
-`
-
-type CrashesByHourParams struct {
-	Since time.Time  `json:"since"`
-	Until *time.Time `json:"until"`
-}
-
-type CrashesByHourRow struct {
-	Hour  time.Time `json:"hour"`
-	Count int64     `json:"count"`
-}
-
-func (q *Queries) CrashesByHour(ctx context.Context, arg CrashesByHourParams) ([]CrashesByHourRow, error) {
-	rows, err := q.db.Query(ctx, crashesByHour, arg.Since, arg.Until)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []CrashesByHourRow{}
-	for rows.Next() {
-		var i CrashesByHourRow
-		if err := rows.Scan(&i.Hour, &i.Count); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const deleteHourlyStatsBefore = `-- name: DeleteHourlyStatsBefore :execrows
-DELETE FROM hourly_stats WHERE hour < $1
-`
-
-func (q *Queries) DeleteHourlyStatsBefore(ctx context.Context, hour time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteHourlyStatsBefore, hour)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const deleteReleaseHealthBefore = `-- name: DeleteReleaseHealthBefore :execrows
-DELETE FROM release_health WHERE day < $1
-`
-
-func (q *Queries) DeleteReleaseHealthBefore(ctx context.Context, day time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteReleaseHealthBefore, day)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const listReleaseVersions = `-- name: ListReleaseVersions :many
-SELECT version FROM releases
-WHERE last_seen >= $1 AND ($2::timestamptz IS NULL OR first_seen < $2)
-ORDER BY last_seen DESC
-LIMIT 20
-`
-
-type ListReleaseVersionsParams struct {
-	Since time.Time  `json:"since"`
-	Until *time.Time `json:"until"`
-}
-
-// Versions active in a window (dashboard release picker).
-func (q *Queries) ListReleaseVersions(ctx context.Context, arg ListReleaseVersionsParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listReleaseVersions, arg.Since, arg.Until)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var version string
-		if err := rows.Scan(&version); err != nil {
-			return nil, err
-		}
-		items = append(items, version)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listReleases = `-- name: ListReleases :many
-SELECT version, platform, first_seen, last_seen, crash_count, error_count, total_events FROM releases ORDER BY last_seen DESC LIMIT 50
-`
-
-func (q *Queries) ListReleases(ctx context.Context) ([]Release, error) {
-	rows, err := q.db.Query(ctx, listReleases)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Release{}
-	for rows.Next() {
-		var i Release
-		if err := rows.Scan(
-			&i.Version,
-			&i.Platform,
-			&i.FirstSeen,
-			&i.LastSeen,
-			&i.CrashCount,
-			&i.ErrorCount,
-			&i.TotalEvents,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const releaseHealthSummary = `-- name: ReleaseHealthSummary :many
-SELECT release,
-       SUM(total_sessions)::bigint   AS total_sessions,
-       SUM(crashed_sessions)::bigint AS crashed_sessions,
-       SUM(errored_sessions)::bigint AS errored_sessions
-FROM release_health
-WHERE day >= $1 AND ($2::date IS NULL OR day < $2)
-GROUP BY release
-ORDER BY release DESC
-`
-
-type ReleaseHealthSummaryParams struct {
-	SinceDay time.Time  `json:"since_day"`
-	UntilDay *time.Time `json:"until_day"`
-}
-
-type ReleaseHealthSummaryRow struct {
-	Release         string `json:"release"`
-	TotalSessions   int64  `json:"total_sessions"`
-	CrashedSessions int64  `json:"crashed_sessions"`
-	ErroredSessions int64  `json:"errored_sessions"`
-}
-
-func (q *Queries) ReleaseHealthSummary(ctx context.Context, arg ReleaseHealthSummaryParams) ([]ReleaseHealthSummaryRow, error) {
-	rows, err := q.db.Query(ctx, releaseHealthSummary, arg.SinceDay, arg.UntilDay)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ReleaseHealthSummaryRow{}
-	for rows.Next() {
-		var i ReleaseHealthSummaryRow
-		if err := rows.Scan(
-			&i.Release,
-			&i.TotalSessions,
-			&i.CrashedSessions,
-			&i.ErroredSessions,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const statsByLevel = `-- name: StatsByLevel :many
-SELECT level,
-       (CASE WHEN level = 'fatal' THEN SUM(fatal_count) ELSE SUM(error_count + crash_count) END)::bigint AS count
-FROM hourly_stats
-WHERE hour >= $1 AND ($2::timestamptz IS NULL OR hour < $2)
-GROUP BY level
-ORDER BY level
-`
-
-type StatsByLevelParams struct {
-	Since time.Time  `json:"since"`
-	Until *time.Time `json:"until"`
-}
-
-type StatsByLevelRow struct {
-	Level string `json:"level"`
-	Count int64  `json:"count"`
-}
-
-// Per-level event counts: a fatal row counts fatal events, an error row
-// counts handled + unhandled errors.
-func (q *Queries) StatsByLevel(ctx context.Context, arg StatsByLevelParams) ([]StatsByLevelRow, error) {
-	rows, err := q.db.Query(ctx, statsByLevel, arg.Since, arg.Until)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []StatsByLevelRow{}
-	for rows.Next() {
-		var i StatsByLevelRow
-		if err := rows.Scan(&i.Level, &i.Count); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const statsTotals = `-- name: StatsTotals :one
-SELECT COALESCE(SUM(fatal_count), 0)::bigint AS fatal,
-       COALESCE(SUM(crash_count), 0)::bigint AS crash,
-       COALESCE(SUM(error_count), 0)::bigint AS error
-FROM hourly_stats
-WHERE hour >= $1 AND ($2::timestamptz IS NULL OR hour < $2)
-`
-
-type StatsTotalsParams struct {
-	Since time.Time  `json:"since"`
-	Until *time.Time `json:"until"`
-}
-
-type StatsTotalsRow struct {
-	Fatal int64 `json:"fatal"`
-	Crash int64 `json:"crash"`
-	Error int64 `json:"error"`
-}
-
-// Totals for a window. `until` NULL = open-ended.
-func (q *Queries) StatsTotals(ctx context.Context, arg StatsTotalsParams) (StatsTotalsRow, error) {
-	row := q.db.QueryRow(ctx, statsTotals, arg.Since, arg.Until)
-	var i StatsTotalsRow
-	err := row.Scan(&i.Fatal, &i.Crash, &i.Error)
+// Crashes in the last hour vs. the hourly mean of the 24 h before it.
+func (q *Queries) CrashSpikeInputs(ctx context.Context, arg CrashSpikeInputsParams) (CrashSpikeInputsRow, error) {
+	row := q.db.QueryRow(ctx, crashSpikeInputs, arg.ProjectID, arg.Bucket, arg.Bucket_2)
+	var i CrashSpikeInputsRow
+	err := row.Scan(&i.Recent, &i.Baseline)
 	return i, err
 }
 
-const volumeByDay = `-- name: VolumeByDay :many
-SELECT date_trunc('day', hour)::timestamptz AS day, level,
-       (CASE WHEN level = 'fatal' THEN SUM(fatal_count) ELSE SUM(error_count + crash_count) END)::bigint AS count
-FROM hourly_stats
-WHERE hour >= $1 AND ($2::timestamptz IS NULL OR hour < $2)
-GROUP BY 1, level
-ORDER BY 1, level
+const levelTotals = `-- name: LevelTotals :many
+SELECT level, sum(events)::bigint AS events
+FROM event_stats_hourly
+WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+GROUP BY level
 `
 
-type VolumeByDayParams struct {
-	Since time.Time  `json:"since"`
-	Until *time.Time `json:"until"`
+type LevelTotalsParams struct {
+	ProjectID int64 `json:"project_id"`
+	Bucket    int64 `json:"bucket"`
+	Bucket_2  int64 `json:"bucket_2"`
 }
 
-type VolumeByDayRow struct {
-	Day   time.Time `json:"day"`
-	Level string    `json:"level"`
-	Count int64     `json:"count"`
+type LevelTotalsRow struct {
+	Level  string `json:"level"`
+	Events int64  `json:"events"`
 }
 
-func (q *Queries) VolumeByDay(ctx context.Context, arg VolumeByDayParams) ([]VolumeByDayRow, error) {
-	rows, err := q.db.Query(ctx, volumeByDay, arg.Since, arg.Until)
+func (q *Queries) LevelTotals(ctx context.Context, arg LevelTotalsParams) ([]LevelTotalsRow, error) {
+	rows, err := q.db.Query(ctx, levelTotals, arg.ProjectID, arg.Bucket, arg.Bucket_2)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []VolumeByDayRow{}
+	items := []LevelTotalsRow{}
 	for rows.Next() {
-		var i VolumeByDayRow
-		if err := rows.Scan(&i.Day, &i.Level, &i.Count); err != nil {
+		var i LevelTotalsRow
+		if err := rows.Scan(&i.Level, &i.Events); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -355,36 +73,50 @@ func (q *Queries) VolumeByDay(ctx context.Context, arg VolumeByDayParams) ([]Vol
 	return items, nil
 }
 
-const volumeByHour = `-- name: VolumeByHour :many
-SELECT hour, level,
-       (CASE WHEN level = 'fatal' THEN SUM(fatal_count) ELSE SUM(error_count + crash_count) END)::bigint AS count
-FROM hourly_stats
-WHERE hour >= $1 AND ($2::timestamptz IS NULL OR hour < $2)
-GROUP BY hour, level
-ORDER BY hour, level
+const releaseStats = `-- name: ReleaseStats :many
+SELECT release, platform,
+       min(bucket)::bigint AS first_seen, max(bucket)::bigint AS last_seen,
+       sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
+FROM event_stats_hourly
+WHERE project_id = $1 AND bucket >= $2 AND bucket < $3 AND release <> ''
+GROUP BY release, platform ORDER BY max(bucket) DESC
 `
 
-type VolumeByHourParams struct {
-	Since time.Time  `json:"since"`
-	Until *time.Time `json:"until"`
+type ReleaseStatsParams struct {
+	ProjectID int64 `json:"project_id"`
+	Bucket    int64 `json:"bucket"`
+	Bucket_2  int64 `json:"bucket_2"`
 }
 
-type VolumeByHourRow struct {
-	Hour  time.Time `json:"hour"`
-	Level string    `json:"level"`
-	Count int64     `json:"count"`
+type ReleaseStatsRow struct {
+	Release   string `json:"release"`
+	Platform  string `json:"platform"`
+	FirstSeen int64  `json:"first_seen"`
+	LastSeen  int64  `json:"last_seen"`
+	Events    int64  `json:"events"`
+	Crashes   int64  `json:"crashes"`
+	Errors    int64  `json:"errors"`
 }
 
-func (q *Queries) VolumeByHour(ctx context.Context, arg VolumeByHourParams) ([]VolumeByHourRow, error) {
-	rows, err := q.db.Query(ctx, volumeByHour, arg.Since, arg.Until)
+// Every release with activity in the window (plus all-time first/last seen).
+func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]ReleaseStatsRow, error) {
+	rows, err := q.db.Query(ctx, releaseStats, arg.ProjectID, arg.Bucket, arg.Bucket_2)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []VolumeByHourRow{}
+	items := []ReleaseStatsRow{}
 	for rows.Next() {
-		var i VolumeByHourRow
-		if err := rows.Scan(&i.Hour, &i.Level, &i.Count); err != nil {
+		var i ReleaseStatsRow
+		if err := rows.Scan(
+			&i.Release,
+			&i.Platform,
+			&i.FirstSeen,
+			&i.LastSeen,
+			&i.Events,
+			&i.Crashes,
+			&i.Errors,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -393,4 +125,127 @@ func (q *Queries) VolumeByHour(ctx context.Context, arg VolumeByHourParams) ([]V
 		return nil, err
 	}
 	return items, nil
+}
+
+const releaseTimeline = `-- name: ReleaseTimeline :many
+SELECT bucket, sum(events)::bigint AS events, sum(crashes)::bigint AS crashes
+FROM event_stats_hourly
+WHERE project_id = $1 AND release = $2 AND bucket >= $3 AND bucket < $4
+GROUP BY bucket ORDER BY bucket
+`
+
+type ReleaseTimelineParams struct {
+	ProjectID int64  `json:"project_id"`
+	Release   string `json:"release"`
+	Bucket    int64  `json:"bucket"`
+	Bucket_2  int64  `json:"bucket_2"`
+}
+
+type ReleaseTimelineRow struct {
+	Bucket  int64 `json:"bucket"`
+	Events  int64 `json:"events"`
+	Crashes int64 `json:"crashes"`
+}
+
+func (q *Queries) ReleaseTimeline(ctx context.Context, arg ReleaseTimelineParams) ([]ReleaseTimelineRow, error) {
+	rows, err := q.db.Query(ctx, releaseTimeline,
+		arg.ProjectID,
+		arg.Release,
+		arg.Bucket,
+		arg.Bucket_2,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ReleaseTimelineRow{}
+	for rows.Next() {
+		var i ReleaseTimelineRow
+		if err := rows.Scan(&i.Bucket, &i.Events, &i.Crashes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const timeline = `-- name: Timeline :many
+SELECT bucket, release, platform,
+       sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
+FROM event_stats_hourly
+WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+GROUP BY bucket, release, platform ORDER BY bucket
+`
+
+type TimelineParams struct {
+	ProjectID int64 `json:"project_id"`
+	Bucket    int64 `json:"bucket"`
+	Bucket_2  int64 `json:"bucket_2"`
+}
+
+type TimelineRow struct {
+	Bucket   int64  `json:"bucket"`
+	Release  string `json:"release"`
+	Platform string `json:"platform"`
+	Events   int64  `json:"events"`
+	Crashes  int64  `json:"crashes"`
+	Errors   int64  `json:"errors"`
+}
+
+// Hourly buckets over a window, split by release (the top-N is done in Go).
+func (q *Queries) Timeline(ctx context.Context, arg TimelineParams) ([]TimelineRow, error) {
+	rows, err := q.db.Query(ctx, timeline, arg.ProjectID, arg.Bucket, arg.Bucket_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TimelineRow{}
+	for rows.Next() {
+		var i TimelineRow
+		if err := rows.Scan(
+			&i.Bucket,
+			&i.Release,
+			&i.Platform,
+			&i.Events,
+			&i.Crashes,
+			&i.Errors,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const totals = `-- name: Totals :one
+SELECT COALESCE(sum(events), 0)::bigint AS events,
+       COALESCE(sum(crashes), 0)::bigint AS crashes,
+       COALESCE(sum(errors), 0)::bigint AS errors
+FROM event_stats_hourly
+WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+`
+
+type TotalsParams struct {
+	ProjectID int64 `json:"project_id"`
+	Bucket    int64 `json:"bucket"`
+	Bucket_2  int64 `json:"bucket_2"`
+}
+
+type TotalsRow struct {
+	Events  int64 `json:"events"`
+	Crashes int64 `json:"crashes"`
+	Errors  int64 `json:"errors"`
+}
+
+func (q *Queries) Totals(ctx context.Context, arg TotalsParams) (TotalsRow, error) {
+	row := q.db.QueryRow(ctx, totals, arg.ProjectID, arg.Bucket, arg.Bucket_2)
+	var i TotalsRow
+	err := row.Scan(&i.Events, &i.Crashes, &i.Errors)
+	return i, err
 }

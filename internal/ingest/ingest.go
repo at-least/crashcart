@@ -1,392 +1,376 @@
-// Package ingest turns Sentry envelopes into rows: one COPY into events plus
-// pre-folded aggregate upserts, all in a single transaction.
+// Package ingest is the Sentry-compatible write path:
+//
+//	POST /api/{project_id}/envelope/   (envelope protocol — every modern SDK)
+//	POST /api/{project_id}/store/      (legacy single-event JSON)
+//
+// The DSN public key authenticates the request. Per envelope, one
+// transaction writes events, sessions and the folded issue upserts; the
+// only work deferred to the job worker is symbolication that needs a
+// symbol file not yet cached, and alert delivery.
 package ingest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/rand/v2"
-	"sort"
+	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/newlix/crashcart/internal/auth"
+	"github.com/newlix/crashcart/internal/config"
 	"github.com/newlix/crashcart/internal/db/sqlc"
 	"github.com/newlix/crashcart/internal/pk"
 	"github.com/newlix/crashcart/internal/sentry"
+	"github.com/newlix/crashcart/internal/store"
 )
 
-// Options tunes an Ingester.
-type Options struct {
-	Redact     bool
-	SampleRate float64
-	MaxEvents  int // per envelope (default 500)
-	Now        func() time.Time
-	Rand       func() float64
-	RandID     func() int64 // random suffix source for event ids
+// Limits on what one request may carry.
+const (
+	MaxBody   = 20 << 20 // 20 MB envelope
+	MaxEvents = 500
+)
+
+// Symbolicator resolves frames inline when a mapping is already cached.
+// ok=false means "not now" — the event is stored as-is and a job is queued.
+type Symbolicator interface {
+	Inline(ctx context.Context, projectID int64, ev *sentry.Event) (frames []sentry.Frame, ok bool)
 }
 
-// Ingester writes envelopes to Postgres.
+// Ingester holds the dependencies of the write path.
 type Ingester struct {
-	pool *pgxpool.Pool
-	opts Options
+	Store   *store.Store
+	Cfg     config.Config
+	Symbols Symbolicator // may be nil
+	Log     *slog.Logger
+
+	mu    sync.Mutex
+	byKey map[string]cachedProject
 }
 
-// Result summarizes one ingested envelope.
+type cachedProject struct {
+	p   sqlc.Project
+	exp time.Time
+}
+
+// Result summarizes one Ingest call.
 type Result struct {
-	Events   int
-	Sessions int
-	Dropped  int // events removed by sampling
+	Received    int      // events parsed
+	Stored      int      // events written
+	Sampled     int      // events counted but not stored
+	Sessions    int      // session rows written
+	NewIssues   []string // fingerprints created by this envelope
+	Regressions []string // fingerprints flipped to 'regression'
+	Jobs        int
 }
 
-var (
-	// ErrEmpty: nothing usable in the envelope.
-	ErrEmpty = errors.New("no events in envelope")
-	// ErrTooManyEvents: the envelope exceeds MaxEvents.
-	ErrTooManyEvents = errors.New("too many events in envelope")
-)
-
-// New returns an Ingester bound to pool.
-func New(pool *pgxpool.Pool, opts Options) *Ingester {
-	if opts.MaxEvents <= 0 {
-		opts.MaxEvents = 500
-	}
-	if opts.Now == nil {
-		opts.Now = time.Now
-	}
-	if opts.Rand == nil {
-		opts.Rand = rand.Float64
-	}
-	if opts.RandID == nil {
-		opts.RandID = rand.Int64
-	}
-	if opts.SampleRate <= 0 && opts.SampleRate != 0 {
-		opts.SampleRate = 1
-	}
-	return &Ingester{pool: pool, opts: opts}
+// Handler routes the Sentry endpoints. The {project} path value is the
+// numeric DSN project id; it is checked against the key's project.
+func (in *Ingester) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/{project}/envelope/", in.serveEnvelope)
+	mux.HandleFunc("POST /api/{project}/envelope", in.serveEnvelope)
+	mux.HandleFunc("POST /api/{project}/store/", in.serveStore)
+	mux.HandleFunc("POST /api/{project}/store", in.serveStore)
+	rl := auth.RateLimit(in.Store, in.Cfg.RateLimit, auth.SentryKey)
+	return auth.Chain(mux, auth.CORS(in.Cfg.CORSOrigin), rl)
 }
 
-// Ingest parses and stores one envelope body.
-func (in *Ingester) Ingest(ctx context.Context, body []byte) (Result, error) {
-	now := in.opts.Now().UTC()
+// Project resolves the DSN key (cached 60 s) and checks the path id.
+func (in *Ingester) Project(r *http.Request) (sqlc.Project, error) {
+	key := auth.SentryKey(r)
+	if key == "" {
+		return sqlc.Project{}, errUnauthorized
+	}
+	in.mu.Lock()
+	c, ok := in.byKey[key]
+	in.mu.Unlock()
+	if !ok || time.Now().After(c.exp) {
+		p, err := in.Store.GetProjectByKey(r.Context(), key)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return sqlc.Project{}, errUnauthorized
+		}
+		if err != nil {
+			return sqlc.Project{}, err
+		}
+		c = cachedProject{p: p, exp: time.Now().Add(time.Minute)}
+		in.mu.Lock()
+		if in.byKey == nil {
+			in.byKey = map[string]cachedProject{}
+		}
+		in.byKey[key] = c
+		in.mu.Unlock()
+	}
+	if pid := r.PathValue("project"); pid != "" && pid != fmt.Sprint(c.p.ID) && pid != c.p.Slug {
+		return sqlc.Project{}, errUnauthorized
+	}
+	return c.p, nil
+}
+
+var errUnauthorized = errors.New("unauthorized")
+
+func (in *Ingester) serveEnvelope(w http.ResponseWriter, r *http.Request) {
+	p, err := in.Project(r)
+	if err != nil {
+		in.fail(w, err)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+	if err != nil {
+		http.Error(w, `{"error":"body too large"}`, http.StatusRequestEntityTooLarge)
+		return
+	}
+	now := time.Now().UTC()
 	env := sentry.Parse(body, now)
+	if len(env.Events) > MaxEvents {
+		http.Error(w, `{"error":"too many events"}`, http.StatusRequestEntityTooLarge)
+		return
+	}
+	res, err := in.Ingest(r.Context(), p, env, now)
+	if err != nil {
+		in.fail(w, err)
+		return
+	}
+	in.ok(w, res, firstEventID(env))
+}
 
+func (in *Ingester) serveStore(w http.ResponseWriter, r *http.Request) {
+	p, err := in.Project(r)
+	if err != nil {
+		in.fail(w, err)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+	if err != nil {
+		http.Error(w, `{"error":"body too large"}`, http.StatusRequestEntityTooLarge)
+		return
+	}
+	now := time.Now().UTC()
+	var env sentry.Envelope
+	if ev := sentry.ParseEvent("", now, body, now); ev != nil {
+		env.Events = append(env.Events, ev)
+	}
+	res, err := in.Ingest(r.Context(), p, env, now)
+	if err != nil {
+		in.fail(w, err)
+		return
+	}
+	in.ok(w, res, firstEventID(env))
+}
+
+func firstEventID(env sentry.Envelope) string {
+	if len(env.Events) > 0 {
+		return env.Events[0].EventID
+	}
+	return ""
+}
+
+func (in *Ingester) ok(w http.ResponseWriter, res Result, id string) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions})
+}
+
+func (in *Ingester) fail(w http.ResponseWriter, err error) {
+	if errors.Is(err, errUnauthorized) {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	in.Log.Error("ingest", "err", err)
+	http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
+}
+
+// prepared is one event after analysis, before the write.
+type prepared struct {
+	ev          *sentry.Event
+	frames      []sentry.Frame // symbolicated when inline succeeded
+	symbolicated bool
+	fingerprint string
+	location    string
+	store       bool
+}
+
+// Ingest writes one parsed envelope for project p.
+func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envelope, now time.Time) (Result, error) {
 	var res Result
-	events := env.Events[:0:0]
-	for _, e := range env.Events {
-		if keep(e.Level, in.opts.SampleRate, in.opts.Rand) {
-			events = append(events, e)
+	res.Received = len(env.Events)
+	if len(env.Events) == 0 && len(env.Sessions) == 0 {
+		return res, nil
+	}
+
+	// 1. Analyze. Inline symbolication when a mapping is cached; the
+	//    fingerprint is computed on the best frames we have.
+	preps := make([]*prepared, 0, len(env.Events))
+	groups := map[string][]*prepared{}
+	var order []string
+	for _, ev := range env.Events {
+		if in.Cfg.PIIRedact {
+			redact(ev)
+		}
+		pr := &prepared{ev: ev, frames: ev.Frames()}
+		if in.Symbols != nil && ev.NeedsSymbolication() {
+			if fr, ok := in.Symbols.Inline(ctx, p.ID, ev); ok {
+				pr.frames, pr.symbolicated = fr, true
+			}
+		}
+		pr.fingerprint = sentry.Fingerprint(ev, pr.frames)
+		pr.location = sentry.ErrorLocation(pr.frames)
+		preps = append(preps, pr)
+		if pr.fingerprint != "" {
+			if _, seen := groups[pr.fingerprint]; !seen {
+				order = append(order, pr.fingerprint)
+			}
+			groups[pr.fingerprint] = append(groups[pr.fingerprint], pr)
 		} else {
-			res.Dropped++
+			pr.store = in.Cfg.PIIRedact || rand.Float64() < p.SampleRate || p.SampleRate >= 1
 		}
 	}
-	if len(events) == 0 && len(env.Sessions) == 0 {
-		return res, ErrEmpty
-	}
-	if len(events) > in.opts.MaxEvents {
-		return res, ErrTooManyEvents
-	}
-	res.Events, res.Sessions = len(events), len(env.Sessions)
 
-	b := in.build(events, env.Sessions)
-
-	// The id carries the event time plus a random suffix (internal/pk); a
-	// clash with a row from another envelope is a unique violation, so
-	// re-roll the suffixes and try again rather than fail the envelope.
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		in.assignIDs(b.events, b.times)
-		if err = in.write(ctx, b); !isUniqueViolation(err) {
-			break
+	// 2. One transaction: issues (folded per fingerprint), sampling, events, sessions, jobs.
+	var jobs []sqlc.EnqueueJobParams
+	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+		for _, fp := range order {
+			g := groups[fp]
+			first := g[0]
+			var minID, maxID int64
+			var lastRelease *string
+			level := "error"
+			for _, pr := range g {
+				id := pk.Lower(pr.ev.Timestamp)
+				if minID == 0 || id < minID {
+					minID = id
+				}
+				if id >= maxID {
+					maxID = id
+					lastRelease = nilIfEmpty(pr.ev.Release)
+				}
+				if pr.ev.Level == "fatal" {
+					level = "fatal"
+				}
+			}
+			row, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
+				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: level,
+				ErrorType: nilIfEmpty(first.ev.ErrorType), Screen: nilIfEmpty(first.ev.Screen), Platform: nilIfEmpty(first.ev.Platform),
+				EventCount: int64(len(g)), StoredCount: 0, FirstSeen: minID, LastSeen: maxID, FirstRelease: lastRelease,
+			})
+			if err != nil {
+				return fmt.Errorf("upsert issue: %w", err)
+			}
+			if row.Created {
+				res.NewIssues = append(res.NewIssues, fp)
+				jobs = append(jobs, alertJob(p.ID, "new_issue", fp))
+			} else if row.Status == "regression" && row.UpdatedAt.After(now.Add(-time.Second)) && regressedNow(row) {
+				res.Regressions = append(res.Regressions, fp)
+				jobs = append(jobs, alertJob(p.ID, "regression", fp))
+			}
+			// Sampling: keep the first N per issue, then a fraction; fatal always.
+			prev := row.EventCount - int64(len(g))
+			stored := int64(0)
+			for i, pr := range g {
+				seq := prev + int64(i) + 1
+				pr.store = pr.ev.Level == "fatal" || seq <= int64(p.SampleKeepFirst) || p.SampleRate >= 1 || rand.Float64() < p.SampleRate
+				if pr.store {
+					stored++
+				}
+			}
+			if stored > 0 {
+				if err := q.AddIssueStored(ctx, sqlc.AddIssueStoredParams{ProjectID: p.ID, Fingerprint: fp, StoredCount: stored}); err != nil {
+					return err
+				}
+			}
 		}
-	}
+
+		rows := make([]store.EventInsert, 0, len(preps))
+		for _, pr := range preps {
+			if !pr.store {
+				res.Sampled++
+				continue
+			}
+			ev := pr.ev
+			id := pk.New(ev.Timestamp)
+			tags, _ := json.Marshal(ev.Tags)
+			crumbs, _ := json.Marshal(nonNil(ev.Breadcrumbs))
+			var symbols json.RawMessage
+			if pr.symbolicated {
+				symbols, _ = json.Marshal(pr.frames)
+			}
+			rows = append(rows, store.EventInsert{
+				ID: id, ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message,
+				Platform: nilIfEmpty(ev.Platform), Environment: nilIfEmpty(ev.Environment), Release: nilIfEmpty(ev.Release),
+				DeviceID: nilIfEmpty(ev.DeviceID()), DeviceModel: nilIfEmpty(ev.DeviceModel), OSVersion: nilIfEmpty(ev.OSVersion),
+				Screen: nilIfEmpty(ev.Screen), ErrorType: nilIfEmpty(ev.ErrorType), ErrorLocation: nilIfEmpty(pr.location),
+				Handled: ev.Handled, SDKName: nilIfEmpty(ev.SDKName), UserID: nilIfEmpty(ev.UserID),
+				Fingerprint: nilIfEmpty(pr.fingerprint), Symbolicated: pr.symbolicated,
+				Tags: tags, Breadcrumbs: crumbs, Payload: ev.Raw, Symbols: symbols,
+			})
+			if !pr.symbolicated && ev.NeedsSymbolication() && pr.fingerprint != "" {
+				args, _ := json.Marshal(map[string]any{"event": id})
+				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
+			}
+		}
+		if err := store.InsertEvents(ctx, tx, rows); err != nil {
+			return fmt.Errorf("insert events: %w", err)
+		}
+		res.Stored = len(rows)
+
+		for _, s := range env.Sessions {
+			if err := q.InsertSession(ctx, sqlc.InsertSessionParams{
+				ID: pk.New(s.StartedAt), ProjectID: p.ID, Release: s.Release, Environment: nilIfEmpty(s.Environment),
+				Status: s.Status, Count: int32(max(s.Count, 1)),
+			}); err != nil {
+				return fmt.Errorf("insert session: %w", err)
+			}
+			res.Sessions++
+		}
+		for _, j := range jobs {
+			if err := q.EnqueueJob(ctx, j); err != nil {
+				return err
+			}
+		}
+		res.Jobs = len(jobs)
+		return nil
+	})
 	return res, err
 }
 
-// assignIDs gives every event an id unique within the batch (the COPY has
-// no ON CONFLICT), bumping the suffix on an in-batch clash.
-func (in *Ingester) assignIDs(events []sqlc.InsertEventsParams, times []time.Time) {
-	seen := make(map[int64]struct{}, len(events))
-	for i := range events {
-		id := pk.New(times[i], in.opts.RandID)
-		for {
-			if _, dup := seen[id]; !dup {
-				break
-			}
-			id = pk.Lower(times[i]) + (id+1)%pk.Scale
-		}
-		seen[id] = struct{}{}
-		events[i].ID = id
-	}
+// regressedNow is true when the upsert flipped the status in this call:
+// the row is a regression and its updated_at is fresh. Callers already
+// checked the timestamp; this exists to keep the intent readable.
+func regressedNow(row sqlc.UpsertIssueRow) bool { return row.Status == "regression" }
+
+func alertJob(projectID int64, typ, fp string) sqlc.EnqueueJobParams {
+	args, _ := json.Marshal(map[string]any{"type": typ, "fingerprint": fp})
+	return sqlc.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
 }
 
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+func redact(ev *sentry.Event) {
+	ev.Message = RedactText(ev.Message)
+	ev.Tags = RedactTags(ev.Tags)
+	ev.UserID = RedactUserID(ev.UserID)
+	for i := range ev.Breadcrumbs {
+		ev.Breadcrumbs[i].Message = RedactText(ev.Breadcrumbs[i].Message)
+	}
+	// The raw payload is stored verbatim otherwise; with redaction on we
+	// scrub the whole document textually so nothing leaks via detail views.
+	ev.Raw = []byte(RedactText(string(ev.Raw)))
 }
 
-func (in *Ingester) write(ctx context.Context, b batch) error {
-	tx, err := in.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	q := sqlc.New(tx)
-
-	if len(b.events) > 0 {
-		if _, err := q.InsertEvents(ctx, b.events); err != nil {
-			return fmt.Errorf("insert events: %w", err)
-		}
-	}
-	if err := batchErr("user_devices", q.UpsertUserDevice(ctx, b.devices).Exec); err != nil {
-		return err
-	}
-	if err := batchErr("hourly_stats", q.UpsertHourlyStats(ctx, b.hourly).Exec); err != nil {
-		return err
-	}
-	if err := batchErr("releases", q.UpsertRelease(ctx, b.releases).Exec); err != nil {
-		return err
-	}
-	if err := batchErr("issues", q.UpsertIssue(ctx, b.issues).Exec); err != nil {
-		return err
-	}
-	if err := batchErr("release_health", q.UpsertReleaseHealth(ctx, b.health).Exec); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-func batchErr(name string, exec func(func(int, error))) error {
-	var first error
-	exec(func(i int, err error) {
-		if err != nil && first == nil {
-			first = fmt.Errorf("%s[%d]: %w", name, i, err)
-		}
-	})
-	return first
-}
-
-// batch is everything one envelope writes, with aggregate keys sorted so
-// concurrent ingests take row locks in the same order (no deadlocks).
-type batch struct {
-	events []sqlc.InsertEventsParams // ids assigned by assignIDs from times
-	times  []time.Time
-
-	devices  []sqlc.UpsertUserDeviceParams
-	hourly   []sqlc.UpsertHourlyStatsParams
-	releases []sqlc.UpsertReleaseParams
-	issues   []sqlc.UpsertIssueParams
-	health   []sqlc.UpsertReleaseHealthParams
-}
-
-func (in *Ingester) build(events []*sentry.Event, sessions []sentry.Session) batch {
-	var b batch
-	type devKey struct{ user, device string }
-	devices := map[devKey]time.Time{}
-	type hourKey struct {
-		hour  time.Time
-		level string
-	}
-	hourly := map[hourKey]*sqlc.UpsertHourlyStatsParams{}
-	releases := map[string]*sqlc.UpsertReleaseParams{}
-	issues := map[string]*sqlc.UpsertIssueParams{}
-
-	for _, e := range events {
-		ts := e.Timestamp.UTC()
-		userID := e.UserID
-		message := e.Message
-		tags := e.Tags
-		if in.opts.Redact {
-			userID = RedactUserID(userID)
-			message = RedactText(message)
-			tags = RedactTags(tags)
-		}
-		deviceID := e.DeviceID()
-
-		var fp, loc string
-		if e.ErrorType != "" {
-			fp = e.Fingerprint()
-			loc = e.Analyze().ErrorLocation
-		}
-		tagsJSON, _ := json.Marshal(tags)
-		crumbsJSON, _ := json.Marshal(e.Breadcrumbs)
-		if e.Breadcrumbs == nil {
-			crumbsJSON = []byte("[]")
-		}
-		// jsonb rejects NUL characters inside strings.
-		payload := bytes.ReplaceAll(e.Raw, []byte(`\u0000`), nil)
-
-		b.times = append(b.times, ts)
-		b.events = append(b.events, sqlc.InsertEventsParams{
-			EventID:       nullable(e.EventID),
-			Level:         e.Level,
-			Message:       message,
-			Platform:      nullable(e.Platform),
-			Environment:   nullable(e.Environment),
-			Release:       nullable(e.Release),
-			DeviceID:      nullable(deviceID),
-			DeviceModel:   nullable(e.DeviceModel),
-			OsVersion:     nullable(e.OSVersion),
-			Screen:        nullable(e.Screen),
-			ErrorType:     nullable(e.ErrorType),
-			ErrorLocation: nullable(loc),
-			Handled:       e.Handled,
-			SdkName:       nullable(e.SDKName),
-			UserID:        nullable(userID),
-			Fingerprint:   nullable(fp),
-			Tags:          tagsJSON,
-			Breadcrumbs:   crumbsJSON,
-			Payload:       payload,
-		})
-
-		if userID != "" && deviceID != "" {
-			k := devKey{userID, deviceID}
-			if prev, ok := devices[k]; !ok || ts.After(prev) {
-				devices[k] = ts
-			}
-		}
-
-		crash := e.IsCrash()
-		if e.Level == "error" || e.Level == "fatal" {
-			k := hourKey{ts.Truncate(time.Hour), e.Level}
-			h := hourly[k]
-			if h == nil {
-				h = &sqlc.UpsertHourlyStatsParams{Hour: k.hour, Level: k.level}
-				hourly[k] = h
-			}
-			if crash {
-				h.CrashCount++
-			}
-			if e.Level == "fatal" {
-				h.FatalCount++
-			} else if e.Handled == nil || *e.Handled {
-				h.ErrorCount++
-			}
-		}
-
-		if e.Release != "" {
-			r := releases[e.Release]
-			if r == nil {
-				r = &sqlc.UpsertReleaseParams{Version: e.Release, Platform: nullable(e.Platform), FirstSeen: ts, LastSeen: ts}
-				releases[e.Release] = r
-			}
-			if ts.Before(r.FirstSeen) {
-				r.FirstSeen = ts
-			}
-			if ts.After(r.LastSeen) {
-				r.LastSeen = ts
-			}
-			if crash {
-				r.CrashCount++
-			}
-			if e.Level == "error" || e.Level == "fatal" {
-				r.ErrorCount++
-			}
-			r.TotalEvents++
-		}
-
-		if fp != "" {
-			is := issues[fp]
-			if is == nil {
-				is = &sqlc.UpsertIssueParams{
-					Fingerprint:  fp,
-					Title:        e.IssueTitle(),
-					Level:        e.Level,
-					ErrorType:    nullable(e.ErrorType),
-					Screen:       nullable(e.Screen),
-					Platform:     nullable(e.Platform),
-					FirstSeen:    ts,
-					LastSeen:     ts,
-					FirstRelease: nullable(e.Release),
-					LastRelease:  nullable(e.Release),
-				}
-				issues[fp] = is
-			}
-			is.EventCount++
-			if ts.Before(is.FirstSeen) {
-				is.FirstSeen = ts
-				if e.Release != "" {
-					is.FirstRelease = nullable(e.Release)
-				}
-			}
-			if !ts.Before(is.LastSeen) {
-				is.LastSeen = ts
-				if e.Release != "" {
-					is.LastRelease = nullable(e.Release)
-				}
-			}
-		}
-	}
-
-	type healthKey struct {
-		release string
-		day     time.Time
-	}
-	health := map[healthKey]*sqlc.UpsertReleaseHealthParams{}
-	for _, s := range sessions {
-		d := s.StartedAt.UTC()
-		k := healthKey{s.Release, time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC)}
-		h := health[k]
-		if h == nil {
-			h = &sqlc.UpsertReleaseHealthParams{Release: k.release, Day: k.day}
-			health[k] = h
-		}
-		h.TotalSessions++
-		switch s.Status {
-		case "crashed":
-			h.CrashedSessions++
-			h.ErroredSessions++
-		case "errored", "abnormal":
-			h.ErroredSessions++
-		}
-	}
-
-	for k, ts := range devices {
-		b.devices = append(b.devices, sqlc.UpsertUserDeviceParams{UserID: k.user, DeviceID: k.device, LastSeen: ts})
-	}
-	sort.Slice(b.devices, func(i, j int) bool {
-		if b.devices[i].UserID != b.devices[j].UserID {
-			return b.devices[i].UserID < b.devices[j].UserID
-		}
-		return b.devices[i].DeviceID < b.devices[j].DeviceID
-	})
-	for _, h := range hourly {
-		b.hourly = append(b.hourly, *h)
-	}
-	sort.Slice(b.hourly, func(i, j int) bool {
-		if !b.hourly[i].Hour.Equal(b.hourly[j].Hour) {
-			return b.hourly[i].Hour.Before(b.hourly[j].Hour)
-		}
-		return b.hourly[i].Level < b.hourly[j].Level
-	})
-	for _, r := range releases {
-		b.releases = append(b.releases, *r)
-	}
-	sort.Slice(b.releases, func(i, j int) bool { return b.releases[i].Version < b.releases[j].Version })
-	for _, is := range issues {
-		b.issues = append(b.issues, *is)
-	}
-	sort.Slice(b.issues, func(i, j int) bool { return b.issues[i].Fingerprint < b.issues[j].Fingerprint })
-	for _, h := range health {
-		b.health = append(b.health, *h)
-	}
-	sort.Slice(b.health, func(i, j int) bool {
-		if b.health[i].Release != b.health[j].Release {
-			return b.health[i].Release < b.health[j].Release
-		}
-		return b.health[i].Day.Before(b.health[j].Day)
-	})
-	return b
-}
-
-func nullable(s string) *string {
-	if s == "" {
+func nilIfEmpty(s string) *string {
+	if strings.TrimSpace(s) == "" {
 		return nil
 	}
 	return &s
+}
+
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }

@@ -1,7 +1,7 @@
 version: "2"
 sql:
   - engine: postgresql
-    schema: internal/db/migrations
+    schema: internal/db/sqlc_schema.sql
     queries: internal/db/queries
     gen:
       go:
@@ -20,12 +20,8 @@ sql:
             go_type:
               type: "time.Time"
               pointer: true
-          - db_type: "date"
-            go_type: "time.Time"
-          - db_type: "date"
-            nullable: true
-            go_type:
-              type: "time.Time"
-              pointer: true
           - db_type: "jsonb"
+            go_type: "encoding/json.RawMessage"
+          - db_type: "jsonb"
+            nullable: true
             go_type: "encoding/json.RawMessage"

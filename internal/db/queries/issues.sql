@@ -1,50 +1,74 @@
--- Insert-side values describe the first event of the fingerprint in this
--- batch; on conflict counters accumulate, last_* follow the newest event,
--- and a resolved issue that reappears in a different release regresses.
--- name: UpsertIssue :batchexec
-INSERT INTO issues (fingerprint, title, level, error_type, screen, platform, event_count,
-                    first_seen, last_seen, first_release, last_release)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-ON CONFLICT (fingerprint) DO UPDATE SET
+-- name: UpsertIssue :one
+-- Called once per (project, fingerprint) per envelope with the folded count.
+-- Regression: a resolved issue seen again on a release other than the one
+-- it was resolved on. Returns the row after the update plus whether it
+-- was created / regressed in this call.
+INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform,
+                    event_count, stored_count, first_seen, last_seen, first_release, last_release)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     event_count  = issues.event_count + EXCLUDED.event_count,
-    first_seen   = LEAST(issues.first_seen, EXCLUDED.first_seen),
+    stored_count = issues.stored_count + EXCLUDED.stored_count,
     last_seen    = GREATEST(issues.last_seen, EXCLUDED.last_seen),
-    last_release = CASE WHEN EXCLUDED.last_seen >= issues.last_seen
-                        THEN COALESCE(EXCLUDED.last_release, issues.last_release)
-                        ELSE issues.last_release END,
+    first_seen   = LEAST(issues.first_seen, EXCLUDED.first_seen),
+    last_release = CASE WHEN EXCLUDED.last_seen >= issues.last_seen THEN COALESCE(EXCLUDED.last_release, issues.last_release) ELSE issues.last_release END,
+    level        = CASE WHEN EXCLUDED.level = 'fatal' THEN 'fatal' ELSE issues.level END,
     status       = CASE WHEN issues.status = 'resolved'
-                         AND EXCLUDED.last_release IS DISTINCT FROM issues.last_release
+                         AND EXCLUDED.last_release IS DISTINCT FROM issues.resolved_release
                         THEN 'regression' ELSE issues.status END,
-    updated_at   = now();
-
--- Optional filters. Event-scoped filtering (release/user/device/…) is done
--- by the caller: FingerprintsInRange → @fingerprints (empty = no filter).
--- name: ListIssues :many
-SELECT * FROM issues i
-WHERE i.last_seen >= @since
-  AND (sqlc.narg('until')::timestamptz IS NULL OR i.first_seen < sqlc.narg('until'))
-  AND (sqlc.narg('error_type')::text IS NULL OR i.error_type = sqlc.narg('error_type'))
-  AND (sqlc.narg('status')::text IS NULL OR i.status = sqlc.narg('status'))
-  AND (NOT @by_fingerprint::boolean OR i.fingerprint = ANY(@fingerprints::text[]))
-ORDER BY i.last_seen DESC
-LIMIT @page_limit;
+    updated_at   = now()
+RETURNING *, (xmax = 0) AS created;
 
 -- name: GetIssue :one
-SELECT * FROM issues WHERE fingerprint = $1;
+SELECT * FROM issues WHERE project_id = $1 AND fingerprint = $2;
 
--- name: UpdateIssueStatus :execrows
-UPDATE issues SET status = $2, updated_at = now() WHERE fingerprint = $1;
+-- name: SetIssueStatus :one
+UPDATE issues SET status = $3,
+    resolved_release = CASE WHEN $3 = 'resolved' THEN last_release ELSE resolved_release END,
+    updated_at = now()
+WHERE project_id = $1 AND fingerprint = $2 RETURNING *;
 
--- Alerting: issues first seen since a point in time.
--- name: NewIssuesSince :many
-SELECT fingerprint, title, error_type FROM issues
-WHERE first_seen >= $1 AND level IN ('error', 'fatal')
-ORDER BY first_seen DESC LIMIT 5;
+-- name: SetIssuesStatus :execrows
+UPDATE issues SET status = $3,
+    resolved_release = CASE WHEN $3 = 'resolved' THEN last_release ELSE resolved_release END,
+    updated_at = now()
+WHERE project_id = $1 AND fingerprint = ANY($2::text[]);
 
--- name: RegressionsSince :many
-SELECT fingerprint, title, error_type, last_release FROM issues
-WHERE status = 'regression' AND last_seen >= $1
-ORDER BY last_seen DESC LIMIT 5;
+-- name: AdjustIssueStoredCount :exec
+UPDATE issues SET stored_count = GREATEST(0, stored_count + $3), event_count = GREATEST(0, event_count + $3), updated_at = now()
+WHERE project_id = $1 AND fingerprint = $2;
 
--- name: DeleteIssuesBefore :execrows
-DELETE FROM issues WHERE last_seen < $1;
+-- name: DeleteEmptyIssue :exec
+DELETE FROM issues WHERE project_id = $1 AND fingerprint = $2 AND event_count <= 0 AND status = 'unresolved';
+
+-- name: CountIssuesByStatus :many
+SELECT status, count(*) AS n FROM issues WHERE project_id = $1 GROUP BY status;
+
+-- name: CountNewIssues :one
+SELECT count(*) FROM issues WHERE project_id = $1 AND first_seen >= $2;
+
+-- name: ListRegressions :many
+SELECT * FROM issues WHERE project_id = $1 AND status = 'regression' ORDER BY last_seen DESC LIMIT $2;
+
+-- name: ListNewIssues :many
+SELECT * FROM issues WHERE project_id = $1 AND first_seen >= $2 ORDER BY first_seen DESC LIMIT $3;
+
+-- name: ListIssuesByRelease :many
+SELECT * FROM issues WHERE project_id = $1 AND (first_release = $2 OR last_release = $2)
+ORDER BY event_count DESC LIMIT $3;
+
+-- name: ExpireIssues :execrows
+DELETE FROM issues WHERE last_seen < $1 AND status IN ('resolved', 'ignored');
+
+-- name: IssueSparklines :many
+SELECT fingerprint, bucket, events FROM issue_stats_hourly
+WHERE project_id = $1 AND fingerprint = ANY($2::text[]) AND bucket >= $3
+ORDER BY fingerprint, bucket;
+
+-- name: IssueTimeline :many
+SELECT bucket, events FROM issue_stats_hourly
+WHERE project_id = $1 AND fingerprint = $2 AND bucket >= $3 AND bucket < $4
+ORDER BY bucket;
+
+-- name: AddIssueStored :exec
+UPDATE issues SET stored_count = stored_count + $3 WHERE project_id = $1 AND fingerprint = $2;

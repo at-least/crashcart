@@ -7,31 +7,45 @@ import (
 	"strings"
 )
 
-// Fingerprint groups events into issues. An SDK-provided fingerprint wins;
-// otherwise the last five frames (closest to the crash point, line numbers
-// stripped) plus platform and error type form the signature. The result is
-// a stable 32-hex-char digest, so it's safe as a primary key and URL segment.
-func (e *Event) Fingerprint() string {
-	if e.ErrorType == "" && len(e.sdkFP) == 0 {
+// Fingerprint groups events into issues from a set of frames (symbolicated
+// when available). An SDK-provided fingerprint wins; otherwise the last five
+// frames (closest to the crash point, line numbers stripped) plus platform
+// and error type form the signature. The result is a stable 32-hex-char
+// digest, so it is safe as a primary key and URL segment. "" means the
+// event has nothing to group by (no exception, no SDK fingerprint).
+func Fingerprint(e *Event, frames []Frame) string {
+	if e.ErrorType == "" && len(e.SDKFingerprint) == 0 {
 		return ""
 	}
 	var sig string
-	if len(e.sdkFP) > 0 {
-		sig = "sdk:" + strings.Join(e.sdkFP, "|")
+	if len(e.SDKFingerprint) > 0 {
+		sig = "sdk:" + strings.Join(e.SDKFingerprint, "|")
 	} else {
-		frames := e.frames()
-		if len(frames) > 5 {
-			frames = frames[len(frames)-5:]
-		}
-		parts := make([]string, 0, len(frames))
+		// Prefer in-app frames; fall back to all frames when the SDK marks none.
+		var sel []Frame
 		for _, f := range frames {
+			if f.IsInApp() {
+				sel = append(sel, f)
+			}
+		}
+		if len(sel) == 0 {
+			sel = frames
+		}
+		if len(sel) > 5 {
+			sel = sel[len(sel)-5:]
+		}
+		parts := make([]string, 0, len(sel))
+		for _, f := range sel {
 			file := f.Filename
+			if file == "" {
+				file = f.Module
+			}
 			if i := strings.IndexByte(file, '?'); i >= 0 {
 				file = file[:i]
 			}
 			fn := f.Function
-			if fn == "" {
-				fn = f.Sym
+			if fn == "" && f.InstrAddr != "" {
+				fn = f.InstrAddr // unsymbolicated native frame: address is the identity
 			}
 			if fn == "" {
 				fn = "?"
@@ -39,7 +53,7 @@ func (e *Event) Fingerprint() string {
 			if file == "" {
 				file = "?"
 			}
-			parts = append(parts, file+":"+fn)
+			parts = append(parts, baseName(file)+":"+fn)
 		}
 		sig = e.Platform + ":" + e.ErrorType + ":" + strings.Join(parts, "|")
 	}
@@ -59,109 +73,53 @@ func (e *Event) IssueTitle() string {
 	return t
 }
 
-func (e *Event) frames() []rawFrame {
-	if e.exception == nil || e.exception.Stacktrace == nil {
-		return nil
-	}
-	return e.exception.Stacktrace.Frames
-}
-
-// Frame is an analyzed stack frame.
-type Frame struct {
-	Filename string `json:"filename"`
-	Function string `json:"function"`
-	Lineno   int    `json:"lineno"`
-	InApp    bool   `json:"in_app"`
-}
-
-// Analysis is the structured diagnostic extracted from a stack trace.
-type Analysis struct {
-	ErrorLocation string   // "CartFragment.java:142" or ""
-	RootFrame     *Frame   // deepest in-app frame (or last frame overall)
-	AppFrameCount int      //
-	TotalFrames   int      //
-	UserJourney   []string // breadcrumbs rendered as a timeline
-}
-
-// Analyze extracts the root cause (deepest in-app frame) and a user journey.
-func (e *Event) Analyze() Analysis {
-	var a Analysis
-	frames := e.frames()
-	a.TotalFrames = len(frames)
-	var root *rawFrame
+// ErrorLocation is "File.ext:line" of the deepest in-app frame (or the
+// innermost frame overall when nothing is marked in-app); "" without frames.
+func ErrorLocation(frames []Frame) string {
+	var root *Frame
 	for i := range frames {
-		if frames[i].InApp != nil && *frames[i].InApp {
-			a.AppFrameCount++
+		if frames[i].IsInApp() {
 			root = &frames[i]
 		}
 	}
-	inApp := root != nil
 	if root == nil && len(frames) > 0 {
 		root = &frames[len(frames)-1]
 	}
-	if root != nil {
-		name := root.Filename
-		if name == "" {
-			name = root.AbsPath
-		}
-		name = baseName(name)
-		fn := root.Function
-		if fn == "" {
-			fn = root.Module
-		}
-		if fn == "" {
-			fn = "?"
-		}
-		a.RootFrame = &Frame{Filename: name, Function: fn, Lineno: root.Lineno, InApp: inApp}
-		a.ErrorLocation = fmt.Sprintf("%s:%d", name, root.Lineno)
+	if root == nil {
+		return ""
 	}
-	for _, b := range e.crumbs {
-		cat := b.Category
-		if cat == "" {
-			cat = b.Type
-		}
-		if cat == "" {
-			cat = "unknown"
-		}
-		var line string
-		switch cat {
-		case "navigation", "routing":
-			dest := str(b.Data["to"])
-			if dest == "" {
-				dest = str(b.Data["from"])
-			}
-			if dest == "" {
-				dest = b.Message
-			}
-			line = "→ " + dest
-		case "click", "tap", "ui":
-			line = "👆 " + b.Message
-		case "http", "fetch":
-			url := str(b.Data["url"])
-			if url == "" {
-				url = b.Message
-			}
-			line = "🌐 " + str(b.Data["method"]) + " " + url
-			if sc := str(b.Data["status_code"]); sc != "" {
-				line += " → " + sc
-			}
-		case "console", "log":
-			line = "📝 " + b.Message
-		default:
-			line = cat + ": " + b.Message
-		}
-		if strings.TrimSpace(line) != "" {
-			a.UserJourney = append(a.UserJourney, line)
+	name := root.Filename
+	if name == "" {
+		name = root.AbsPath
+	}
+	if name == "" {
+		name = root.Module
+	}
+	if root.Lineno == 0 && root.Function != "" {
+		return baseName(name) + ":" + root.Function
+	}
+	return fmt.Sprintf("%s:%d", baseName(name), root.Lineno)
+}
+
+// NeedsSymbolication reports whether frames carry raw addresses or look
+// obfuscated enough that a symbol file would improve them.
+func (e *Event) NeedsSymbolication() bool {
+	for _, f := range e.Frames() {
+		if f.InstrAddr != "" && f.Function == "" {
+			return true
 		}
 	}
-	if e.ErrorType != "" {
-		loc := a.ErrorLocation
-		if loc == "" {
-			loc = "?"
+	switch e.Platform {
+	case "android", "java":
+		return len(e.Frames()) > 0 && len(e.DebugImages) > 0 // proguard uuid in debug_meta
+	case "javascript", "node":
+		for _, f := range e.Frames() {
+			if f.Colno > 0 && strings.Contains(f.Filename, ".min.") {
+				return true
+			}
 		}
-		a.UserJourney = append(a.UserJourney, "💥 "+e.ErrorType+" at "+loc)
 	}
-	return a
+	return false
 }
 
 func baseName(p string) string {
@@ -175,20 +133,4 @@ func baseName(p string) string {
 		return "?"
 	}
 	return p
-}
-
-func str(v any) string {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return t
-	case float64:
-		if t == float64(int64(t)) {
-			return fmt.Sprintf("%d", int64(t))
-		}
-		return fmt.Sprintf("%v", t)
-	default:
-		return fmt.Sprintf("%v", t)
-	}
 }

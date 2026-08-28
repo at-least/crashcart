@@ -1,5 +1,4 @@
-// Package db owns the schema: embedded migrations, the runner that applies
-// them, and the sqlc-generated query layer (subpackage sqlc).
+// Package db owns the schema: embedded migrations and the migrator.
 package db
 
 import (
@@ -15,63 +14,90 @@ import (
 )
 
 //go:embed migrations/*.sql
-var migrationFS embed.FS
+var migrations embed.FS
 
-// Migrate applies every migrations/*.sql not yet recorded in
-// schema_migrations, in filename order, each in its own transaction.
-// Safe to run concurrently: the version row is inserted first under a
-// transactional advisory lock.
+// migrationLock is the advisory lock key so replicas can start together.
+const migrationLock = 0x6372617368 // "crash"
+
+// Migrate applies every pending migration in filename order. Each file runs
+// in its own transaction (TimescaleDB DDL is transactional).
 func Migrate(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
-	files, err := fs.Glob(migrationFS, "migrations/*.sql")
+	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(files)
+	defer conn.Release()
 
-	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
-		return nil, fmt.Errorf("create schema_migrations: %w", err)
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLock); err != nil {
+		return nil, err
+	}
+	defer conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLock)
+
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
+		return nil, err
+	}
+	applied := map[string]bool{}
+	rows, err := conn.Query(ctx, "SELECT name FROM schema_migrations")
+	if err != nil {
+		return nil, err
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	for _, n := range names {
+		applied[n] = true
 	}
 
-	var applied []string
+	files, err := fs.ReadDir(migrations, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+	var ran []string
 	for _, f := range files {
-		version := strings.TrimSuffix(strings.TrimPrefix(f, "migrations/"), ".sql")
-		ok, err := applyOne(ctx, pool, version, f)
+		name := f.Name()
+		if !strings.HasSuffix(name, ".sql") || applied[name] {
+			continue
+		}
+		body, err := migrations.ReadFile("migrations/" + name)
 		if err != nil {
-			return applied, fmt.Errorf("migration %s: %w", version, err)
+			return ran, err
 		}
-		if ok {
-			applied = append(applied, version)
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return ran, err
 		}
+		if _, err := tx.Exec(ctx, string(body)); err != nil {
+			tx.Rollback(ctx)
+			return ran, fmt.Errorf("migration %s: %w", name, err)
+		}
+		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (name) VALUES ($1)", name); err != nil {
+			tx.Rollback(ctx)
+			return ran, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return ran, err
+		}
+		ran = append(ran, name)
 	}
-	return applied, nil
+	return ran, nil
 }
 
-func applyOne(ctx context.Context, pool *pgxpool.Pool, version, file string) (bool, error) {
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+// Connect opens a pool and pings it.
+func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('crashcart_migrations'))`); err != nil {
-		return false, err
-	}
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, version).Scan(&exists); err != nil {
-		return false, err
-	}
-	if exists {
-		return false, nil
-	}
-	sql, err := migrationFS.ReadFile(file)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if _, err := tx.Exec(ctx, string(sql)); err != nil {
-		return false, err
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
-		return false, err
-	}
-	return true, tx.Commit(ctx)
+	return pool, nil
 }

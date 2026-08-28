@@ -1,6 +1,6 @@
-// Package sentry parses the Sentry envelope protocol into the subset of
-// event data CrashCart stores. Unknown fields are preserved verbatim in
-// Event.Raw (the payload column).
+// Package sentry parses the Sentry envelope protocol into what CrashCart
+// stores. Unknown fields are preserved verbatim in Event.Raw (the payload
+// column); everything else here is a projection of that raw JSON.
 package sentry
 
 import (
@@ -15,12 +15,51 @@ import (
 	"time"
 )
 
-// Breadcrumb is a normalized Sentry breadcrumb (last 20 are kept).
+// Breadcrumb is a normalized Sentry breadcrumb (the last 20 are kept).
 type Breadcrumb struct {
-	Timestamp string `json:"timestamp"` // RFC3339 UTC or ""
-	Category  string `json:"category"`
-	Message   string `json:"message"`
-	Level     string `json:"level"`
+	Timestamp string         `json:"timestamp"` // RFC3339 UTC or ""
+	Type      string         `json:"type,omitempty"`
+	Category  string         `json:"category"`
+	Message   string         `json:"message"`
+	Level     string         `json:"level"`
+	Data      map[string]any `json:"data,omitempty"`
+}
+
+// Frame is one stack frame as the SDK sent it (innermost frame LAST, as
+// in the Sentry protocol).
+type Frame struct {
+	Filename   string `json:"filename,omitempty"`
+	AbsPath    string `json:"abs_path,omitempty"`
+	Function   string `json:"function,omitempty"`
+	Module     string `json:"module,omitempty"`
+	Package    string `json:"package,omitempty"`
+	Lineno     int    `json:"lineno,omitempty"`
+	Colno      int    `json:"colno,omitempty"`
+	InApp      *bool  `json:"in_app,omitempty"`
+	InstrAddr  string `json:"instruction_addr,omitempty"`
+	ImageAddr  string `json:"image_addr,omitempty"`
+	SymbolAddr string `json:"symbol_addr,omitempty"`
+}
+
+// IsInApp reports the SDK's in_app flag (false when absent).
+func (f Frame) IsInApp() bool { return f.InApp != nil && *f.InApp }
+
+// Exception is one entry of exception.values.
+type Exception struct {
+	Type      string
+	Value     string
+	Frames    []Frame
+	Handled   *bool
+	Mechanism string
+}
+
+// DebugImage is one debug_meta.images entry (used for dSYM lookup).
+type DebugImage struct {
+	Type      string `json:"type"`
+	DebugID   string `json:"debug_id"`
+	CodeFile  string `json:"code_file"`
+	ImageAddr string `json:"image_addr"`
+	ImageSize int64  `json:"image_size"`
 }
 
 // Event is one parsed "event" envelope item.
@@ -30,23 +69,22 @@ type Event struct {
 	Level       string
 	Message     string
 	Platform    string
+	Environment string
+	Release     string
 	OSVersion   string
 	DeviceModel string
-	Release     string
 	Screen      string
 	ErrorType   string
 	Handled     *bool // false = crash, true = caught, nil = no exception
 	SDKName     string
 	UserID      string
-	Environment string
 	Tags        map[string]string
 	Breadcrumbs []Breadcrumb
+	Exceptions  []Exception // exception.values in SDK order
+	DebugImages []DebugImage
+	SDKFingerprint []string
 	// Raw is the untouched item body.
 	Raw []byte
-
-	exception *rawException
-	crumbs    []rawBreadcrumb
-	sdkFP     []string
 }
 
 // DeviceID is the `device_id` tag, if any.
@@ -57,17 +95,29 @@ func (e *Event) IsCrash() bool {
 	return e.Level == "fatal" || (e.Handled != nil && !*e.Handled)
 }
 
-// Session is one Sentry session (health monitoring) item.
+// Frames returns the primary exception's frames (innermost last).
+func (e *Event) Frames() []Frame {
+	if len(e.Exceptions) == 0 {
+		return nil
+	}
+	return e.Exceptions[0].Frames
+}
+
+// Session is one Sentry session (release health) item, or one row of a
+// sessions aggregate (then Count > 1 is possible).
 type Session struct {
-	Release   string
-	Status    string // started | exited | crashed | errored | abnormal
-	StartedAt time.Time
+	Release     string
+	Environment string
+	Status      string // ok | exited | crashed | errored | abnormal
+	StartedAt   time.Time
+	Count       int
 }
 
 // Envelope is the parsed result of one POST body.
 type Envelope struct {
 	Events   []*Event
 	Sessions []Session
+	Dropped  int // items of types CrashCart does not store
 }
 
 type itemHeader struct {
@@ -87,7 +137,7 @@ func Parse(body []byte, now time.Time) Envelope {
 	var env Envelope
 	nl := bytes.IndexByte(body, '\n')
 	if nl < 0 {
-		return env
+		nl = len(body)
 	}
 	var hdr envelopeHeader
 	if json.Unmarshal(body[:nl], &hdr) != nil {
@@ -97,8 +147,10 @@ func Parse(body []byte, now time.Time) Envelope {
 	if fallbackTS.IsZero() {
 		fallbackTS = now
 	}
-
-	rest := body[nl+1:]
+	rest := []byte{}
+	if nl < len(body) {
+		rest = body[nl+1:]
+	}
 	for len(rest) > 0 {
 		line, next := cutLine(rest)
 		rest = next
@@ -123,11 +175,16 @@ func Parse(body []byte, now time.Time) Envelope {
 		}
 		switch ih.Type {
 		case "event":
-			if ev := parseEvent(hdr.EventID, fallbackTS, itemBody, now); ev != nil {
+			if ev := ParseEvent(hdr.EventID, fallbackTS, itemBody, now); ev != nil {
 				env.Events = append(env.Events, ev)
 			}
 		case "session", "sessions":
 			env.Sessions = append(env.Sessions, parseSessions(itemBody, now)...)
+		case "transaction", "attachment", "profile", "replay_event", "replay_recording",
+			"client_report", "check_in", "log", "statsd", "feedback", "user_report", "span":
+			env.Dropped++
+		default:
+			env.Dropped++
 		}
 	}
 	return env
@@ -142,24 +199,15 @@ func cutLine(b []byte) (line, rest []byte) {
 
 // ── event ───────────────────────────────────────────────────
 
-type rawFrame struct {
-	Filename string `json:"filename"`
-	AbsPath  string `json:"abs_path"`
-	Function string `json:"function"`
-	Module   string `json:"module"`
-	Sym      string `json:"sym"`
-	Lineno   int    `json:"lineno"`
-	InApp    *bool  `json:"in_app"`
-}
-
 type rawException struct {
 	Type       string `json:"type"`
 	Value      string `json:"value"`
 	Stacktrace *struct {
-		Frames []rawFrame `json:"frames"`
+		Frames []Frame `json:"frames"`
 	} `json:"stacktrace"`
 	Mechanism *struct {
-		Handled *bool `json:"handled"`
+		Type    string `json:"type"`
+		Handled *bool  `json:"handled"`
 	} `json:"mechanism"`
 }
 
@@ -194,10 +242,12 @@ type rawEvent struct {
 			Model string `json:"model"`
 		} `json:"device"`
 		OS *struct {
+			Name    string `json:"name"`
 			Version string `json:"version"`
 		} `json:"os"`
 		App *struct {
 			AppVersion string `json:"app_version"`
+			AppBuild   string `json:"app_build"`
 		} `json:"app"`
 		Runtime *struct {
 			Name    string `json:"name"`
@@ -207,6 +257,17 @@ type rawEvent struct {
 	Exception *struct {
 		Values []rawException `json:"values"`
 	} `json:"exception"`
+	Threads *struct {
+		Values []struct {
+			Crashed    bool `json:"crashed"`
+			Stacktrace *struct {
+				Frames []Frame `json:"frames"`
+			} `json:"stacktrace"`
+		} `json:"values"`
+	} `json:"threads"`
+	DebugMeta *struct {
+		Images []DebugImage `json:"images"`
+	} `json:"debug_meta"`
 	SDK *struct {
 		Name string `json:"name"`
 	} `json:"sdk"`
@@ -219,24 +280,34 @@ var eventIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 const maxMessage = 500
 
-func parseEvent(headerEventID string, fallbackTS time.Time, body []byte, now time.Time) *Event {
+// ParseEvent parses a single event JSON body (envelope item or the legacy
+// /store/ endpoint). Returns nil for anything that is not a JSON object.
+func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now time.Time) *Event {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil
+	}
 	var re rawEvent
-	if json.Unmarshal(body, &re) != nil || len(bytes.TrimSpace(body)) == 0 || bytes.TrimSpace(body)[0] != '{' {
+	if json.Unmarshal(trimmed, &re) != nil {
 		return nil
 	}
 	ev := &Event{
-		Raw:         body,
-		Level:       normalizeLevel(re.Level),
-		Platform:    re.Platform,
-		Environment: re.Environment,
-		Screen:      re.Transaction,
-		Release:     re.Release,
-		Tags:        parseTags(re.Tags),
-		sdkFP:       re.Fingerprint,
+		Raw:            trimmed,
+		Level:          normalizeLevel(re.Level),
+		Platform:       re.Platform,
+		Environment:    re.Environment,
+		Screen:         re.Transaction,
+		Release:        re.Release,
+		Tags:           parseTags(re.Tags),
+		SDKFingerprint: re.Fingerprint,
 	}
 	ev.Timestamp = parseTimestamp(re.Timestamp)
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = fallbackTS
+	}
+	// Clamp absurd client clocks: more than 1 h in the future becomes now.
+	if ev.Timestamp.After(now.Add(time.Hour)) {
+		ev.Timestamp = now
 	}
 	switch {
 	case eventIDRe.MatchString(re.EventID):
@@ -244,7 +315,7 @@ func parseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	case eventIDRe.MatchString(headerEventID):
 		ev.EventID = headerEventID
 	default:
-		sum := sha256.Sum256(body)
+		sum := sha256.Sum256(trimmed)
 		ev.EventID = "ts-" + strconv.FormatInt(ev.Timestamp.UnixMilli(), 10) + "-" + hex.EncodeToString(sum[:6])
 	}
 	if c := re.Contexts; c != nil {
@@ -261,20 +332,43 @@ func parseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 		if c.Device != nil {
 			ev.DeviceModel = c.Device.Model
 		}
-		if c.App != nil && c.App.AppVersion != "" {
+		if c.App != nil && c.App.AppVersion != "" && ev.Release == "" {
 			ev.Release = c.App.AppVersion
 		}
 	}
 	if ev.DeviceModel == "" {
 		ev.DeviceModel = re.ServerName
 	}
-	if re.Exception != nil && len(re.Exception.Values) > 0 {
-		ex := re.Exception.Values[0]
-		ev.exception = &ex
-		ev.ErrorType = ex.Type
-		if ex.Mechanism != nil {
-			ev.Handled = ex.Mechanism.Handled
+	if re.Exception != nil {
+		for _, x := range re.Exception.Values {
+			ex := Exception{Type: x.Type, Value: x.Value}
+			if x.Stacktrace != nil {
+				ex.Frames = x.Stacktrace.Frames
+			}
+			if x.Mechanism != nil {
+				ex.Handled = x.Mechanism.Handled
+				ex.Mechanism = x.Mechanism.Type
+			}
+			ev.Exceptions = append(ev.Exceptions, ex)
 		}
+	}
+	// Sentry SDKs put the exception whose stack matters last for chained
+	// exceptions but first for single ones; we treat values[0] as primary
+	// and borrow the crashed thread's stack when the exception has none.
+	if len(ev.Exceptions) > 0 {
+		ev.ErrorType = ev.Exceptions[0].Type
+		ev.Handled = ev.Exceptions[0].Handled
+		if len(ev.Exceptions[0].Frames) == 0 && re.Threads != nil {
+			for _, t := range re.Threads.Values {
+				if t.Crashed && t.Stacktrace != nil {
+					ev.Exceptions[0].Frames = t.Stacktrace.Frames
+					break
+				}
+			}
+		}
+	}
+	if re.DebugMeta != nil {
+		ev.DebugImages = re.DebugMeta.Images
 	}
 	if re.SDK != nil {
 		ev.SDKName = re.SDK.Name
@@ -283,9 +377,7 @@ func parseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 		ev.UserID = scalarString(re.User.ID)
 	}
 	ev.Message = truncate(extractMessage(&re), maxMessage)
-	ev.crumbs = parseRawBreadcrumbs(re.Breadcrumbs)
-	ev.Breadcrumbs = make([]Breadcrumb, 0, len(ev.crumbs))
-	for _, b := range ev.crumbs {
+	for _, b := range parseRawBreadcrumbs(re.Breadcrumbs) {
 		cat := b.Category
 		if cat == "" {
 			cat = "default"
@@ -298,7 +390,7 @@ func parseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 		if t := parseTimestamp(b.Timestamp); !t.IsZero() {
 			ts = t.UTC().Format(time.RFC3339)
 		}
-		ev.Breadcrumbs = append(ev.Breadcrumbs, Breadcrumb{Timestamp: ts, Category: cat, Message: b.Message, Level: lvl})
+		ev.Breadcrumbs = append(ev.Breadcrumbs, Breadcrumb{Timestamp: ts, Type: b.Type, Category: cat, Message: b.Message, Level: lvl, Data: b.Data})
 	}
 	return ev
 }
@@ -311,8 +403,10 @@ func normalizeLevel(l string) string {
 		return "warning"
 	case "critical":
 		return "fatal"
-	default:
+	case "fatal", "error", "warning", "info", "debug":
 		return l
+	default:
+		return "info"
 	}
 }
 
@@ -348,6 +442,9 @@ func extractMessage(re *rawEvent) string {
 		t := v.Type
 		if t == "" {
 			t = "Error"
+		}
+		if v.Value == "" {
+			return t
 		}
 		return t + ": " + v.Value
 	}
@@ -460,38 +557,80 @@ type rawSession struct {
 	Release string          `json:"release"`
 	Started json.RawMessage `json:"started"`
 	Attrs   *struct {
-		Release string `json:"release"`
+		Release     string `json:"release"`
+		Environment string `json:"environment"`
 	} `json:"attrs"`
+	Environment string `json:"environment"`
+}
+
+type rawSessionAggregate struct {
+	Started  json.RawMessage `json:"started"`
+	Exited   int             `json:"exited"`
+	Errored  int             `json:"errored"`
+	Crashed  int             `json:"crashed"`
+	Abnormal int             `json:"abnormal"`
 }
 
 func parseSessions(body []byte, now time.Time) []Session {
-	var items []rawSession
+	var out []Session
+	// Single session item.
 	var single rawSession
 	if json.Unmarshal(body, &single) == nil && single.Status != "" {
-		items = []rawSession{single}
-	} else {
-		var agg struct {
-			Items []rawSession `json:"items"`
+		if s, ok := sessionFrom(single, now); ok {
+			out = append(out, s)
 		}
-		if json.Unmarshal(body, &agg) != nil {
-			return nil
-		}
-		items = agg.Items
+		return out
 	}
-	var out []Session
-	for _, s := range items {
-		rel := s.Release
-		if rel == "" && s.Attrs != nil {
-			rel = s.Attrs.Release
+	// Aggregate: {"aggregates":[{started,exited,crashed,errored,abnormal}], "attrs":{release,environment}}
+	var agg struct {
+		Aggregates []rawSessionAggregate `json:"aggregates"`
+		Attrs      *struct {
+			Release     string `json:"release"`
+			Environment string `json:"environment"`
+		} `json:"attrs"`
+		Items []rawSession `json:"items"`
+	}
+	if json.Unmarshal(body, &agg) != nil {
+		return nil
+	}
+	for _, it := range agg.Items {
+		if s, ok := sessionFrom(it, now); ok {
+			out = append(out, s)
 		}
-		if rel == "" || s.Status == "" {
-			continue
-		}
-		ts := parseTimestamp(s.Started)
+	}
+	if agg.Attrs == nil || agg.Attrs.Release == "" {
+		return out
+	}
+	for _, a := range agg.Aggregates {
+		ts := parseTimestamp(a.Started)
 		if ts.IsZero() {
 			ts = now
 		}
-		out = append(out, Session{Release: rel, Status: s.Status, StartedAt: ts})
+		for status, n := range map[string]int{"exited": a.Exited, "errored": a.Errored, "crashed": a.Crashed, "abnormal": a.Abnormal} {
+			if n > 0 {
+				out = append(out, Session{Release: agg.Attrs.Release, Environment: agg.Attrs.Environment, Status: status, StartedAt: ts, Count: n})
+			}
+		}
 	}
 	return out
+}
+
+func sessionFrom(s rawSession, now time.Time) (Session, bool) {
+	rel, env := s.Release, s.Environment
+	if s.Attrs != nil {
+		if rel == "" {
+			rel = s.Attrs.Release
+		}
+		if env == "" {
+			env = s.Attrs.Environment
+		}
+	}
+	if rel == "" || s.Status == "" {
+		return Session{}, false
+	}
+	ts := parseTimestamp(s.Started)
+	if ts.IsZero() {
+		ts = now
+	}
+	return Session{Release: rel, Environment: env, Status: s.Status, StartedAt: ts, Count: 1}, true
 }

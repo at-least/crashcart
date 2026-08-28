@@ -1,97 +1,101 @@
-# CrashCart — Architecture (Go + Postgres)
+# CrashCart — Architecture
 
-## Use cases
-
-1. **Dashboard** — stat cards (Crashes / Errors / Issues), crash timeline, error volume,
-   event table. Reads `hourly_stats` (O(hours)), `issues`, `events` (PK range walk).
-2. **Device debug** — `device_id` → `events` PK range scan over the window, filtered by device.
-3. **User debug** — `user_id` → `user_devices` → `device_id IN (…)` OR `user_id =`.
-4. **Issue drill-down** — `fingerprint` → events of that issue; exact, not by error type.
-
-## Tables
-
-| Table | PK | Notes |
-|---|---|---|
-| `events` | `id` = unix_ms×1000+rnd | Time lives in the PK (`internal/pk`); range-partitioned by UTC day on it (`events_pYYYYMMDD` + `events_default`); columns extracted from the envelope, `tags JSONB`, `breadcrumbs JSONB`, `payload JSONB`, `fingerprint` |
-| `user_devices` | `(user_id, device_id)` | `last_seen`, refreshed ≤ once/day/pair |
-| `hourly_stats` | `(hour, level)` | `crash_count`, `fatal_count`, `error_count` for error + fatal levels |
-| `issues` | `fingerprint` | title/level/type/screen/platform, status lifecycle, counts, first/last seen + release |
-| `releases` | `version` | crash/error/total counters, first/last seen |
-| `release_health` | `(release, day)` | total/crashed/errored sessions |
-| `alert_types` | `type` | enabled, last_triggered, cooldown_until |
-| `symbol_files` | `(platform, release, filename)` | `data bytea`, `uploaded_at` |
-| `schema_migrations` | `version` | applied migration files |
-
-**Indexes: none beyond primary keys.** A write to `events` is one heap row + one btree
-entry. Reads are PK range scans bounded by the query window:
+Sentry-SDK-compatible crash tracking for self-hosters. One Go binary, one
+Postgres (with TimescaleDB), nothing else required.
 
 ```
-dashboard list   events WHERE id >= lower(since) AND id < upper(until) AND <filters>
-                 ORDER BY id DESC LIMIT 50      -- walks the PK backwards, stops at 50
-issue filters    SELECT DISTINCT fingerprint FROM events WHERE id range AND <filters>
-                 → issues WHERE fingerprint = ANY(…)
-crash spike      COUNT(*) FROM events WHERE id >= lower(now-10m) AND crash
-retention        DROP TABLE events_pYYYYMMDD for whole days past the cutoff;
-                 DELETE … WHERE id < lower(cutoff) LIMIT 5000 on events_default (strays)
-user → devices   user_devices PK (user_id, device_id)
+Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres + TimescaleDB
+Browser    ──GET  /p/{slug}/…  (htmx) ──▶    │        (events, sessions: hypertables
+Scripts    ──GET  /api/projects/… ──────▶    │         issues: stateful table
+sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   │         stats: continuous aggregates
+                                             │         jobs: SKIP LOCKED queue)
+                                             └──▶ symbolicate sidecar (dSYM only, optional)
 ```
 
-Cost per event ≈ 1 row + 1 PK entry + the folded aggregate upserts (≈ 0.5 rows/event).
+## Decisions
 
-## Data flow
+**Compatibility scope.** Envelope ingest (`event`, `session`, `sessions`)
+and the debug-file upload endpoint sentry-cli uses. Transactions, profiles,
+replays and client reports are accepted and dropped. The Sentry Web API and
+UI are not imitated; the viewer is our own.
 
-```
-Ingest (one transaction per envelope):
-  parse envelope (events + sessions)
-  sample: error/fatal always, warning ≥ 50%, info/debug SAMPLE_RATE
-  redact (PII_REDACT): message, tags, user_id
-  per event: fingerprint, error_location (deepest in-app frame)
-  COPY events
-  upsert user_devices (last_seen if older than 1 day)
-  upsert hourly_stats  (error|fatal only)      — folded per (hour, level)
-  upsert releases                                — folded per version
-  upsert issues (+ regression detection)         — folded per fingerprint
-  upsert release_health                           — folded per (release, day)
+**Time is in the primary key.** `events.id = unix_ms × 1000 + rand(0..999)`
+(`internal/pk`). It is the TimescaleDB time dimension, so a time window is
+an id range, ordering by id is chronological, and chunk exclusion works on
+the PK alone. Never compare `to_timestamp(id/1e6)` in a WHERE clause.
 
-Dashboard:
-  stats / timeline / volume  → hourly_stats
-  issues                     → issues (last_seen in window)
-  events                     → events WHERE id in window ORDER BY id DESC LIMIT 50 OFFSET n
-  release picker             → releases active in window
+**Ingest is one transaction, no hot rows.** Per envelope: fold events by
+fingerprint → one `issues` upsert per distinct fingerprint → sampling
+decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events → sessions
+→ jobs. Aggregates are *not* touched at ingest.
 
-Alerts (every ALERT_INTERVAL, default 10 min):
-  crash_spike: crashes in last 10 min vs 3× (weekly daily avg / 144), excluding last 2 days
-  new_error:   issues first_seen since last trigger (≤ 24 h back, ≥ 10 min)
-  regression:  issues with status = regression seen since last trigger
-  20 min cooldown per type; channels: Telegram, webhooks, SMTP
+**Aggregates are continuous aggregates.** `event_stats_hourly`,
+`issue_stats_hourly`, `release_health_daily` are TimescaleDB continuous
+aggregates with real-time aggregation on. They are functions of the raw
+tables: nothing to keep consistent, adding a dimension is a new view with
+history, import never recomputes them.
 
-Retention (every RETENTION_INTERVAL, default 1 h):
-  drop event partitions past the cutoff day, ensure partitions for the next 3 days,
-  trim events_default in 5000-row batches, then hourly_stats, issues, user_devices, release_health
-```
+**Issues are the one stateful table.** Status lifecycle (unresolved → triaged
+→ resolved → regression / ignored), first/last release, exact `event_count`
+(counts sampled-out events) and `stored_count`. Regression = a resolved
+issue seen on a release different from `resolved_release`.
 
-## Envelope handling
+**Sampling is per issue, counts stay exact.** `projects.sample_keep_first`
+events of each issue are always stored; after that `sample_rate` of them;
+`fatal` always. Dropped events still increment `event_count`.
 
-- Item headers with `length` are honored (bodies may contain newlines); otherwise the
-  body is the next line. Non-JSON lines resync one line at a time.
-- Timestamps: RFC3339 with any offset, unix seconds or milliseconds → UTC.
-- `event_id` from the item, else the envelope header, else `ts-<ms>-<sha256[:6]>`.
-- Message: `logentry.formatted` → `logentry.message` → `message` → `"Type: value"`.
-- Level normalized (`warn` → `warning`, `critical` → `fatal`, empty → `error`).
-- Tags accept `{k: v}` or `[[k, v], …]`; values stringified.
-- Payload stored verbatim (NUL escapes stripped for JSONB).
+**Symbolicate once, store beside the payload.** `payload` is never rewritten
+(it is TOASTed; rewriting it doubles the write). Symbolicated frames go in
+`events.symbols`; the fingerprint and `error_location` are updated. ProGuard
+and source maps resolve in-process and inline at ingest when the mapping is
+cached; dSYM goes through the sidecar via the job worker. Uploading a symbol
+file re-queues the release's unsymbolicated events from the last
+`COMPRESS_AFTER` (updates must land before the chunk is compressed).
 
-## Multi-instance portal
+**Compression + retention are policies.** Chunks older than `COMPRESS_AFTER`
+(48 h) are compressed (`segmentby project_id, fingerprint`; typically
+10–20× on Sentry payloads). Retention drops whole chunks after
+`RETENTION_DAYS`; hourly/daily aggregates keep 400 days. Policies are
+reconciled from the environment at startup (`internal/retention`).
 
-`DEPLOYMENTS="iOS|https://ios.example.com|key,Android|https://android.example.com|key"`
-turns `/` into a portal: one card row per instance (this instance in-process, the others
-over `/api/stats*` + `/api/issues` with the key), and `/{slug}/dashboard` serves the
-instance whose origin matches the request; other slugs redirect to their instance.
+**Jobs live in Postgres.** `jobs` + `SELECT … FOR UPDATE SKIP LOCKED`. Kinds:
+`symbolicate {event}`, `resymbolicate {release}`, `alert {type, fingerprint}`.
+Retries with backoff, dropped after 8 attempts.
 
-## Symbolication
+**Viewer is server-rendered.** templ + htmx; all state in the URL. Issue-
+centric: overview → issues → issue (stack, breakdown, events) → event;
+releases with crash-free rate; settings (alerts, symbols, DSN). Charts are
+inline SVG rendered by the server; `app.js` only adds keyboard triage,
+theme, and the SSE "new issues" banner.
 
-- `.txt` → ProGuard/R8 mapping parsed in-process (class + method + line-range lines).
-- `.map` / platform `javascript`|`node` → Source Map v3 VLQ decoder, binary search by
-  (line, column).
-- dSYM / platform `ios` → streamed to `SYMBOLICATE_URL/symbolicate` with frames in
-  `X-Frames` (see `container/symbolicate`).
+## Storage
+
+| table | kind | key | notes |
+|---|---|---|---|
+| projects | table | id (identity), slug, public_key | DSN key = `public_key` |
+| events | hypertable (1 day chunks) | id (µs) | compressed after 48 h |
+| sessions | hypertable | id (µs) | release-health inputs, `count` for aggregates |
+| issues | table | (project_id, fingerprint) | stateful |
+| symbol_files | table | (project_id, kind, release, filename) | BYTEA in Postgres |
+| jobs | table | id | queue |
+| alert_rules / alert_channels | table | | per project |
+| rate_limits | table | (key, window) | 60 s fixed windows |
+| event_stats_hourly | cagg | bucket, project, release, platform, level | events / crashes / errors |
+| issue_stats_hourly | cagg | bucket, project, fingerprint | sparklines |
+| release_health_daily | cagg | bucket, project, release | total / crashed / errored sessions |
+
+## Write cost per event
+
+Non-exception event: 1 insert. Exception event: 1 insert + 1 issue upsert
+(+1 `stored_count` bump) + 0–1 job row; symbolication via the worker adds one
+UPDATE of the small columns (the TOASTed payload is not rewritten). Aggregate
+refresh is per bucket, compression per chunk.
+
+## Export / import
+
+`crashcart export` streams NDJSON: `{"t":"<table>", ...columns}`. Rows refer
+to projects by `project` slug (never by id), timestamps are unix ms, ids are
+integers, JSON columns are embedded, bytes are base64. `crashcart import`
+upserts (events/sessions `ON CONFLICT DO NOTHING`, everything else on its key),
+so importing twice or onto live data is safe. Aggregates are not exported;
+they recompute.

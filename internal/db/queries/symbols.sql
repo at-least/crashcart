@@ -1,19 +1,25 @@
 -- name: UpsertSymbolFile :one
-INSERT INTO symbol_files (platform, release, filename, size, data)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (platform, release, filename) DO UPDATE SET
-    size = EXCLUDED.size, data = EXCLUDED.data, uploaded_at = now()
-RETURNING platform, release, filename, size, uploaded_at;
+INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET
+    debug_id = EXCLUDED.debug_id, size = EXCLUDED.size, data = EXCLUDED.data, uploaded_at = now()
+RETURNING id, project_id, kind, release, debug_id, filename, size, uploaded_at;
 
 -- name: ListSymbolFiles :many
-SELECT platform, release, filename, size, uploaded_at
-FROM symbol_files ORDER BY platform, release, filename;
+SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
+FROM symbol_files WHERE project_id = $1 ORDER BY uploaded_at DESC;
 
--- Newest upload wins when several files exist for a (platform, release).
--- name: LatestSymbolFile :one
-SELECT platform, release, filename, size, uploaded_at
-FROM symbol_files WHERE platform = $1 AND release = $2
-ORDER BY uploaded_at DESC LIMIT 1;
+-- name: SymbolFilesForRelease :many
+SELECT * FROM symbol_files WHERE project_id = $1 AND release = $2 AND kind = $3;
 
--- name: GetSymbolFileData :one
-SELECT data FROM symbol_files WHERE platform = $1 AND release = $2 AND filename = $3;
+-- name: SymbolFileByDebugID :one
+SELECT * FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1;
+
+-- name: SymbolFileExists :one
+SELECT EXISTS (SELECT 1 FROM symbol_files WHERE project_id = $1 AND kind = $2 AND (release = $3 OR debug_id = ANY($4::text[])));
+
+-- name: DeleteSymbolFile :execrows
+DELETE FROM symbol_files WHERE project_id = $1 AND id = $2;
+
+-- name: ExpireSymbolFiles :execrows
+DELETE FROM symbol_files WHERE uploaded_at < $1;

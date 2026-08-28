@@ -8,139 +8,23 @@ package sqlc
 import (
 	"context"
 	"encoding/json"
-	"time"
 )
-
-const countCrashesSince = `-- name: CountCrashesSince :one
-SELECT count(*) FROM events
-WHERE id >= $1 AND (level = 'fatal' OR handled = false)
-`
-
-// Crash count in a precise window (alerting).
-func (q *Queries) CountCrashesSince(ctx context.Context, sinceID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countCrashesSince, sinceID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const deleteEventsBefore = `-- name: DeleteEventsBefore :execrows
-DELETE FROM events WHERE id IN (
-    SELECT old.id FROM events old WHERE old.id < $1 ORDER BY old.id LIMIT $2
-)
-`
-
-type DeleteEventsBeforeParams struct {
-	CutoffID int64 `json:"cutoff_id"`
-	Batch    int32 `json:"batch"`
-}
-
-// Retention: bounded delete so a huge backlog never holds one long transaction.
-func (q *Queries) DeleteEventsBefore(ctx context.Context, arg DeleteEventsBeforeParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEventsBefore, arg.CutoffID, arg.Batch)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const deleteUserDevicesBefore = `-- name: DeleteUserDevicesBefore :execrows
-DELETE FROM user_devices WHERE last_seen < $1
-`
-
-func (q *Queries) DeleteUserDevicesBefore(ctx context.Context, lastSeen time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteUserDevicesBefore, lastSeen)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const fingerprintsInRange = `-- name: FingerprintsInRange :many
-SELECT DISTINCT fingerprint FROM events
-WHERE id >= $1 AND id < $2 AND fingerprint IS NOT NULL
-  AND ($3::text IS NULL OR release = $3)
-  AND ($4::text IS NULL OR user_id = $4)
-  AND ($5::text IS NULL OR device_id = $5)
-  AND ($6::text IS NULL OR device_model = $6)
-  AND ($7::text IS NULL OR os_version = $7)
-`
-
-type FingerprintsInRangeParams struct {
-	SinceID     int64   `json:"since_id"`
-	UntilID     int64   `json:"until_id"`
-	Release     *string `json:"release"`
-	UserID      *string `json:"user_id"`
-	DeviceID    *string `json:"device_id"`
-	DeviceModel *string `json:"device_model"`
-	OsVersion   *string `json:"os_version"`
-}
-
-// Fingerprints of events in a window matching event-level filters — one
-// range scan; the caller then loads issues by key.
-func (q *Queries) FingerprintsInRange(ctx context.Context, arg FingerprintsInRangeParams) ([]*string, error) {
-	rows, err := q.db.Query(ctx, fingerprintsInRange,
-		arg.SinceID,
-		arg.UntilID,
-		arg.Release,
-		arg.UserID,
-		arg.DeviceID,
-		arg.DeviceModel,
-		arg.OsVersion,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []*string{}
-	for rows.Next() {
-		var fingerprint *string
-		if err := rows.Scan(&fingerprint); err != nil {
-			return nil, err
-		}
-		items = append(items, fingerprint)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
 
 const getEvent = `-- name: GetEvent :one
-SELECT id, received_at, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, tags, breadcrumbs, payload, to_timestamp(id / 1000000.0)::timestamptz AS occurred_at FROM events WHERE id = $1
+SELECT id, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs, payload, symbols FROM events WHERE project_id = $1 AND id = $2
 `
 
-type GetEventRow struct {
-	ID            int64           `json:"id"`
-	ReceivedAt    time.Time       `json:"received_at"`
-	EventID       *string         `json:"event_id"`
-	Level         string          `json:"level"`
-	Message       string          `json:"message"`
-	Platform      *string         `json:"platform"`
-	Environment   *string         `json:"environment"`
-	Release       *string         `json:"release"`
-	DeviceID      *string         `json:"device_id"`
-	DeviceModel   *string         `json:"device_model"`
-	OsVersion     *string         `json:"os_version"`
-	Screen        *string         `json:"screen"`
-	ErrorType     *string         `json:"error_type"`
-	ErrorLocation *string         `json:"error_location"`
-	Handled       *bool           `json:"handled"`
-	SdkName       *string         `json:"sdk_name"`
-	UserID        *string         `json:"user_id"`
-	Fingerprint   *string         `json:"fingerprint"`
-	Tags          json.RawMessage `json:"tags"`
-	Breadcrumbs   json.RawMessage `json:"breadcrumbs"`
-	Payload       json.RawMessage `json:"payload"`
-	OccurredAt    time.Time       `json:"occurred_at"`
+type GetEventParams struct {
+	ProjectID int64 `json:"project_id"`
+	ID        int64 `json:"id"`
 }
 
-func (q *Queries) GetEvent(ctx context.Context, id int64) (GetEventRow, error) {
-	row := q.db.QueryRow(ctx, getEvent, id)
-	var i GetEventRow
+func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, error) {
+	row := q.db.QueryRow(ctx, getEvent, arg.ProjectID, arg.ID)
+	var i Event
 	err := row.Scan(
 		&i.ID,
-		&i.ReceivedAt,
+		&i.ProjectID,
 		&i.EventID,
 		&i.Level,
 		&i.Message,
@@ -157,155 +41,111 @@ func (q *Queries) GetEvent(ctx context.Context, id int64) (GetEventRow, error) {
 		&i.SdkName,
 		&i.UserID,
 		&i.Fingerprint,
+		&i.Symbolicated,
 		&i.Tags,
 		&i.Breadcrumbs,
 		&i.Payload,
-		&i.OccurredAt,
+		&i.Symbols,
 	)
 	return i, err
 }
 
-type InsertEventsParams struct {
-	ID            int64           `json:"id"`
-	EventID       *string         `json:"event_id"`
-	Level         string          `json:"level"`
-	Message       string          `json:"message"`
-	Platform      *string         `json:"platform"`
-	Environment   *string         `json:"environment"`
-	Release       *string         `json:"release"`
-	DeviceID      *string         `json:"device_id"`
-	DeviceModel   *string         `json:"device_model"`
-	OsVersion     *string         `json:"os_version"`
-	Screen        *string         `json:"screen"`
-	ErrorType     *string         `json:"error_type"`
-	ErrorLocation *string         `json:"error_location"`
-	Handled       *bool           `json:"handled"`
-	SdkName       *string         `json:"sdk_name"`
-	UserID        *string         `json:"user_id"`
-	Fingerprint   *string         `json:"fingerprint"`
-	Tags          json.RawMessage `json:"tags"`
-	Breadcrumbs   json.RawMessage `json:"breadcrumbs"`
-	Payload       json.RawMessage `json:"payload"`
-}
-
-const listEvents = `-- name: ListEvents :many
-SELECT id, to_timestamp(id / 1000000.0)::timestamptz AS occurred_at,
-       level, message, platform, environment, release,
-       device_id, device_model, os_version, screen, error_type, error_location,
-       handled, sdk_name, user_id, fingerprint, tags
-FROM events
-WHERE id >= $1 AND id < $2
-  AND (cardinality($3::text[]) = 0 OR level = ANY($3::text[]))
-  AND ($4::text IS NULL OR device_id = $4)
-  AND ($5::text IS NULL
-       OR user_id = $5
-       OR device_id = ANY($6::text[]))
-  AND ($7::text IS NULL OR platform = $7)
-  AND ($8::text IS NULL OR release = $8)
-  AND ($9::text IS NULL OR error_type = $9)
-  AND ($10::text IS NULL OR fingerprint = $10)
-  AND (NOT $11::boolean OR handled = false OR level = 'fatal')
-  AND ($12::text IS NULL OR device_model = $12)
-  AND ($13::text IS NULL OR os_version = $13)
-  AND ($14::text IS NULL OR error_location ILIKE $14)
-  AND ($15::text IS NULL OR message ILIKE $15)
-  AND tags @> $16::jsonb
-ORDER BY id DESC
-LIMIT $18 OFFSET $17
+const getEventByEventID = `-- name: GetEventByEventID :one
+SELECT id, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs, payload, symbols FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY id DESC LIMIT 1
 `
 
-type ListEventsParams struct {
-	SinceID       int64           `json:"since_id"`
-	UntilID       int64           `json:"until_id"`
-	Levels        []string        `json:"levels"`
-	DeviceID      *string         `json:"device_id"`
-	UserID        *string         `json:"user_id"`
-	UserDevices   []string        `json:"user_devices"`
-	Platform      *string         `json:"platform"`
-	Release       *string         `json:"release"`
-	ErrorType     *string         `json:"error_type"`
-	Fingerprint   *string         `json:"fingerprint"`
-	CrashesOnly   bool            `json:"crashes_only"`
-	DeviceModel   *string         `json:"device_model"`
-	OsVersion     *string         `json:"os_version"`
-	ErrorLocation *string         `json:"error_location"`
-	Message       *string         `json:"message"`
-	Tags          json.RawMessage `json:"tags"`
-	PageOffset    int32           `json:"page_offset"`
-	PageLimit     int32           `json:"page_limit"`
+type GetEventByEventIDParams struct {
+	ProjectID int64  `json:"project_id"`
+	EventID   string `json:"event_id"`
 }
 
-type ListEventsRow struct {
-	ID            int64           `json:"id"`
-	OccurredAt    time.Time       `json:"occurred_at"`
-	Level         string          `json:"level"`
-	Message       string          `json:"message"`
-	Platform      *string         `json:"platform"`
-	Environment   *string         `json:"environment"`
-	Release       *string         `json:"release"`
-	DeviceID      *string         `json:"device_id"`
-	DeviceModel   *string         `json:"device_model"`
-	OsVersion     *string         `json:"os_version"`
-	Screen        *string         `json:"screen"`
-	ErrorType     *string         `json:"error_type"`
-	ErrorLocation *string         `json:"error_location"`
-	Handled       *bool           `json:"handled"`
-	SdkName       *string         `json:"sdk_name"`
-	UserID        *string         `json:"user_id"`
-	Fingerprint   *string         `json:"fingerprint"`
-	Tags          json.RawMessage `json:"tags"`
+func (q *Queries) GetEventByEventID(ctx context.Context, arg GetEventByEventIDParams) (Event, error) {
+	row := q.db.QueryRow(ctx, getEventByEventID, arg.ProjectID, arg.EventID)
+	var i Event
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.EventID,
+		&i.Level,
+		&i.Message,
+		&i.Platform,
+		&i.Environment,
+		&i.Release,
+		&i.DeviceID,
+		&i.DeviceModel,
+		&i.OsVersion,
+		&i.Screen,
+		&i.ErrorType,
+		&i.ErrorLocation,
+		&i.Handled,
+		&i.SdkName,
+		&i.UserID,
+		&i.Fingerprint,
+		&i.Symbolicated,
+		&i.Tags,
+		&i.Breadcrumbs,
+		&i.Payload,
+		&i.Symbols,
+	)
+	return i, err
 }
 
-// List view never returns payload/breadcrumbs (large). Every filter is
-// optional: a NULL / empty-array / empty-object argument disables it.
-func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]ListEventsRow, error) {
-	rows, err := q.db.Query(ctx, listEvents,
-		arg.SinceID,
-		arg.UntilID,
-		arg.Levels,
-		arg.DeviceID,
-		arg.UserID,
-		arg.UserDevices,
-		arg.Platform,
-		arg.Release,
-		arg.ErrorType,
-		arg.Fingerprint,
-		arg.CrashesOnly,
-		arg.DeviceModel,
-		arg.OsVersion,
-		arg.ErrorLocation,
-		arg.Message,
-		arg.Tags,
-		arg.PageOffset,
-		arg.PageLimit,
+const issueNeighbors = `-- name: IssueNeighbors :one
+SELECT max(id)::bigint AS latest, min(id)::bigint AS oldest FROM events WHERE project_id = $1 AND fingerprint = $2
+`
+
+type IssueNeighborsParams struct {
+	ProjectID   int64   `json:"project_id"`
+	Fingerprint *string `json:"fingerprint"`
+}
+
+type IssueNeighborsRow struct {
+	Latest int64 `json:"latest"`
+	Oldest int64 `json:"oldest"`
+}
+
+// Latest and oldest stored event of an issue.
+func (q *Queries) IssueNeighbors(ctx context.Context, arg IssueNeighborsParams) (IssueNeighborsRow, error) {
+	row := q.db.QueryRow(ctx, issueNeighbors, arg.ProjectID, arg.Fingerprint)
+	var i IssueNeighborsRow
+	err := row.Scan(&i.Latest, &i.Oldest)
+	return i, err
+}
+
+const issueUsers = `-- name: IssueUsers :many
+SELECT fingerprint, count(DISTINCT user_id)::bigint AS users
+FROM events WHERE project_id = $1 AND fingerprint = ANY($2::text[]) AND id >= $3 AND id < $4 AND user_id IS NOT NULL
+GROUP BY fingerprint
+`
+
+type IssueUsersParams struct {
+	ProjectID int64    `json:"project_id"`
+	Column2   []string `json:"column_2"`
+	ID        int64    `json:"id"`
+	ID_2      int64    `json:"id_2"`
+}
+
+type IssueUsersRow struct {
+	Fingerprint *string `json:"fingerprint"`
+	Users       int64   `json:"users"`
+}
+
+// Distinct users per issue in a window (index: project_id, fingerprint, id).
+func (q *Queries) IssueUsers(ctx context.Context, arg IssueUsersParams) ([]IssueUsersRow, error) {
+	rows, err := q.db.Query(ctx, issueUsers,
+		arg.ProjectID,
+		arg.Column2,
+		arg.ID,
+		arg.ID_2,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListEventsRow{}
+	items := []IssueUsersRow{}
 	for rows.Next() {
-		var i ListEventsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.OccurredAt,
-			&i.Level,
-			&i.Message,
-			&i.Platform,
-			&i.Environment,
-			&i.Release,
-			&i.DeviceID,
-			&i.DeviceModel,
-			&i.OsVersion,
-			&i.Screen,
-			&i.ErrorType,
-			&i.ErrorLocation,
-			&i.Handled,
-			&i.SdkName,
-			&i.UserID,
-			&i.Fingerprint,
-			&i.Tags,
-		); err != nil {
+		var i IssueUsersRow
+		if err := rows.Scan(&i.Fingerprint, &i.Users); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -316,26 +156,26 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]ListE
 	return items, nil
 }
 
-const listUserDevices = `-- name: ListUserDevices :many
-SELECT device_id FROM user_devices WHERE user_id = $1 ORDER BY last_seen DESC LIMIT 100
+const setEventSymbols = `-- name: SetEventSymbols :exec
+UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, error_location = $5
+WHERE project_id = $1 AND id = $2
 `
 
-func (q *Queries) ListUserDevices(ctx context.Context, userID string) ([]string, error) {
-	rows, err := q.db.Query(ctx, listUserDevices, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var device_id string
-		if err := rows.Scan(&device_id); err != nil {
-			return nil, err
-		}
-		items = append(items, device_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+type SetEventSymbolsParams struct {
+	ProjectID     int64           `json:"project_id"`
+	ID            int64           `json:"id"`
+	Symbols       json.RawMessage `json:"symbols"`
+	Fingerprint   *string         `json:"fingerprint"`
+	ErrorLocation *string         `json:"error_location"`
+}
+
+func (q *Queries) SetEventSymbols(ctx context.Context, arg SetEventSymbolsParams) error {
+	_, err := q.db.Exec(ctx, setEventSymbols,
+		arg.ProjectID,
+		arg.ID,
+		arg.Symbols,
+		arg.Fingerprint,
+		arg.ErrorLocation,
+	)
+	return err
 }
