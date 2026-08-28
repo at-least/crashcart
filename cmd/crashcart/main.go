@@ -7,6 +7,7 @@
 //	crashcart retention   run one retention pass and exit
 //	crashcart alerts      run one alert check and exit
 //	crashcart seed        write a week of synthetic events (local dev)
+//	crashcart export      stream every table as NDJSON to stdout (backup / migration)
 package main
 
 import (
@@ -25,6 +26,7 @@ import (
 	"github.com/newlix/crashcart/internal/alerts"
 	"github.com/newlix/crashcart/internal/config"
 	"github.com/newlix/crashcart/internal/db"
+	"github.com/newlix/crashcart/internal/export"
 	"github.com/newlix/crashcart/internal/retention"
 	"github.com/newlix/crashcart/internal/server"
 	"github.com/newlix/crashcart/internal/store"
@@ -75,10 +77,12 @@ func run(cmd string, log *slog.Logger) error {
 		return alerts.New(st, cfg, log).Run(ctx)
 	case "seed":
 		return seed(ctx, cfg, st, log)
+	case "export":
+		return export.All(ctx, pool, os.Stdout)
 	case "serve":
 		return serve(ctx, cfg, st, log)
 	default:
-		return fmt.Errorf("unknown command %q (serve | migrate | retention | alerts | seed)", cmd)
+		return fmt.Errorf("unknown command %q (serve | migrate | retention | alerts | seed | export)", cmd)
 	}
 }
 

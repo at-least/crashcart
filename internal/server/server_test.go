@@ -15,6 +15,8 @@ import (
 
 	"github.com/newlix/crashcart/internal/alerts"
 	"github.com/newlix/crashcart/internal/config"
+	"github.com/newlix/crashcart/internal/export"
+	"github.com/newlix/crashcart/internal/pk"
 	"github.com/newlix/crashcart/internal/retention"
 	"github.com/newlix/crashcart/internal/store"
 	"github.com/newlix/crashcart/internal/testdb"
@@ -512,5 +514,43 @@ func TestRateLimitHeaders(t *testing.T) {
 		if resp.Header.Get("X-RateLimit-Limit") != "2" {
 			t.Error("limit header")
 		}
+	}
+}
+
+func TestExport(t *testing.T) {
+	e := newEnv(t, nil)
+	now := time.Now().UTC().Truncate(time.Second) // envelope timestamps are RFC3339 (seconds)
+	e.ingest(t, event(now, "fatal", "Boom", "1.0", "u", "d", bp(false), ""))
+	var buf bytes.Buffer
+	if err := export.All(context.Background(), e.st.Pool(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	byTable := map[string][]map[string]any{}
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		rec := decode[map[string]any](t, []byte(line))
+		byTable[rec["t"].(string)] = append(byTable[rec["t"].(string)], rec)
+	}
+	if len(byTable["events"]) != 1 || len(byTable["issues"]) != 1 || len(byTable["hourly_stats"]) != 1 || len(byTable["releases"]) != 1 || len(byTable["user_devices"]) != 1 || len(byTable["alert_types"]) != 3 {
+		t.Fatalf("tables = %v", byTable)
+	}
+	ev := byTable["events"][0]
+	id := int64(ev["id"].(float64))
+	if pk.Time(id).UnixMilli() != now.UnixMilli() {
+		t.Errorf("id %d does not encode %v", id, now)
+	}
+	if _, isObj := ev["tags"].(map[string]any); !isObj {
+		t.Errorf("tags must be an embedded object: %T", ev["tags"])
+	}
+	if _, isObj := ev["payload"].(map[string]any); !isObj {
+		t.Errorf("payload must be an embedded object: %T", ev["payload"])
+	}
+	if ev["handled"] != false {
+		t.Errorf("handled = %v", ev["handled"])
+	}
+	if _, isNum := byTable["issues"][0]["first_seen"].(float64); !isNum {
+		t.Errorf("timestamps must be unix ms: %v", byTable["issues"][0]["first_seen"])
+	}
+	if _, isNum := byTable["events"][0]["received_at"].(float64); !isNum {
+		t.Error("received_at must be unix ms")
 	}
 }

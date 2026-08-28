@@ -86,7 +86,18 @@ crashcart migrate     apply pending migrations and exit
 crashcart retention   one retention pass
 crashcart alerts      one alert check
 crashcart seed        write a week of demo events
+crashcart export      stream every table as NDJSON to stdout (backup / migration)
 ```
+
+### Export format
+
+`crashcart export > dump.ndjson` writes one JSON object per row, `t` = table name, columns
+in snake_case, in primary-key order. The encoding is storage-neutral so another CrashCart
+edition (e.g. SQLite/D1) can load it without a Postgres dump: timestamps are unix
+milliseconds, dates `YYYY-MM-DD`, JSON columns are embedded values, booleans `true/false`,
+binary base64. Aggregate tables (`hourly_stats`, `issues`, `releases`, `release_health`)
+are included so an importer never recomputes them from events — on a per-row-billed store
+that recompute would cost ~0.5 extra writes per event.
 
 Migrations run automatically on every start (`internal/db/migrations`, tracked in
 `schema_migrations`, advisory-locked so replicas can start together).

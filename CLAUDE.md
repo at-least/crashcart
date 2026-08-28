@@ -97,13 +97,14 @@ slots. The viewer calls `store` directly — never HTTP to itself.
 ## Layout
 
 ```
-cmd/crashcart/main.go   subcommands: serve | migrate | retention | alerts | seed
+cmd/crashcart/main.go   subcommands: serve | migrate | retention | alerts | seed | export
 internal/
   api/          api.go (routes, events, stats, issues, alerts, health), symbols.go, compress.go
   alerts/       alerts.go (detectors, window/cooldown), channels.go (telegram/webhook/smtp)
   auth/         middleware
   config/       env → Config; CUSTOM_TAGS, CSV helpers
   db/           migrations/NNNN_*.sql (embedded), migrate.go, queries/*.sql, sqlc/ (generated)
+  export/       NDJSON dump of every table (backup + cross-edition migration format)
   ingest/       ingest.go (id assignment, tx + folding, retry on id clash), pii.go, sampling.go
   pk/           event id ↔ time encoding
   retention/    bounded deletes
@@ -122,8 +123,11 @@ container/symbolicate/  dSYM sidecar (Python + llvm-symbolizer); SYMBOLICATE_URL
 
 - Regenerate after editing: `sqlc generate` (queries/schema), `templ generate` (.templ).
   `make generate` does both. Generated files are committed.
-- Never hand-write SQL in Go outside `internal/db/queries` (migrations + `db.Migrate` are
-  the only exceptions).
+- Never hand-write SQL in Go outside `internal/db/queries` (exceptions: migrations,
+  `db.Migrate`, and the generic full-table scan in `internal/export`).
+- Schema stays portable to SQLite/D1: no arrays, enums, generated columns or partitioning;
+  only BIGINT/TEXT/BOOLEAN/TIMESTAMPTZ/DATE/JSONB/BYTEA, all of which `crashcart export`
+  emits in a neutral NDJSON encoding (unix ms, embedded JSON, base64). Ids stay < 2^53.
 - Time bounds on `events` are ids: `pk.Lower(t)` / `pk.Upper(t)`; never compare
   `to_timestamp(id/1e6)` in a WHERE clause (it defeats the PK range).
 - Nullable text columns are `*string` (sqlc `emit_pointers_for_null_types`);
