@@ -1,0 +1,75 @@
+package web
+
+import (
+	"net/url"
+	"strconv"
+)
+
+func portalURL(win, anchor string) string {
+	p := url.Values{}
+	if win != "7d" {
+		p.Set("win", win)
+	}
+	if anchor != "" {
+		p.Set("anchor", anchor)
+	}
+	if q := p.Encode(); q != "" {
+		return "/?" + q
+	}
+	return "/"
+}
+
+func portalIssueItems(issues []PortalIssue) []IssueItem {
+	out := make([]IssueItem, 0, len(issues))
+	for _, i := range issues {
+		out = append(out, IssueItem{Key: i.Href + i.Title, Title: i.Title, Count: i.Count, Href: i.Href})
+	}
+	return out
+}
+
+func dashValue(reachable bool, n int64) string {
+	if !reachable {
+		return "—"
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+// Landing is the platform portal: one section per deployment with the
+// dashboard's cards row for the shared window.
+templ Landing(sections []PortalSection, win, anchor, settingsHref string) {
+	<div class="min-h-dvh bg-background text-foreground">
+		<header class="app-header">
+			<div class="page app-header-row">
+				@Brand("", "")
+				@HeaderControls(false, &WindowControls{
+					Active:     win,
+					Anchor:     anchor,
+					URLFor:     func(w string) string { return portalURL(w, "") },
+					AnchorBase: portalURL(win, ""),
+				}, settingsHref, false)
+			</div>
+		</header>
+		<div class="page pt-5 pb-10">
+			for _, s := range sections {
+				<section class="portal-section">
+					<div class="portal-head">
+						<a class="portal-name" href={ templ.SafeURL(s.Href) }>{ s.Name }</a>
+						if !s.Reachable {
+							<span data-slot="badge" data-variant="destructive">unreachable</span>
+						}
+						<a data-slot="button" data-variant="outline" data-size="sm" class="portal-open" href={ templ.SafeURL(s.Href) }>Open dashboard →</a>
+					</div>
+					<div class="stat-grid">
+						@StatCard("Crashes", dashValue(s.Reachable, s.Crash), nil) {
+							@CrashChart(s.Timeline)
+						}
+						@StatCard("Errors", dashValue(s.Reachable, s.Error), nil) {
+							@VolumeChart(s.Volume)
+						}
+						@IssuesCard(s.IssueTotal, portalIssueItems(s.Issues))
+					</div>
+				</section>
+			}
+		</div>
+	</div>
+}

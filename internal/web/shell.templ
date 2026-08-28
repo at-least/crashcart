@@ -1,0 +1,251 @@
+package web
+
+// ── icons ───────────────────────────────────────────────────
+
+templ WarnIcon() {
+	<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path>
+		<path d="M12 9v4"></path>
+		<path d="M12 17h.01"></path>
+	</svg>
+}
+
+templ XIcon() {
+	<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+		<path d="M18 6 6 18M6 6l12 12"></path>
+	</svg>
+}
+
+templ CalendarIcon() {
+	<svg class="hidden size-4 shrink-0 text-muted-foreground sm:block" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M8 2v4M16 2v4"></path>
+		<rect width="18" height="18" x="3" y="4" rx="2"></rect>
+		<path d="M3 10h18"></path>
+	</svg>
+}
+
+templ SettingsIcon() {
+	<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<circle cx="12" cy="12" r="3"></circle>
+		<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+	</svg>
+}
+
+templ ChevronIcon() {
+	<svg aria-hidden="true" data-slot="native-select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<path d="m6 9 6 6 6-6"></path>
+	</svg>
+}
+
+templ ChevronLeftIcon() {
+	<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<path d="m15 18-6-6 6-6"></path>
+	</svg>
+}
+
+templ ChevronRightIcon() {
+	<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<path d="m9 18 6-6-6-6"></path>
+	</svg>
+}
+
+// ── brand ───────────────────────────────────────────────────
+
+// BrandMark: rounded square in the primary token with a bolt glyph.
+templ BrandMark() {
+	<span class="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground" aria-hidden="true">
+		<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+			<path d="M13 2 3 14h7l-1 8 11-13h-7l1-7z"></path>
+		</svg>
+	</span>
+}
+
+// Brand: mark + name (+ project). homeHref links back to the portal.
+templ Brand(projectName, homeHref string) {
+	<div class="brand">
+		if homeHref != "" {
+			<a class="brand" href={ templ.SafeURL(homeHref) } title="All platforms">
+				@BrandMark()
+				<span class="brand-name">CrashCart</span>
+			</a>
+		} else {
+			<h1 class="brand">
+				@BrandMark()
+				<span class="brand-name">CrashCart</span>
+			</h1>
+		}
+		if projectName != "" {
+			<span class="brand-sep" aria-hidden="true"></span>
+			<span class="brand-project">{ projectName }</span>
+		}
+	</div>
+}
+
+// ── header controls ─────────────────────────────────────────
+
+// WindowControls drives the 24h/7d/30d group and the anchor date picker.
+type WindowControls struct {
+	Active     string
+	Anchor     string
+	URLFor     func(win string) string
+	AnchorBase string
+}
+
+templ ThemeToggle() {
+	<button type="button" data-slot="button" data-variant="ghost" data-size="icon" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
+		<svg class="dark:hidden" aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<circle cx="12" cy="12" r="4"></circle>
+			<path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+		</svg>
+		<svg class="hidden dark:block" aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9"></path>
+		</svg>
+	</button>
+}
+
+func winVariant(w WindowControls, win string) string {
+	if w.Active == win && w.Anchor == "" {
+		return "secondary"
+	}
+	return "outline"
+}
+
+// HeaderControls renders the shared right-side controls. htmx flavor swaps
+// #shell in place; link flavor (portal) navigates with plain GETs.
+templ HeaderControls(htmx bool, window *WindowControls, settingsURL string, settingsActive bool) {
+	<div class="flex flex-wrap items-center justify-end gap-2">
+		if window != nil {
+			<div data-slot="button-group" role="group">
+				for _, w := range []string{"24h", "7d", "30d"} {
+					if htmx {
+						<button type="button" data-slot="button" data-size="sm" data-variant={ winVariant(*window, w) } { hxNav(window.URLFor(w))... }>{ w }</button>
+					} else {
+						<a data-slot="button" data-size="sm" data-variant={ winVariant(*window, w) } href={ templ.SafeURL(window.URLFor(w)) }>{ w }</a>
+					}
+				}
+			</div>
+			@CalendarIcon()
+			if htmx {
+				<div class="hidden items-center gap-1 sm:flex">
+					<input
+						type="date"
+						data-slot="input"
+						class="h-8 w-[150px] max-w-full text-xs"
+						name="anchor"
+						aria-label="Anchor date"
+						value={ window.Anchor }
+						hx-get={ window.AnchorBase }
+						hx-target="#shell"
+						hx-select="#shell"
+						hx-swap="outerHTML"
+						hx-include="this"
+						hx-trigger="change"
+					/>
+					if window.Anchor != "" {
+						<button type="button" data-slot="button" data-variant="ghost" data-size="icon-sm" title="Back to now" aria-label="Back to now" { hxNav(window.AnchorBase)... }>
+							@XIcon()
+						</button>
+					}
+				</div>
+			} else {
+				<form class="hidden items-center gap-1 sm:flex" method="get" action={ templ.SafeURL(window.AnchorBase) }>
+					<input type="hidden" name="win" value={ window.Active }/>
+					<input type="date" data-slot="input" class="h-8 w-[150px] max-w-full text-xs" name="anchor" value={ window.Anchor } aria-label="Anchor date"/>
+					if window.Anchor != "" {
+						<a data-slot="button" data-variant="ghost" data-size="icon-sm" href={ templ.SafeURL(window.AnchorBase) } title="Back to now" aria-label="Back to now">
+							@XIcon()
+						</a>
+					}
+				</form>
+			}
+		}
+		@ThemeToggle()
+		if settingsURL != "" {
+			if htmx {
+				<button type="button" data-slot="button" data-variant="ghost" data-size="icon" title="Settings" aria-label="Settings" { hxNav(settingsURL)... }>
+					@SettingsIcon()
+				</button>
+			} else {
+				<a data-slot="button" data-variant="ghost" data-size="icon" href={ templ.SafeURL(settingsURL) } title="Settings" aria-label="Settings">
+					@SettingsIcon()
+				</a>
+			}
+		}
+	</div>
+}
+
+// ── shell ───────────────────────────────────────────────────
+
+func shellPollURL(view string, s ViewState) string {
+	if view == "dashboard" {
+		return s.Href()
+	}
+	return s.SettingsHref()
+}
+
+func shellSettingsURL(view string, s ViewState) string {
+	if view == "settings" {
+		return s.Base + "/dashboard"
+	}
+	return s.SettingsHref()
+}
+
+func homeHref(projectName string) string {
+	if projectName != "" {
+		return "/"
+	}
+	return ""
+}
+
+// Shell: header + warning banner + view content. Swapped as a unit (#shell)
+// by every state-changing htmx interaction and by the 30s poll.
+templ Shell(view string, s ViewState, banner []string, projectName string) {
+	<div
+		id="shell"
+		class="min-h-dvh bg-background text-foreground"
+		hx-get={ shellPollURL(view, s) }
+		hx-trigger="every 30s [document.visibilityState === 'visible' && !document.activeElement.closest('#shell input, #shell select')]"
+		hx-target="#shell"
+		hx-select="#shell"
+		hx-swap="outerHTML"
+		hx-disinherit="*"
+	>
+		<header class="app-header">
+			<div class="page app-header-row">
+				<div class="flex min-w-0 items-center gap-3">
+					@Brand(projectName, homeHref(projectName))
+					if view == "dashboard" {
+						<span class="live-label" title="Auto-refreshes every 30 seconds">
+							<span class="live-dot"></span>
+							live
+						</span>
+					}
+				</div>
+				if view == "settings" {
+					<button type="button" data-slot="button" data-variant="outline" data-size="sm" { hxNav(s.Base + "/dashboard")... }>← Dashboard</button>
+				}
+				if view == "dashboard" {
+					@HeaderControls(true, &WindowControls{
+						Active:     s.Win,
+						Anchor:     s.Anchor,
+						URLFor:     func(w string) string { return s.WithWin(w).Href() },
+						AnchorBase: s.WithAnchor("").Href(),
+					}, shellSettingsURL(view, s), false)
+				} else {
+					@HeaderControls(true, nil, shellSettingsURL(view, s), true)
+				}
+			</div>
+		</header>
+		if len(banner) > 0 {
+			<div class="page pt-4">
+				for _, line := range banner {
+					<div data-slot="alert" data-variant="destructive" role="alert" class="mb-2">
+						@WarnIcon()
+						<p data-slot="alert-description">{ line }</p>
+					</div>
+				}
+			</div>
+		}
+		{ children... }
+	</div>
+}

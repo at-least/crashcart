@@ -1,0 +1,282 @@
+/* CrashCart viewer stylesheet — Tailwind v4 + shadless (local ~/at-least/shadless),
+   compiled to src/web/assets/app.css. Build: npm run css (output committed; the
+   Worker ships it as a static asset).
+
+   Design rules
+   ────────────
+   1. Every piece of text gets an explicit color token. Nothing relies on a
+      shadless variant inheriting the right color through the cascade — that
+      is how "invisible text" happened before (see shadless
+      FINDING-css-variant-cascade.md). The hardening block below restates
+      resting colors for every slot/variant this app renders.
+   2. Native form controls follow the theme via `color-scheme`, so <select>
+      popups, <input type=date> pickers and scrollbars are legible in dark
+      mode (a transparent-background select otherwise renders light-on-light
+      options).
+   3. Severity is a first-class token ramp (--level-*) shared by badges,
+      table rows, charts and legends, so the same color means the same thing
+      everywhere and both themes get their own tuned values.
+   4. shadless components are used as-is for structure (card / table / badge /
+      button / input / sheet / switch / alert / empty); project CSS only adds
+      what shadless has no equivalent for (charts, severity, dense log table,
+      toolbar, pager). */
+
+@import "shadless";
+@import "shadless/alert.css";
+@import "shadless/badge.css";
+@import "shadless/button.css";
+@import "shadless/button-group.css";
+@import "shadless/card.css";
+@import "shadless/empty.css";
+@import "shadless/input.css";
+@import "shadless/label.css";
+@import "shadless/native-select.css";
+@import "shadless/separator.css";
+@import "shadless/sheet.css";
+@import "shadless/switch.css";
+@import "shadless/table.css";
+
+/* ── Theme tokens ─────────────────────────────────────────── */
+@layer base {
+  :root {
+    color-scheme: light;
+    /* severity ramp (light): saturated, dark enough for text on white */
+    --level-fatal: oklch(53% 0.22 27);
+    --level-error: oklch(58% 0.19 42);
+    --level-warning: oklch(62% 0.16 75);
+    --level-info: oklch(52% 0.16 255);
+    --level-debug: oklch(52% 0 0);
+    --ok: oklch(55% 0.17 150);
+    /* charts follow the severity ramp so a red line == a fatal badge */
+    --chart-fatal: var(--level-fatal);
+    --chart-error: var(--level-error);
+    --chart-grid: oklch(0% 0 0 / 0.07);
+  }
+  .dark {
+    color-scheme: dark;
+    /* severity ramp (dark): lighter + slightly less chroma for text on near-black */
+    --level-fatal: oklch(74% 0.18 25);
+    --level-error: oklch(77% 0.16 50);
+    --level-warning: oklch(82% 0.15 85);
+    --level-info: oklch(75% 0.12 255);
+    --level-debug: oklch(72% 0 0);
+    --ok: oklch(76% 0.16 155);
+    --chart-fatal: var(--level-fatal);
+    --chart-error: var(--level-error);
+    --chart-grid: oklch(100% 0 0 / 0.08);
+  }
+
+  html { @apply antialiased; }
+  body { @apply bg-background text-foreground; }
+
+  /* Native controls: explicit colors on both the control and its popup
+     list. Chrome/Firefox paint <option>s with the select's computed
+     colors — with a transparent select background in dark mode that used
+     to be near-white text on a white popup. */
+  select, option, optgroup { @apply bg-background text-foreground; }
+  ::placeholder { @apply text-muted-foreground/70; }
+  ::selection { background: var(--selection); color: var(--selection-foreground); }
+}
+
+/* ── Hardening: explicit resting colors per slot × variant ───
+   Same-specificity rules that win by source order; shadless's
+   hover/expanded rules are more specific and keep their states. */
+@layer components {
+  [data-slot="button"] { @apply text-foreground; }
+  [data-slot="button"]:where(:not([data-variant]), [data-variant="default"], [data-variant=""]) { @apply bg-primary text-primary-foreground; }
+  [data-slot="button"][data-variant="secondary"] { @apply bg-secondary text-secondary-foreground; }
+  [data-slot="button"][data-variant="outline"] { @apply bg-background text-foreground; }
+  [data-slot="button"][data-variant="ghost"],
+  [data-slot="button"][data-variant="link"] { @apply bg-transparent text-foreground; }
+  [data-slot="button"][data-variant="link"] { @apply text-primary; }
+  [data-slot="button"][data-variant="destructive"] { @apply text-destructive; }
+
+  [data-slot="badge"] { @apply text-foreground; }
+  [data-slot="badge"]:where(:not([data-variant]), [data-variant="default"], [data-variant=""]) { @apply bg-primary text-primary-foreground; }
+  [data-slot="badge"][data-variant="secondary"] { @apply bg-secondary text-secondary-foreground; }
+  [data-slot="badge"][data-variant="outline"] { @apply border-border bg-transparent text-foreground; }
+  [data-slot="badge"][data-variant="destructive"] { @apply text-destructive; }
+
+  [data-slot="input"],
+  [data-slot="native-select"] { @apply text-foreground; }
+  [data-slot="native-select-wrapper"] { @apply text-foreground; }
+  [data-slot="native-select-icon"] { @apply text-muted-foreground; }
+  [data-slot="label"] { @apply text-foreground; }
+  [data-slot="card"] { @apply text-card-foreground; }
+  [data-slot="card-title"] { @apply text-card-foreground; }
+  [data-slot="table-head"] { @apply text-muted-foreground; }
+  [data-slot="table-cell"] { @apply text-foreground; }
+  [data-slot="sheet-content"] { @apply text-popover-foreground; }
+  [data-slot="alert"] { @apply text-foreground; }
+  [data-slot="alert"][data-variant="destructive"] { @apply text-destructive; }
+  [data-slot="empty"] { @apply text-muted-foreground; }
+  [data-slot="empty-title"] { @apply text-foreground; }
+  .sheet-content-button { @apply text-foreground; }
+}
+
+/* ── Project components ───────────────────────────────────── */
+@layer components {
+  /* ── Page frame ── */
+  .page { @apply mx-auto w-full max-w-[1400px] px-4 sm:px-6; }
+  .app-header { @apply sticky top-0 z-30 border-b border-border bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/75; }
+  .app-header-row { @apply flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2.5; }
+  .brand { @apply flex min-w-0 items-center gap-2.5 text-foreground no-underline; }
+  .brand-name { @apply text-[15px] font-semibold tracking-tight text-foreground; }
+  .brand-project { @apply truncate text-sm text-muted-foreground; }
+  .brand-sep { @apply h-4 w-px shrink-0 bg-border; }
+  .live-dot { @apply relative inline-block size-1.5 shrink-0 rounded-full bg-[var(--ok)]; }
+  .live-dot::after {
+    content: "";
+    @apply absolute inset-0 animate-ping rounded-full bg-[var(--ok)] opacity-60;
+  }
+  .live-label { @apply hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:inline-flex; }
+
+  /* ── Severity ── */
+  .level-badge {
+    @apply inline-flex h-5 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-1.5 font-mono text-[11px] leading-none font-medium whitespace-nowrap transition-colors;
+    color: var(--lv, var(--level-debug));
+    border-color: color-mix(in oklab, var(--lv, var(--level-debug)) 28%, transparent);
+    background-color: color-mix(in oklab, var(--lv, var(--level-debug)) 10%, transparent);
+  }
+  .level-badge:hover { background-color: color-mix(in oklab, var(--lv, var(--level-debug)) 20%, transparent); }
+  .level-badge::before {
+    content: "";
+    @apply size-1.5 rounded-full;
+    background-color: var(--lv, var(--level-debug));
+  }
+  .level-badge[data-level="fatal"] { --lv: var(--level-fatal); }
+  .level-badge[data-level="error"] { --lv: var(--level-error); }
+  .level-badge[data-level="warning"] { --lv: var(--level-warning); }
+  .level-badge[data-level="info"] { --lv: var(--level-info); }
+  .level-badge[data-level="debug"] { --lv: var(--level-debug); }
+
+  .crash-badge {
+    @apply inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 font-mono text-[11px] leading-none font-semibold whitespace-nowrap transition-colors;
+    color: var(--level-fatal);
+    background-color: color-mix(in oklab, var(--level-fatal) 12%, transparent);
+  }
+  .crash-badge:hover { background-color: color-mix(in oklab, var(--level-fatal) 22%, transparent); }
+  .caught-mark { @apply font-mono text-[11px] text-muted-foreground; }
+  .null-mark { @apply text-muted-foreground/60; }
+
+  /* ── Stat cards ── */
+  .stat-grid { @apply grid grid-cols-1 gap-4 md:grid-cols-3; }
+  .stat-card { @apply relative; }
+  .stat-card[data-active="true"] { @apply ring-2 ring-foreground; }
+  .stat-title {
+    @apply inline-flex items-center gap-1.5 rounded-md text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase;
+  }
+  button.stat-title { @apply cursor-pointer transition-colors hover:text-foreground; }
+  .stat-title-hint { @apply font-normal normal-case tracking-normal text-muted-foreground/70; }
+  .stat-value { @apply text-2xl leading-none font-semibold tracking-tight text-foreground tabular-nums; }
+  .stat-value[data-dim="true"] { @apply text-muted-foreground; }
+  .stat-filter { @apply ml-1 inline-flex h-4 items-center rounded-sm bg-foreground px-1 font-mono text-[9px] font-semibold tracking-normal text-background; }
+
+  /* ── Charts (Chart.js on [data-chart] canvases, see app.js) ── */
+  .chart-box { @apply relative h-[190px] w-full; }
+  .chart-legend { @apply flex gap-3 px-1 pt-1 text-[11px] text-muted-foreground; }
+  .chart-legend .swatch { @apply mr-1.5 inline-block size-2 rounded-full align-middle; }
+  .chart-tooltip {
+    @apply pointer-events-none fixed z-50 grid min-w-32 -translate-x-1/2 translate-y-3 items-start
+      rounded-lg border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground
+      shadow-md transition-[left,top,opacity] duration-100 ease-out;
+  }
+  .chart-tooltip[hidden] { @apply opacity-0; }
+  .chart-tooltip .chart-tooltip-title { @apply mb-1 font-medium leading-none text-popover-foreground; }
+  .chart-tooltip .chart-tooltip-items { @apply grid gap-1; }
+  .chart-tooltip .chart-tooltip-item { @apply flex items-center gap-2 whitespace-nowrap; }
+  .chart-tooltip .chart-tooltip-indicator { @apply size-2 shrink-0 rounded-full; background-color: var(--chart-indicator-color); }
+  .chart-tooltip .chart-tooltip-label { @apply leading-none text-muted-foreground; }
+  .chart-tooltip .chart-tooltip-value { @apply ms-auto font-mono font-medium leading-none text-popover-foreground tabular-nums; }
+
+  /* ── Issues list inside a card ── */
+  .issue-list { @apply h-[214px] overflow-y-auto [scrollbar-width:thin]; }
+  .issue-list th { @apply sticky top-0 z-1 bg-card text-[11px] font-medium tracking-wide text-muted-foreground uppercase; }
+  .issue-list td { @apply text-foreground; }
+  .issue-list tbody tr { @apply cursor-pointer; }
+  .issue-list tbody tr:focus-visible { @apply outline-2 outline-offset-[-2px] outline-ring; }
+  .issue-rank { @apply w-8 font-mono text-[11px] text-muted-foreground tabular-nums; }
+  .issue-title { @apply max-w-[220px] truncate text-sm text-foreground; }
+  .issue-title a { @apply text-foreground no-underline hover:underline; }
+  .issue-count { @apply text-right font-mono text-xs font-medium text-foreground tabular-nums; }
+
+  /* ── Toolbar (release · chips · search) ── */
+  .toolbar { @apply mt-5 flex flex-wrap items-center gap-x-3 gap-y-2; }
+  .toolbar-group { @apply flex flex-wrap items-center gap-1.5; }
+  .toolbar-label { @apply text-xs font-medium text-muted-foreground; }
+  .toolbar-search { @apply ml-auto flex flex-wrap items-center gap-1.5; }
+  .chip-row { @apply mt-2 flex flex-wrap items-center gap-1.5; }
+  .chip {
+    @apply inline-flex h-6 cursor-pointer items-center gap-1 rounded-md border border-border bg-secondary pr-1 pl-2 font-mono text-[11px] text-secondary-foreground transition-colors hover:border-foreground/30;
+  }
+  .chip .chip-key { @apply text-muted-foreground; }
+  .chip svg { @apply size-3 text-muted-foreground; }
+  .chip:hover svg { @apply text-foreground; }
+  .chip-clear { @apply h-6 px-1.5 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline; }
+
+  /* ── Log table ── */
+  .log-frame { @apply mt-3 overflow-hidden rounded-xl border border-border bg-card; }
+  .log-table { @apply w-full text-sm; }
+  .log-table thead th {
+    @apply border-b border-border bg-card px-3 py-2 text-left text-[11px] font-medium tracking-wide text-muted-foreground uppercase whitespace-nowrap;
+  }
+  .log-table td { @apply border-b border-border px-3 py-2 align-middle text-foreground whitespace-nowrap; }
+  .log-table tbody tr:last-child td { @apply border-b-0; }
+  .log-table tbody tr { @apply cursor-pointer transition-colors hover:bg-muted/60; }
+  .log-table tbody tr:focus-visible { @apply outline-2 outline-offset-[-2px] outline-ring; }
+  .log-table tbody tr[data-level="fatal"] td:first-child { box-shadow: inset 2px 0 0 var(--level-fatal); }
+  .log-table tbody tr[data-level="error"] td:first-child { box-shadow: inset 2px 0 0 color-mix(in oklab, var(--level-error) 55%, transparent); }
+  .cell-time { @apply font-mono text-xs text-muted-foreground; }
+  .log-table tbody tr:hover .cell-time { @apply text-foreground; }
+  .cell-btn { @apply block w-full max-w-[140px] cursor-pointer truncate text-left font-mono text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline; }
+  .cell-msg { @apply max-w-[420px] min-w-[220px]; }
+  .cell-msg .msg { @apply truncate text-sm text-foreground; }
+  .cell-msg .sub { @apply mt-0.5 truncate font-mono text-[11px] text-muted-foreground; }
+  .filter-link { @apply cursor-pointer text-left text-muted-foreground transition-colors hover:text-foreground hover:underline; }
+
+  /* ── Pager ── */
+  .pager { @apply mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground; }
+  .pager-page { @apply font-mono text-foreground tabular-nums; }
+
+  /* ── Empty state (log list) ── */
+  .empty-frame { @apply mt-3 rounded-xl border border-dashed border-border py-16 text-center; }
+  .empty-frame .empty-title { @apply text-sm font-medium text-foreground; }
+  .empty-frame .empty-desc { @apply mt-1 text-xs text-muted-foreground; }
+
+  /* ── Detail sheet ── */
+  #sheet-portal[hidden] { display: none !important; }
+  .sheet-section { @apply grid gap-2; }
+  .sheet-h { @apply text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase; }
+  .sheet-title { @apply text-base leading-snug font-semibold break-words text-popover-foreground; }
+  .meta-grid { @apply grid grid-cols-2 gap-x-4 gap-y-3; }
+  .meta-k { @apply text-[11px] font-medium tracking-wide text-muted-foreground uppercase; }
+  .meta-v { @apply mt-0.5 font-mono text-xs break-all text-popover-foreground; }
+  .code-block { @apply overflow-auto rounded-lg border border-border bg-code p-2.5 font-mono text-[11px] leading-relaxed text-code-foreground whitespace-pre; }
+  .code-inline { @apply rounded-md bg-code px-1.5 py-0.5 font-mono text-xs break-all text-code-foreground; }
+  .crumbs { @apply relative ml-1.5 border-l border-border pl-4; }
+  .crumb { @apply relative flex items-start gap-2 py-1 text-xs text-popover-foreground; }
+  .crumb::before {
+    content: "";
+    @apply absolute top-2 -left-[21px] size-2 rounded-full border-2 border-popover bg-muted-foreground;
+  }
+  .crumb[data-level="error"]::before { background-color: var(--level-error); }
+  .crumb-time { @apply shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums; }
+  .crumb-cat { @apply font-mono text-[11px] text-muted-foreground; }
+  .tag { @apply rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground; }
+  .copy-btn { @apply ml-auto h-6 px-2 text-[11px]; }
+
+  /* ── Settings ── */
+  .settings-row { @apply flex items-center justify-between gap-4 px-4; }
+  .settings-title { @apply text-sm font-medium text-card-foreground; }
+  .settings-desc { @apply mt-0.5 text-xs text-muted-foreground; }
+  .settings-meta { @apply mt-1 font-mono text-[11px] text-muted-foreground/70; }
+
+  /* ── Portal ── */
+  .portal-section { @apply mt-8 first:mt-0; }
+  .portal-head { @apply mb-3 flex flex-wrap items-center gap-3; }
+  .portal-name { @apply text-lg font-semibold tracking-tight text-foreground no-underline hover:underline; }
+  .portal-open { @apply ml-auto; }
+
+  /* network error banner (toggled by app.js on htmx failures) */
+  .error-box { @apply mb-3; }
+}

@@ -1,0 +1,121 @@
+package web
+
+import (
+	"strconv"
+
+	"github.com/newlix/crashcart/internal/api"
+	"github.com/newlix/crashcart/internal/db/sqlc"
+)
+
+type alertLabel struct{ Title, Desc string }
+
+var alertLabels = map[string]alertLabel{
+	"crash_spike": {"Crash spike", "Crash rate 3× above the weekly baseline (anomaly detection)"},
+	"new_error":   {"New crash type", "First occurrence of a fingerprint never seen before"},
+	"regression":  {"Regression", "A resolved issue reappears in a newer release"},
+}
+
+func labelFor(t string) alertLabel {
+	if l, ok := alertLabels[t]; ok {
+		return l
+	}
+	return alertLabel{Title: t}
+}
+
+func switchState(on bool) string {
+	if on {
+		return "checked"
+	}
+	return "unchecked"
+}
+
+// SettingsPanel: alert toggles + configured notification channels.
+templ SettingsPanel(alerts []sqlc.AlertType, channels api.ChannelsInfo, base string) {
+	<div id="settings-panel" class="mx-auto w-full max-w-2xl px-4 pt-6 pb-10">
+		<section class="grid gap-3">
+			<div>
+				<h2 class="text-base font-semibold tracking-tight text-foreground">Alerts</h2>
+				<p class="mt-0.5 text-xs text-muted-foreground">Evaluated every 10 minutes; notifications go to every configured channel.</p>
+			</div>
+			<div class="grid gap-2">
+				for _, a := range alerts {
+					<div data-slot="card" data-size="sm" class="settings-row flex-row">
+						<div class="min-w-0">
+							<div class="flex items-center gap-2">
+								<p class="settings-title">{ labelFor(a.Type).Title }</p>
+								if a.Enabled {
+									<span data-slot="badge" data-variant="secondary">on</span>
+								} else {
+									<span data-slot="badge" data-variant="outline">off</span>
+								}
+							</div>
+							<p class="settings-desc">{ labelFor(a.Type).Desc }</p>
+							if a.LastTriggered != nil {
+								<p class="settings-meta">Last triggered { formatDateTime(*a.LastTriggered) }</p>
+							}
+						</div>
+						<button
+							type="button"
+							role="switch"
+							data-slot="switch"
+							data-size="default"
+							class="group/switch"
+							aria-checked={ boolAttr(a.Enabled) }
+							data-state={ switchState(a.Enabled) }
+							aria-label={ "Toggle " + labelFor(a.Type).Title }
+							hx-patch={ base + "/settings/alerts/" + a.Type }
+							hx-vals={ `{"enabled": ` + strconv.FormatBool(!a.Enabled) + `}` }
+							hx-trigger="click"
+							hx-target="#settings-panel"
+							hx-select="#settings-panel"
+							hx-swap="outerHTML"
+							hx-push-url="false"
+						>
+							<span data-slot="switch-thumb" data-state={ switchState(a.Enabled) }></span>
+						</button>
+					</div>
+				}
+			</div>
+		</section>
+		<section class="mt-8 grid gap-3">
+			<div>
+				<h2 class="text-base font-semibold tracking-tight text-foreground">Notification channels</h2>
+				<p class="mt-0.5 text-xs text-muted-foreground">Configured through environment variables (TELEGRAM_*, ALERT_WEBHOOKS, ALERT_EMAILS + SMTP_*).</p>
+			</div>
+			<div class="grid gap-2">
+				@ChannelRow("Telegram", channels.Telegram, channels.TelegramConfigured)
+				@ChannelRow("Webhook", channels.Webhooks, true)
+				@ChannelRow("Email", channels.Emails, channels.EmailConfigured)
+			</div>
+		</section>
+	</div>
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return strconv.Itoa(n) + " " + word
+	}
+	return strconv.Itoa(n) + " " + word + "s"
+}
+
+templ ChannelRow(name string, items []string, configured bool) {
+	<div data-slot="card" data-size="sm" class="settings-row flex-row items-start">
+		<div class="min-w-0 flex-1">
+			<div class="flex items-center gap-2">
+				<span class="settings-title">{ name }</span>
+				if configured && len(items) > 0 {
+					<span data-slot="badge" data-variant="secondary">{ plural(len(items), "destination") }</span>
+				} else {
+					<span data-slot="badge" data-variant="outline">not configured</span>
+				}
+			</div>
+			if configured && len(items) > 0 {
+				<div class="mt-1 grid gap-0.5">
+					for _, item := range items {
+						<p class="settings-meta truncate">{ item }</p>
+					}
+				</div>
+			}
+		</div>
+	</div>
+}
