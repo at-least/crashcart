@@ -2,9 +2,6 @@
 
 Open-source error tracking, Sentry SDK compatible. One Go binary + one Postgres.
 
-> Prefer Cloudflare Workers? The D1/R2 implementation lives in
-> [crashcart-cloudflare](https://github.com/newlix/crashcart-cloudflare).
-
 ## What
 
 Point any Sentry SDK at CrashCart instead of sentry.io. Get crash tracking, stack trace

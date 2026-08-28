@@ -65,16 +65,5 @@ Standardized terminology. Use these consistently across code, docs, viewer.
 | Abbr | Full |
 |---|---|
 | PK | Primary Key (logs.id = event timestamp_ms × 1000 + random) |
-| D1 | Cloudflare D1 (SQLite at edge) |
-| R2 | Cloudflare R2 (object storage) |
-| UPSERT | INSERT ... ON CONFLICT DO UPDATE (SQLite/PG) / ON DUPLICATE KEY UPDATE (MySQL) |
-| ALERT_TYPES | `alert_types` table — 4 predefined alert detectors: crash_spike, new_error, regression, high_count (toggle via `enabled`) |
-
-## Database Backend Terms
-
-| Term | Definition |
-|---|---|
-| **Dialect** | SQL flavor: `"sqlite"`, `"postgres"`, or `"mysql"`. Set at init via `setDialect()`. Controls SQL fragment generation in `dialect.ts`. |
-| **Adapter** | Module that wraps a DB driver to match the D1Database interface (`prepare().bind().run()/.all()/.first()`). See `postgres.ts`, `mysql.ts`. |
-| **Hyperdrive** | Cloudflare connection pooling for external DBs (Postgres, MySQL). Optional optimization — CrashCart works without it via HTTP queries. |
-| **DATABASE_URL** | Env var that selects the backend. `postgresql://` → Postgres, `mysql://` → MySQL. Omit → D1. |
+| UPSERT | INSERT ... ON CONFLICT DO UPDATE |
+| ALERT_TYPES | `alert_types` table — 3 predefined alert detectors: crash_spike, new_error, regression (toggle via `enabled`) |

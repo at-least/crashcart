@@ -1,8 +1,8 @@
 # CLAUDE.md — CrashCart: Sentry-compatible backend in Go + Postgres
 
-Sibling repo: **crashcart-cloudflare** (TypeScript / Workers / D1 + R2) keeps the same
-product on the Cloudflare stack. Behavior is equivalent; the API and schema here were
-redesigned for Go + Postgres and are NOT wire-compatible with that repo.
+This is the primary implementation. Plan: run it privately first, harden it in
+production, then port a fresh Cloudflare/D1 edition for open-source sharing. Keep
+`internal/db/queries/*.sql` and `internal/sentry` clean — they will be that port's spec.
 
 ## Stack
 
@@ -75,7 +75,7 @@ slots. The viewer calls `store` directly — never HTTP to itself.
 - **Why templ?** Type-checked HTML with the same htmx attributes as the TS version;
   `{ children... }` composition mirrors JSX. `templ.Attributes` spreads carry the
   `hx-*` sets (`hxNav`, `hxRowNav`, `hxDetail` in `format.go`).
-- **Why keep shadless + Tailwind?** Same design system as the Cloudflare viewer: slots
+- **Why shadless + Tailwind?** A maintained component vocabulary instead of hand-written CSS: slots
   (`data-slot="button|card|badge|table|sheet|switch|alert|input|native-select"`), severity
   token ramp (`--level-*` → `--chart-*`), explicit colors per slot × variant, `color-scheme`
   per theme. Source `internal/web/styles/app.css`; compiled artifact
