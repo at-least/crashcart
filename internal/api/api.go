@@ -70,8 +70,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		// sentry-cli compatibility
 		"GET /api/0/projects/{org}/{project}/files/dsyms/":  h.sentryListDSYMs,
 		"POST /api/0/projects/{org}/{project}/files/dsyms/": h.sentryUploadDSYMs,
-		"POST /api/0/organizations/{org}/chunk-upload/":     h.sentryChunkUpload,
-		"GET /api/0/organizations/{org}/chunk-upload/":      h.sentryChunkUpload,
+		"POST /api/0/organizations/{org}/chunk-upload/":              h.sentryChunkUploadPost,
+		"GET /api/0/organizations/{org}/chunk-upload/":               h.sentryChunkUploadOptions,
+		"POST /api/0/projects/{org}/{project}/files/difs/assemble/": h.sentryAssemble,
 		// CORS preflights
 		"OPTIONS /api/projects":  h.preflight,
 		"OPTIONS /api/projects/": h.preflight,

@@ -35,6 +35,22 @@ var uuidRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 // single write path used by the JSON API, the sentry-cli endpoint and the
 // viewer.
 func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte) ([]sqlc.UpsertSymbolFileRow, error) {
+	return s.upload(ctx, projectID, release, kind, filename, data, nil)
+}
+
+// UploadWithDebugID is Upload with a caller-supplied debug id (sentry-cli
+// computes one for ProGuard mappings and sends it in the assemble request;
+// the Android SDK reports the same uuid in debug_meta). Zips fall back to
+// per-file detection.
+func (s *Service) UploadWithDebugID(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID string) ([]sqlc.UpsertSymbolFileRow, error) {
+	var id *string
+	if debugID = strings.ToLower(strings.TrimSpace(debugID)); debugID != "" {
+		id = &debugID
+	}
+	return s.upload(ctx, projectID, release, kind, filename, data, id)
+}
+
+func (s *Service) upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID *string) ([]sqlc.UpsertSymbolFileRow, error) {
 	if len(data) == 0 {
 		return nil, UploadError("empty file")
 	}
@@ -79,7 +95,7 @@ func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, fi
 					continue // Info.plist, Relocations/*.yml, … — not a symbol file
 				}
 			}
-			row, err := s.upsert(ctx, projectID, release, k, name, content)
+			row, err := s.upsert(ctx, projectID, release, k, name, content, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -94,7 +110,7 @@ func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, fi
 				return nil, UploadError("unrecognized symbol file (expected a ProGuard mapping, a source map or a Mach-O dSYM)")
 			}
 		}
-		row, err := s.upsert(ctx, projectID, release, kind, baseName(filename), data)
+		row, err := s.upsert(ctx, projectID, release, kind, baseName(filename), data, debugID)
 		if err != nil {
 			return nil, err
 		}
@@ -128,9 +144,12 @@ func classify(name string, data []byte) string {
 	return k
 }
 
-func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte) (sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte, debugID *string) (sqlc.UpsertSymbolFileRow, error) {
+	if debugID == nil {
+		debugID = DebugIDFor(kind, name, data)
+	}
 	return s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
-		ProjectID: projectID, Kind: kind, Release: release, DebugID: DebugIDFor(kind, name, data),
+		ProjectID: projectID, Kind: kind, Release: release, DebugID: debugID,
 		Filename: name, Size: int64(len(data)), Data: data,
 	})
 }

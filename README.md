@@ -115,14 +115,21 @@ curl -H "Authorization: Bearer $API_KEY" -F kind=proguard -F release=2.4.1 \
      -F file=@mapping.txt http://localhost:8080/api/projects/shop/symbols
 ```
 
-or with sentry-cli, which uploads dSYMs to the Sentry-compatible endpoint
-`/api/0/projects/<org>/<slug>/files/dsyms/` (the organization segment is
-ignored; the project segment is the CrashCart slug):
+or with sentry-cli, which speaks the Sentry chunked-upload protocol
+(`/api/0/organizations/<org>/chunk-upload/` + `…/files/difs/assemble/`;
+sentry-cli 2 may also use the legacy `…/files/dsyms/` upload). The
+organization segment is ignored; the project segment is the CrashCart slug
+or numeric id:
 
 ```sh
-SENTRY_URL=http://localhost:8080 SENTRY_AUTH_TOKEN=$API_KEY \
-  sentry-cli upload-dif --org any --project shop path/to/App.dSYM
+export SENTRY_URL=http://localhost:8080 SENTRY_AUTH_TOKEN=$API_KEY SENTRY_ORG=any SENTRY_PROJECT=shop
+sentry-cli debug-files upload path/to/App.dSYM        # dSYM: debug_id = LC_UUID (arm64 slice of a fat binary)
+sentry-cli upload-proguard --write-properties sentry-debug-meta.properties mapping.txt
 ```
+
+Files uploaded this way carry no release; they are matched by `debug_id`
+(`debug_meta.images` in the event). Set `PUBLIC_URL` so the chunk-upload
+URL handed to sentry-cli is reachable from where it runs.
 
 Uploading a symbol file re-queues the release's unsymbolicated events from
 the last `COMPRESS_AFTER`. Symbolicated frames are stored beside the
@@ -154,7 +161,9 @@ GET    /health
 
 POST   /api/{project_id}/envelope/            Sentry envelope ingest (authenticated by the DSN key)
 POST   /api/{project_id}/store/               legacy single-event ingest
-GET|POST /api/0/projects/{org}/{slug}/files/dsyms/   sentry-cli debug-file upload
+GET|POST /api/0/projects/{org}/{slug}/files/dsyms/   sentry-cli legacy debug-file upload / lookup by debug_id
+GET|POST /api/0/organizations/{org}/chunk-upload/     sentry-cli chunked upload (options / chunks)
+POST     /api/0/projects/{org}/{slug}/files/difs/assemble/   sentry-cli assemble
 ```
 
 Transactions, profiles, replays and client reports in envelopes are

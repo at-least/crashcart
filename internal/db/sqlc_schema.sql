@@ -85,6 +85,12 @@ CREATE TABLE symbol_files (
     UNIQUE (project_id, kind, release, filename)
 );
 
+CREATE TABLE upload_chunks (
+    sha1       TEXT PRIMARY KEY,
+    data       BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE jobs (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     kind       TEXT NOT NULL,

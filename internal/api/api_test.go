@@ -497,7 +497,7 @@ func TestSymbols(t *testing.T) {
 	}
 
 	// sentry-cli compatibility
-	e.get("/api/0/organizations/any/chunk-upload/", 404)
+	e.get("/api/0/organizations/any/chunk-upload/", 200) // chunked protocol: see chunks_test.go
 	uuid := "8f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8"
 	z = zipOf(t, map[string]string{"proguard/" + uuid + ".txt": mapping})
 	rec, body = e.upload(fmt.Sprintf("/api/0/projects/org/%d/files/dsyms/", p.ID), "upload.zip", z, nil)

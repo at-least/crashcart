@@ -146,3 +146,9 @@ type SymbolFile struct {
 	Data       []byte    `json:"data"`
 	UploadedAt time.Time `json:"uploaded_at"`
 }
+
+type UploadChunk struct {
+	Sha1      string    `json:"sha1"`
+	Data      []byte    `json:"data"`
+	CreatedAt time.Time `json:"created_at"`
+}

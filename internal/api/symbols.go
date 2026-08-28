@@ -98,11 +98,11 @@ func (h *Handler) deleteSymbol(w http.ResponseWriter, r *http.Request) {
 
 // ── sentry-cli compatibility ────────────────────────────────────────────
 //
-// `sentry-cli upload-dif` / `upload-proguard` first try the chunked upload
-// protocol (GET /api/0/organizations/{org}/chunk-upload/); a 404 there
-// makes them fall back to the legacy multipart upload below, which is the
-// one CrashCart implements. The org segment is ignored; the project may be
-// the slug or the numeric id.
+// sentry-cli ≥ 3 only speaks the chunked upload protocol (chunks.go):
+// GET chunk-upload/ for the options, POST chunk-upload/ for the chunks,
+// POST files/difs/assemble/ to turn them into debug files. sentry-cli 2
+// falls back to the legacy multipart upload below when it must. The org
+// segment is ignored; the project may be the slug or the numeric id.
 
 type sentryDebugFile struct {
 	ID          string         `json:"id"`
@@ -120,16 +120,17 @@ type sentryDebugFile struct {
 }
 
 func sentryDebugFileFrom(f sqlc.ListSymbolFilesRow, sha string) sentryDebugFile {
+	// symbolType is the file format; data.features what the file provides.
+	// data.type (symbolic's object class) is optional for sentry-cli and its
+	// accepted spellings vary between versions, so it is left out.
 	typ := map[string]string{"proguard": "proguard", "sourcemap": "sourcebundle", "dsym": "macho"}[f.Kind]
+	features := map[string][]string{"proguard": {"mapping"}, "sourcemap": {"sources"}, "dsym": {"debug", "symtab"}}[f.Kind]
+	data := map[string]any{"features": features}
 	return sentryDebugFile{
 		ID: strconv.FormatInt(f.ID, 10), UUID: deref(f.DebugID), DebugID: deref(f.DebugID), Name: f.Filename,
 		CPUName: "any", SHA1: sha, Size: f.Size, DateCreated: f.UploadedAt.UTC(), Headers: map[string]any{},
-		SymbolType: typ, Data: map[string]any{"type": typ}, Release: f.Release,
+		SymbolType: typ, Data: data, Release: f.Release,
 	}
-}
-
-func (h *Handler) sentryChunkUpload(w http.ResponseWriter, _ *http.Request) {
-	writeErr(w, http.StatusNotFound, "chunked upload is not supported; sentry-cli falls back to the legacy upload")
 }
 
 func (h *Handler) sentryUploadDSYMs(w http.ResponseWriter, r *http.Request) {

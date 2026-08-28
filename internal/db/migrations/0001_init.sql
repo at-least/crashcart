@@ -130,6 +130,14 @@ CREATE TABLE symbol_files (
 );
 CREATE INDEX symbol_files_debug_id ON symbol_files (project_id, debug_id) WHERE debug_id IS NOT NULL;
 
+-- ── upload chunks (sentry-cli chunked upload; assembled into symbol_files) ──
+
+CREATE TABLE upload_chunks (
+    sha1       TEXT PRIMARY KEY,
+    data       BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ── jobs (Postgres-backed queue: SKIP LOCKED) ──────────────────────────
 
 CREATE TABLE jobs (
