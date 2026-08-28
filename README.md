@@ -87,6 +87,7 @@ crashcart retention   one retention pass
 crashcart alerts      one alert check
 crashcart seed        write a week of demo events
 crashcart export      stream every table as NDJSON to stdout (backup / migration)
+crashcart import      load that NDJSON from stdin (idempotent)
 ```
 
 ### Export format
@@ -98,6 +99,11 @@ milliseconds, dates `YYYY-MM-DD`, JSON columns are embedded values, booleans `tr
 binary base64. Aggregate tables (`hourly_stats`, `issues`, `releases`, `release_health`)
 are included so an importer never recomputes them from events — on a per-row-billed store
 that recompute would cost ~0.5 extra writes per event.
+
+`crashcart import < dump.ndjson` loads the same format: events are COPYed (existing ids
+skipped), every other table is upserted on its key, so re-running an import or importing
+onto live data is safe. This is also the upgrade path from the Cloudflare/D1 edition to a
+self-hosted instance.
 
 Migrations run automatically on every start (`internal/db/migrations`, tracked in
 `schema_migrations`, advisory-locked so replicas can start together).

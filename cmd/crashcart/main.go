@@ -8,6 +8,7 @@
 //	crashcart alerts      run one alert check and exit
 //	crashcart seed        write a week of synthetic events (local dev)
 //	crashcart export      stream every table as NDJSON to stdout (backup / migration)
+//	crashcart import      load that NDJSON from stdin (idempotent; the D1 → Go upgrade path)
 package main
 
 import (
@@ -84,10 +85,14 @@ func run(cmd string, log *slog.Logger) error {
 		return seed(ctx, cfg, st, log)
 	case "export":
 		return export.All(ctx, pool, os.Stdout)
+	case "import":
+		rep, err := export.Load(ctx, pool, os.Stdin)
+		log.Info("import complete", "rows", rep.Rows, "event_conflicts", rep.Conflict, "skipped_lines", rep.Skipped)
+		return err
 	case "serve":
 		return serve(ctx, cfg, st, log)
 	default:
-		return fmt.Errorf("unknown command %q (serve | migrate | retention | alerts | seed | export)", cmd)
+		return fmt.Errorf("unknown command %q (serve | migrate | retention | alerts | seed | export | import)", cmd)
 	}
 }
 

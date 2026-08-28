@@ -554,3 +554,60 @@ func TestExport(t *testing.T) {
 		t.Error("received_at must be unix ms")
 	}
 }
+
+func TestImportRoundTrip(t *testing.T) {
+	src := newEnv(t, nil)
+	now := time.Now().UTC().Truncate(time.Second)
+	src.ingest(t,
+		event(now.Add(-time.Minute), "fatal", "Boom", "1.0", "u1", "d1", bp(false), ""),
+		event(now, "error", "Boom", "1.1", "u2", "d2", bp(true), ""),
+	)
+	src.api(t, "POST", "/api/symbols?platform=android&release=1.0&file=mapping.txt", []byte("a -> b:\n"))
+	var dump bytes.Buffer
+	if err := export.All(context.Background(), src.st.Pool(), &dump); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := newEnv(t, nil)
+	rep, err := export.Load(context.Background(), dst.st.Pool(), bytes.NewReader(dump.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Rows["events"] != 2 || rep.Rows["issues"] != 1 || rep.Rows["symbol_files"] != 1 || rep.Conflict != 0 {
+		t.Fatalf("report = %+v", rep)
+	}
+	// importing the same dump again is a no-op for events, an upsert elsewhere
+	rep, err = export.Load(context.Background(), dst.st.Pool(), bytes.NewReader(dump.Bytes()))
+	if err != nil || rep.Rows["events"] != 0 || rep.Conflict != 2 {
+		t.Fatalf("second import: %+v %v", rep, err)
+	}
+	var again bytes.Buffer
+	if err := export.All(context.Background(), dst.st.Pool(), &again); err != nil {
+		t.Fatal(err)
+	}
+	// received_at differs per instance; compare everything else line by line
+	strip := func(s string) string {
+		out := []string{}
+		for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
+			m := decode[map[string]any](t, []byte(l))
+			delete(m, "received_at")
+			delete(m, "created_at")
+			delete(m, "updated_at")
+			delete(m, "uploaded_at")
+			b, _ := json.Marshal(m)
+			out = append(out, string(b))
+		}
+		return strings.Join(out, "\n")
+	}
+	if strip(dump.String()) != strip(again.String()) {
+		t.Error("export → import → export is not stable")
+	}
+	_, body := dst.api(t, "GET", "/api/stats?days=1", nil)
+	if st := decode[store.Stats](t, body); st.Crash != 1 || st.Error != 1 {
+		t.Errorf("aggregates after import = %+v", st)
+	}
+	_, body = dst.api(t, "GET", "/api/events?user_id=u1", nil)
+	if n := len(decode[[]map[string]any](t, body)); n != 1 {
+		t.Errorf("events after import = %d", n)
+	}
+}
