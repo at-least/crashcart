@@ -64,6 +64,6 @@ Standardized terminology. Use these consistently across code, docs, viewer.
 
 | Abbr | Full |
 |---|---|
-| PK | Primary Key (logs.id = event timestamp_ms × 1000 + random) |
+| PK | Primary Key (events.id = event timestamp_ms × 1000 + random, see internal/pk) |
 | UPSERT | INSERT ... ON CONFLICT DO UPDATE |
 | ALERT_TYPES | `alert_types` table — 3 predefined alert detectors: crash_spike, new_error, regression (toggle via `enabled`) |
