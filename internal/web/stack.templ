@@ -1,0 +1,87 @@
+package web
+
+import (
+	"github.com/newlix/crashcart/internal/sentry"
+	"strconv"
+)
+
+func handledLabel(h *bool) string {
+	switch {
+	case h == nil:
+		return ""
+	case *h:
+		return "handled"
+	}
+	return "unhandled"
+}
+
+func frameClass(f sentry.Frame) string {
+	c := "frame"
+	if f.IsInApp() {
+		c += " in-app"
+	}
+	if isUnsymbolicated(f) {
+		c += " unsym"
+	}
+	return c
+}
+
+// StackTrace renders one exception innermost-first: in-app frames open,
+// system frames collapsed, unsymbolicated frames flagged.
+templ StackTrace(st Stack, symbolsHref string) {
+	<div class="stack">
+		<div class="stack-head">
+			<span class="stack-type">{ orDash(st.Type) }</span>
+			if st.Value != "" {
+				<span class="stack-value">{ st.Value }</span>
+			}
+			if handledLabel(st.Handled) != "" {
+				<span data-slot="badge" data-variant="outline" class="font-mono">{ handledLabel(st.Handled) }</span>
+			}
+			if st.Mechanism != "" {
+				<span class="stack-mech">{ st.Mechanism }</span>
+			}
+			if st.Symbolicated {
+				<span data-slot="badge" data-variant="secondary" class="font-mono">symbolicated</span>
+			}
+		</div>
+		if st.Unsymbolicated {
+			<div data-slot="alert" role="note" class="my-2">
+				@WarnIcon()
+				<p data-slot="alert-description">Some frames are not symbolicated. <a class="underline" href={ u(symbolsHref) }>Upload symbols</a> of this release to resolve them.</p>
+			</div>
+		}
+		if len(st.Frames) == 0 {
+			<p class="card-empty">No stack trace.</p>
+		}
+		<ol class="frames">
+			for _, g := range st.Groups() {
+				if g.InApp {
+					for _, f := range g.Frames {
+						@Frame(f)
+					}
+				} else {
+					<details class="frames-sys">
+						<summary>{ strconv.Itoa(len(g.Frames)) } system frames</summary>
+						for _, f := range g.Frames {
+							@Frame(f)
+						}
+					</details>
+				}
+			}
+		</ol>
+	</div>
+}
+
+templ Frame(f sentry.Frame) {
+	<li class={ frameClass(f) }>
+		<span class="frame-fn">
+			if f.Function != "" {
+				{ f.Function }
+			} else {
+				<span class="frame-addr" title="unsymbolicated">{ orDash(f.InstrAddr) }</span>
+			}
+		</span>
+		<span class="frame-loc">{ frameLocation(f) }</span>
+	</li>
+}

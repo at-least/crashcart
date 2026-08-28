@@ -1,0 +1,15 @@
+{
+  "name": "crashcart-styles",
+  "private": true,
+  "description": "Builds internal/web/assets/app.css (Tailwind v4 + shadless). The artifact is committed; Go builds need no Node.",
+  "scripts": {
+    "css": "tailwindcss -i internal/web/styles/app.css -o internal/web/assets/app.css --minify"
+  },
+  "dependencies": {
+    "shadless": "file:../shadless"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}

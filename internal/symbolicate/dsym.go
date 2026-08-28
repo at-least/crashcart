@@ -29,20 +29,42 @@ func NewDSYMClient(baseURL string) *DSYMClient {
 // Enabled reports whether a container URL is configured.
 func (c *DSYMClient) Enabled() bool { return c != nil && c.BaseURL != "" }
 
-// Resolve sends the dSYM plus frames (lineno interpreted as an address).
-func (c *DSYMClient) Resolve(ctx context.Context, dsym []byte, frames []Frame) ([]Frame, error) {
-	if len(frames) > MaxDSYMFrames {
-		frames = frames[:MaxDSYMFrames]
+// DSYMAddr is one address to look up: the offset into the image (the
+// sidecar runs llvm-symbolizer on the binary, so addresses are relative
+// to the image base) and the image's basename.
+type DSYMAddr struct {
+	Address uint64
+	Module  string
+}
+
+// DSYMResult is what the sidecar returns for one address; Function is
+// "??" (or empty) when the address is not covered.
+type DSYMResult struct {
+	Function string `json:"function"`
+	Filename string `json:"filename"`
+	Lineno   int    `json:"lineno"`
+}
+
+// Resolved reports whether the sidecar found a symbol.
+func (r DSYMResult) Resolved() bool {
+	return r.Function != "" && r.Function != "??" && r.Function != "?"
+}
+
+// Resolve sends the dSYM plus addresses; the result is index-aligned with
+// addrs (truncated to MaxDSYMFrames).
+func (c *DSYMClient) Resolve(ctx context.Context, dsym []byte, addrs []DSYMAddr) ([]DSYMResult, error) {
+	if len(addrs) > MaxDSYMFrames {
+		addrs = addrs[:MaxDSYMFrames]
 	}
 	type addr struct {
 		Address string `json:"address"`
 		Module  string `json:"module"`
 	}
-	addrs := make([]addr, len(frames))
-	for i, f := range frames {
-		addrs[i] = addr{Address: "0x" + strconv.FormatInt(int64(f.Lineno), 16), Module: f.Filename}
+	wire := make([]addr, len(addrs))
+	for i, a := range addrs {
+		wire[i] = addr{Address: "0x" + strconv.FormatUint(a.Address, 16), Module: a.Module}
 	}
-	hdr, _ := json.Marshal(addrs)
+	hdr, _ := json.Marshal(wire)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/symbolicate", bytes.NewReader(dsym))
 	if err != nil {
 		return nil, err
@@ -60,7 +82,7 @@ func (c *DSYMClient) Resolve(ctx context.Context, dsym []byte, frames []Frame) (
 		return nil, fmt.Errorf("symbolicate container: %s: %s", resp.Status, bytes.TrimSpace(body))
 	}
 	var out struct {
-		Frames []Frame `json:"frames"`
+		Frames []DSYMResult `json:"frames"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err

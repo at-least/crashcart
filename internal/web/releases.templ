@@ -1,0 +1,124 @@
+package web
+
+import "net/url"
+
+func releaseHref(pg Page, v string) string { return pg.S.Persist().Href("/releases/" + url.PathEscape(v)) }
+
+// Releases: one row per release active in the window.
+templ Releases(pg Page, rows []ReleaseRow) {
+	<h1 class="page-title">Releases <span class="page-title-win">{ pg.S.Win }</span></h1>
+	if len(rows) == 0 {
+		@Empty("No releases", "No events or sessions with a release in this window.")
+	} else {
+		<div class="log-frame" data-slot="table-container">
+			<table class="log-table">
+				<thead>
+					<tr>
+						<th>Release</th>
+						<th>Platform</th>
+						<th class="num">Adoption</th>
+						<th class="num">Crash-free</th>
+						<th class="num">Crashes</th>
+						<th class="num">Events</th>
+						<th class="num">New issues</th>
+						<th>First seen</th>
+						<th>Last seen</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, r := range rows {
+						<tr data-href={ releaseHref(pg, r.Release) } tabindex="0">
+							<td class="mono-cell"><a class="msg" href={ u(releaseHref(pg, r.Release)) }>{ r.Release }</a></td>
+							<td class="mono-cell">{ orDash(r.Platform) }</td>
+							<td class="num" title={ i64(r.Sessions) + " sessions" }>{ r.Adoption() }</td>
+							<td class="num" data-health={ healthKey(r.Sessions, r.Crashed) }>{ r.CrashFree() }</td>
+							<td class="num">{ compact(r.Crashes) }</td>
+							<td class="num">{ compact(r.Events) }</td>
+							<td class="num">{ compact(r.NewIssues) }</td>
+							<td class="cell-time">{ seenAgo(r.FirstSeen) }</td>
+							<td class="cell-time">{ seenAgo(r.LastSeen) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	}
+}
+
+func seenAgo(id int64) string {
+	if id == 0 {
+		return "—"
+	}
+	return idAgo(id)
+}
+
+func healthKey(total, crashed int64) string {
+	if total <= 0 {
+		return ""
+	}
+	rate := float64(total-crashed) / float64(total)
+	switch {
+	case rate < 0.95:
+		return "bad"
+	case rate < 0.99:
+		return "warn"
+	}
+	return "ok"
+}
+
+// ReleasePage: health cards, daily crash-free, crash timeline, issue lists.
+templ ReleasePage(pg Page, d ReleaseData) {
+	<p class="crumb-nav"><a href={ u(pg.S.Persist().Href("/releases")) }>Releases</a> /</p>
+	<h1 class="page-title font-mono">{ d.Row.Release }</h1>
+	<div class="stat-grid mt-4 md:grid-cols-5">
+		@StatCard("Adoption", d.Row.Adoption(), plural(d.Row.Sessions, "session"))
+		@StatCard("Crash-free", d.Row.CrashFree(), plural(d.Row.Crashed, "crashed session"))
+		@StatCard("Crashes", compact(d.Row.Crashes), "")
+		@StatCard("Events", compact(d.Row.Events), "")
+		@StatCard("New issues", compact(d.Row.NewIssues), "introduced here")
+	</div>
+	<div class="mt-4 grid gap-4 md:grid-cols-2">
+		<div data-slot="card" data-size="sm">
+			<header data-slot="card-header"><h2 class="stat-title">Crash-free sessions per day</h2></header>
+			<section class="px-3 pb-3">
+				@CrashFreeChart(d.Health)
+			</section>
+		</div>
+		<div data-slot="card" data-size="sm">
+			<header data-slot="card-header"><h2 class="stat-title">Crashes</h2></header>
+			<section class="px-3 pb-3">
+				@Chart(d.Chart)
+			</section>
+		</div>
+	</div>
+	<div class="mt-4 grid gap-4 md:grid-cols-2">
+		<div data-slot="card" data-size="sm">
+			<header data-slot="card-header"><h2 class="stat-title">Issues introduced in this release</h2></header>
+			<section class="px-2 pb-2">
+				if len(d.Introduced) == 0 {
+					<p class="card-empty">None.</p>
+				} else {
+					<ul class="issue-items">
+						for _, is := range d.Introduced {
+							@IssueLink(pg, is)
+						}
+					</ul>
+				}
+			</section>
+		</div>
+		<div data-slot="card" data-size="sm">
+			<header data-slot="card-header"><h2 class="stat-title">Issues still present</h2></header>
+			<section class="px-2 pb-2">
+				if len(d.Present) == 0 {
+					<p class="card-empty">None.</p>
+				} else {
+					<ul class="issue-items">
+						for _, is := range d.Present {
+							@IssueLink(pg, is)
+						}
+					</ul>
+				}
+			</section>
+		</div>
+	</div>
+}

@@ -1,0 +1,164 @@
+package web
+
+import "strconv"
+
+// EventPage wraps the body in a page header.
+templ EventPage(pg Page, d EventData) {
+	<div class="max-w-4xl">
+		@EventBody(pg, d)
+	</div>
+}
+
+func crumbLevel(l string) string {
+	if l == "error" || l == "fatal" {
+		return "error"
+	}
+	return ""
+}
+
+func isCrash(e sqlcEvent) bool { return e.Level == "fatal" || (e.Handled != nil && !*e.Handled) }
+
+// EventBody: exception + stack, breadcrumbs, contexts, tags, user, raw JSON.
+templ EventBody(pg Page, d EventData) {
+	<div id="event-body" class="event">
+		<div class="flex flex-wrap items-center gap-1.5">
+			@LevelBadge(d.E.Level)
+			if isCrash(d.E) {
+				<span class="crash-badge">
+					@CrashIcon()
+					crashed
+				</span>
+			}
+			if d.E.Handled != nil && *d.E.Handled {
+				<span class="caught-mark">caught</span>
+			}
+			if d.E.Platform != nil {
+				<span data-slot="badge" data-variant="outline" class="font-mono">{ *d.E.Platform }</span>
+			}
+			if d.E.Environment != nil {
+				<span data-slot="badge" data-variant="outline" class="font-mono">{ *d.E.Environment }</span>
+			}
+		</div>
+		<h1 class="event-title">{ d.E.Message }</h1>
+		if d.E.ErrorType != nil || d.E.ErrorLocation != nil {
+			<p class="font-mono text-xs text-muted-foreground">
+				if d.E.ErrorType != nil {
+					<span class="text-foreground">{ *d.E.ErrorType }</span>
+				}
+				if d.E.ErrorType != nil && d.E.ErrorLocation != nil {
+					{ " · " }
+				}
+				if d.E.ErrorLocation != nil {
+					<span class="break-all">{ *d.E.ErrorLocation }</span>
+				}
+			</p>
+		}
+		<div class="meta-grid">
+			@Meta("Time", idTime(d.E.ID), "")
+			@Meta("Release", deref(d.E.Release), "")
+			@Meta("Device", deref(d.E.DeviceModel), "")
+			@Meta("OS", deref(d.E.OsVersion), "")
+			@Meta("User", deref(d.E.UserID), "")
+			@Meta("Screen", deref(d.E.Screen), "")
+			@Meta("SDK", deref(d.E.SdkName), "")
+			@Meta("Device ID", deref(d.E.DeviceID), "")
+			@Meta("Event ID", d.E.EventID, "")
+			<div class="min-w-0">
+				<div class="meta-k">Issue</div>
+				if d.Issue != nil {
+					<a class="meta-v underline" href={ u(pg.S.Persist().Href("/issues/" + d.Issue.Fingerprint)) }>{ d.Issue.Title }</a>
+				} else {
+					<div class="meta-v null-mark">—</div>
+				}
+			</div>
+		</div>
+		for _, st := range d.Stacks {
+			<section class="event-section">
+				<h2 class="sheet-h">Exception</h2>
+				@StackTrace(st, pg.S.Persist().Href("/settings")+"#symbols")
+			</section>
+		}
+		if len(d.Crumbs) > 0 {
+			<section class="event-section">
+				<h2 class="sheet-h">Breadcrumbs <span class="font-normal normal-case tracking-normal">({ strconv.Itoa(len(d.Crumbs)) }, newest first)</span></h2>
+				<div class="crumbs">
+					for _, b := range d.Crumbs {
+						<div class="crumb" data-level={ crumbLevel(b.Level) }>
+							<span class="crumb-time">{ formatClock(b.Timestamp) }</span>
+							<span class="min-w-0 break-words">
+								if b.Category != "" {
+									<span class="crumb-cat">{ b.Category + " " }</span>
+								}
+								if b.Level != "" && b.Level != "info" {
+									<span class="crumb-cat">{ "[" + b.Level + "] " }</span>
+								}
+								{ b.Message }
+							</span>
+						</div>
+					}
+				</div>
+			</section>
+		}
+		if len(d.Contexts) > 0 {
+			<section class="event-section">
+				<h2 class="sheet-h">Contexts</h2>
+				<div class="ctx-grid">
+					for _, c := range d.Contexts {
+						<div class="ctx">
+							<h3 class="ctx-name">{ c.Name }</h3>
+							<dl class="kv">
+								for _, kv := range c.Items {
+									<div><dt>{ kv.K }</dt><dd>{ kv.V }</dd></div>
+								}
+							</dl>
+						</div>
+					}
+				</div>
+			</section>
+		}
+		if len(d.Tags) > 0 {
+			<section class="event-section">
+				<h2 class="sheet-h">Tags</h2>
+				<div class="flex flex-wrap gap-1">
+					for _, k := range sortedKeys(d.Tags) {
+						<a class="tag" href={ u(pg.S.Persist().WithFilter("tag."+k, d.Tags[k]).Href("/events")) }>{ k + ":" + d.Tags[k] }</a>
+					}
+				</div>
+			</section>
+		}
+		if len(d.User) > 0 {
+			<section class="event-section">
+				<h2 class="sheet-h">User</h2>
+				<dl class="kv">
+					for _, kv := range d.User {
+						<div><dt>{ kv.K }</dt><dd>{ kv.V }</dd></div>
+					}
+				</dl>
+			</section>
+		}
+		<details class="event-section">
+			<summary class="sheet-h cursor-pointer">Raw event JSON</summary>
+			<div class="mt-2 flex items-center">
+				<button type="button" data-slot="button" data-variant="outline" data-size="xs" class="copy-btn" data-copy="#raw-payload" title="Copy JSON">
+					@CopyIcon()
+					Copy
+				</button>
+			</div>
+			<pre id="raw-payload" class="code-block mt-2 max-h-[480px]">{ prettyJSON(d.E.Payload) }</pre>
+		</details>
+	</div>
+}
+
+func metaClass(v string) string {
+	if v == "" {
+		return "meta-v null-mark"
+	}
+	return "meta-v"
+}
+
+templ Meta(label, value, title string) {
+	<div class="min-w-0">
+		<div class="meta-k">{ label }</div>
+		<div class={ metaClass(value) } title={ firstNonEmpty(title, value) }>{ orDash(value) }</div>
+	</div>
+}

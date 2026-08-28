@@ -1,0 +1,171 @@
+package web
+
+import (
+	"github.com/newlix/crashcart/internal/store"
+	"strconv"
+	"strings"
+)
+
+func chipLabel(k string) string {
+	if l, ok := FilterLabels[k]; ok {
+		return l
+	}
+	return strings.TrimPrefix(k, "tag.")
+}
+
+func chipValue(k, v string) string {
+	if k == "fingerprint" && len(v) > 12 {
+		return v[:12] + "…"
+	}
+	if k == "crash" {
+		return "crashed"
+	}
+	return v
+}
+
+func filterHref(pg Page, k, v string) string { return pg.S.WithFilter(k, v).Href("/events") }
+
+func rowCrash(e store.EventRow) bool { return e.Level == "fatal" || (e.Handled != nil && !*e.Handled) }
+
+// Events: filter toolbar, chips, event table, cursor pager.
+templ Events(pg Page, d EventsData) {
+	<h1 class="page-title">Events <span class="page-title-win">{ pg.S.Win }</span></h1>
+	<form class="toolbar" method="get" action={ u(pg.S.Base() + "/events") } data-autosubmit>
+		if pg.S.Win != "7d" {
+			<input type="hidden" name="win" value={ pg.S.Win }/>
+		}
+		for _, k := range sortedKeys(pg.S.Filters) {
+			if k != "level" && k != "release" && k != "crash" {
+				<input type="hidden" name={ k } value={ pg.S.Filters[k] }/>
+			}
+		}
+		<span data-slot="native-select-wrapper">
+			<select name="level" data-slot="native-select" class="h-8 text-xs" aria-label="Level">
+				<option value="">Any level</option>
+				for _, l := range []string{"fatal", "error", "warning", "info", "debug"} {
+					<option value={ l } selected?={ pg.S.Filters["level"] == l }>{ l }</option>
+				}
+			</select>
+			@ChevronIcon()
+		</span>
+		<span data-slot="native-select-wrapper">
+			<select name="release" data-slot="native-select" class="h-8 text-xs" aria-label="Release">
+				<option value="">Any release</option>
+				for _, r := range d.Releases {
+					<option value={ r } selected?={ pg.S.Filters["release"] == r }>{ r }</option>
+				}
+			</select>
+			@ChevronIcon()
+		</span>
+		<label class="toolbar-check"><input type="checkbox" class="cb" name="crash" value="1" checked?={ pg.S.Filters["crash"] == "1" }/> crashes only</label>
+		<span class="toolbar-search">
+			<span data-slot="native-select-wrapper">
+				<select name="search_col" data-slot="native-select" class="h-8 text-xs" aria-label="Search field">
+					for _, c := range FilterColumns {
+						<option value={ c[0] }>{ c[1] }</option>
+					}
+					for _, t := range pg.Tags {
+						<option value={ "tag." + t }>{ "tag " + t }</option>
+					}
+				</select>
+				@ChevronIcon()
+			</span>
+			<input type="search" name="search_q" data-slot="input" class="h-8 w-52 max-w-full text-xs" placeholder="Search…" aria-label="Search query"/>
+			<button type="submit" data-slot="button" data-variant="outline" data-size="sm">Search</button>
+		</span>
+	</form>
+	if len(pg.S.Filters) > 0 {
+		<div class="chip-row">
+			for _, k := range sortedKeys(pg.S.Filters) {
+				<a class="chip" href={ u(filterHref(pg, k, "")) } title="Remove filter">
+					<span class="chip-key">{ chipLabel(k) }:</span>
+					{ chipValue(k, pg.S.Filters[k]) }
+					@XIcon()
+				</a>
+			}
+			<a data-slot="button" data-variant="ghost" data-size="xs" class="chip-clear" href={ u(pg.S.Cleared().Href("/events")) }>Clear all</a>
+		</div>
+	}
+	if len(d.Events) == 0 {
+		@Empty("No events", "Nothing matches this window and these filters.")
+	} else {
+		<div class="log-frame" data-slot="table-container">
+			<table class="log-table">
+				<thead>
+					<tr>
+						<th style="width:150px">Time</th>
+						<th style="width:90px">Level</th>
+						<th>Message</th>
+						<th style="width:160px">Location</th>
+						<th style="width:100px">Release</th>
+						<th style="width:120px">User</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, e := range d.Events {
+						<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10)) } tabindex="0">
+							<td class="cell-time" title={ idTime(e.ID) }><a href={ u(pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10))) }>{ idAgo(e.ID) }</a></td>
+							<td>
+								<a class="level-badge" data-level={ levelKey(e.Level) } href={ u(filterHref(pg, "level", e.Level)) }>{ e.Level }</a>
+								if rowCrash(e) {
+									<a class="crash-badge ml-1" href={ u(filterHref(pg, "crash", "1")) } title="Crash">
+										@CrashIcon()
+									</a>
+								}
+							</td>
+							<td class="cell-msg">
+								<a class="msg" href={ u(pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10))) }>{ e.Message }</a>
+								<div class="sub">
+									if e.ErrorType != nil {
+										<a class="filter-link" href={ u(filterHref(pg, "error_type", *e.ErrorType)) }>{ *e.ErrorType }</a>
+									}
+									if e.DeviceModel != nil {
+										{ " · " }
+										<a class="filter-link" href={ u(filterHref(pg, "device_model", *e.DeviceModel)) }>{ *e.DeviceModel }</a>
+									}
+									if e.OSVersion != nil {
+										{ " " }
+										<a class="filter-link" href={ u(filterHref(pg, "os_version", *e.OSVersion)) }>{ *e.OSVersion }</a>
+									}
+								</div>
+							</td>
+							<td>
+								if e.ErrorLocation != nil {
+									<a class="cell-btn" href={ u(filterHref(pg, "error_location", *e.ErrorLocation)) }>{ *e.ErrorLocation }</a>
+								} else {
+									<span class="null-mark">—</span>
+								}
+							</td>
+							<td>
+								if e.Release != nil {
+									<a class="cell-btn" href={ u(filterHref(pg, "release", *e.Release)) }>{ *e.Release }</a>
+								} else {
+									<span class="null-mark">—</span>
+								}
+							</td>
+							<td>
+								if e.UserID != nil {
+									<a class="cell-btn" href={ u(filterHref(pg, "user_id", *e.UserID)) }>{ *e.UserID }</a>
+								} else {
+									<span class="null-mark">anonymous</span>
+								}
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	}
+	<nav class="pager" aria-label="Event pages">
+		<span>
+			if pg.S.Before > 0 {
+				<a class="card-link" href={ u(pg.S.WithBefore(0).Href("/events")) }>Newest</a>
+			} else if len(d.Events) > 0 {
+				{ strconv.Itoa(len(d.Events)) } newest
+			}
+		</span>
+		if d.More && len(d.Events) > 0 {
+			<a data-slot="button" data-variant="outline" data-size="sm" href={ u(pg.S.WithBefore(d.Events[len(d.Events)-1].ID).Href("/events")) }>Older</a>
+		}
+	</nav>
+}

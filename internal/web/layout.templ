@@ -1,0 +1,31 @@
+package web
+
+// Layout is the HTML document: anti-flash theme script (reads the stored
+// theme before first paint so dark mode never flashes light), stylesheet,
+// vendored scripts, and the page shell as children.
+templ Layout(title string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ title }</title>
+			<script>
+				try {
+					var t = localStorage.getItem("cc-theme");
+					if (!t) t = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+					if (t === "dark") document.documentElement.classList.add("dark");
+				} catch (e) {}
+			</script>
+			<link rel="stylesheet" href={ templ.SafeURL(assetURL("app.css")) }/>
+			<meta name="htmx-config" content={ `{"includeIndicatorStyles": false}` }/>
+			<script src={ assetURL("htmx.min.js") } defer></script>
+			<script src={ assetURL("radix-kernel.min.js") } defer></script>
+			<script src={ assetURL("shadless.min.js") } defer></script>
+			<script src={ assetURL("app.js") } defer></script>
+		</head>
+		<body>
+			{ children... }
+		</body>
+	</html>
+}

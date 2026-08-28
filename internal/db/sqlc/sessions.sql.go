@@ -37,9 +37,9 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 
 const releaseHealth = `-- name: ReleaseHealth :many
 SELECT release,
-       sum(total)::bigint   AS total,
-       sum(crashed)::bigint AS crashed,
-       sum(errored)::bigint AS errored
+       COALESCE(sum(total), 0)::bigint   AS total,
+       COALESCE(sum(crashed), 0)::bigint AS crashed,
+       COALESCE(sum(errored), 0)::bigint AS errored
 FROM release_health_daily
 WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
 GROUP BY release
@@ -85,7 +85,7 @@ func (q *Queries) ReleaseHealth(ctx context.Context, arg ReleaseHealthParams) ([
 }
 
 const releaseHealthDaily = `-- name: ReleaseHealthDaily :many
-SELECT bucket, sum(total)::bigint AS total, sum(crashed)::bigint AS crashed, sum(errored)::bigint AS errored
+SELECT bucket, COALESCE(sum(total), 0)::bigint AS total, COALESCE(sum(crashed), 0)::bigint AS crashed, COALESCE(sum(errored), 0)::bigint AS errored
 FROM release_health_daily
 WHERE project_id = $1 AND release = $2 AND bucket >= $3 AND bucket < $4
 GROUP BY bucket ORDER BY bucket

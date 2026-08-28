@@ -1,0 +1,169 @@
+package web
+
+import "strings"
+
+var statusLabels = map[string]string{"unresolved": "Unresolved", "triaged": "Triaged", "resolved": "Resolved", "ignored": "Ignored", "regression": "Regression", "all": "All"}
+
+var sortLabels = [][2]string{{"last_seen", "Last seen"}, {"first_seen", "First seen"}, {"events", "Events"}}
+
+// Issues: status tabs, filters, bulk bar + table.
+templ Issues(pg Page, d IssuesData) {
+	<div class="flex flex-wrap items-end justify-between gap-3">
+		<h1 class="page-title">Issues <span class="page-title-win">{ pg.S.Win }</span></h1>
+		<p class="kbd-hint">
+			<kbd data-slot="kbd">j</kbd><kbd data-slot="kbd">k</kbd> move · <kbd data-slot="kbd">x</kbd> select · <kbd data-slot="kbd">↵</kbd> open · <kbd data-slot="kbd">r</kbd> resolve · <kbd data-slot="kbd">i</kbd> ignore · <kbd data-slot="kbd">t</kbd> triage
+		</p>
+	</div>
+	<nav class="tabs mt-4" aria-label="Status">
+		for _, st := range append(append([]string{}, IssueStatuses...), "all") {
+			<a class="tab" data-active={ boolAttr(st == pg.S.Status) } href={ u(pg.S.WithStatus(st).Href("/issues")) }>
+				{ statusLabels[st] }
+				<span class="tab-count">{ compact(d.Counts[st]) }</span>
+			</a>
+		}
+	</nav>
+	<form class="toolbar" method="get" action={ u(pg.S.Base() + "/issues") } data-autosubmit>
+		if pg.S.Win != "7d" {
+			<input type="hidden" name="win" value={ pg.S.Win }/>
+		}
+		<input type="hidden" name="status" value={ pg.S.Status }/>
+		<input type="hidden" name="sort" value={ pg.S.Sort }/>
+		<span data-slot="native-select-wrapper">
+			<select name="level" data-slot="native-select" class="h-8 text-xs" aria-label="Level">
+				<option value="">Any level</option>
+				for _, l := range []string{"fatal", "error", "warning", "info", "debug"} {
+					<option value={ l } selected?={ pg.S.Filters["level"] == l }>{ l }</option>
+				}
+			</select>
+			@ChevronIcon()
+		</span>
+		<span data-slot="native-select-wrapper">
+			<select name="release" data-slot="native-select" class="h-8 text-xs" aria-label="Release">
+				<option value="">Any release</option>
+				for _, r := range d.Releases {
+					<option value={ r } selected?={ pg.S.Filters["release"] == r }>{ r }</option>
+				}
+			</select>
+			@ChevronIcon()
+		</span>
+		<input type="search" name="q" value={ pg.S.Filters["q"] } data-slot="input" class="h-8 w-56 max-w-full text-xs" placeholder="Search title or error type" aria-label="Search"/>
+		<button type="submit" data-slot="button" data-variant="outline" data-size="sm">Filter</button>
+		if len(pg.S.Filters) > 0 {
+			<a data-slot="button" data-variant="ghost" data-size="sm" href={ u(pg.S.Cleared().Href("/issues")) }>Clear</a>
+		}
+	</form>
+	<form id="bulk-form" class="mt-3" hx-post={ pg.S.Href("/issues/bulk") } hx-target="#issues-table" hx-swap="outerHTML" hx-push-url="false">
+		<div class="bulk-bar" id="bulk-bar">
+			<span class="bulk-count"><span id="bulk-n">0</span> selected</span>
+			<div data-slot="button-group" role="group">
+				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="resolved">Resolve</button>
+				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="ignored">Ignore</button>
+				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="triaged">Triage</button>
+				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="unresolved">Reopen</button>
+			</div>
+		</div>
+		@IssuesTable(pg, d)
+	</form>
+}
+
+func sortHref(pg Page, key string) string { return pg.S.WithSort(key).Href("/issues") }
+
+func releaseSpan(is sqlcIssue) string {
+	f, l := deref(is.FirstRelease), deref(is.LastRelease)
+	switch {
+	case f == "" && l == "":
+		return "—"
+	case f == l || l == "":
+		return f
+	case f == "":
+		return l
+	}
+	return f + " → " + l
+}
+
+func issueSub(is sqlcIssue) string {
+	var parts []string
+	if is.Platform != nil {
+		parts = append(parts, *is.Platform)
+	}
+	if is.ErrorType != nil && !strings.HasPrefix(is.Title, *is.ErrorType) {
+		parts = append(parts, *is.ErrorType)
+	}
+	parts = append(parts, is.Fingerprint[:min(12, len(is.Fingerprint))])
+	return strings.Join(parts, " · ")
+}
+
+// IssuesTable is the swappable list fragment (also the bulk response).
+templ IssuesTable(pg Page, d IssuesData) {
+	<div id="issues-table">
+		if len(d.Issues) == 0 {
+			@Empty("No issues", "Nothing matches this status, window and filters.")
+		} else {
+			<div class="log-frame" data-slot="table-container">
+				<table class="log-table issues" data-keyboard="issues">
+					<thead>
+						<tr>
+							<th class="w-8"><input type="checkbox" class="cb" id="select-all" aria-label="Select all"/></th>
+							<th>Issue</th>
+							<th class="w-20">Level</th>
+							<th class="w-32">7 days</th>
+							<th class="num"><a class="sort" data-active={ boolAttr(pg.S.Sort == "events") } href={ u(sortHref(pg, "events")) }>Events</a></th>
+							<th class="num">Users</th>
+							<th><a class="sort" data-active={ boolAttr(pg.S.Sort == "first_seen") } href={ u(sortHref(pg, "first_seen")) }>First seen</a></th>
+							<th><a class="sort" data-active={ boolAttr(pg.S.Sort == "last_seen") } href={ u(sortHref(pg, "last_seen")) }>Last seen</a></th>
+							<th>Release</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, is := range d.Issues {
+							<tr data-fp={ is.Fingerprint } data-href={ pg.S.Persist().Href("/issues/" + is.Fingerprint) } data-level={ is.Level } tabindex="0">
+								<td><input type="checkbox" class="cb" name="fp" value={ is.Fingerprint } aria-label="Select issue"/></td>
+								<td class="cell-msg">
+									<a class="msg issue-title-link" href={ u(pg.S.Persist().Href("/issues/" + is.Fingerprint)) }>{ is.Title }</a>
+									<div class="sub">
+										if is.Status != pg.S.Status && pg.S.Status == "all" {
+											@StatusBadge(is.Status)
+										}
+										{ issueSub(is) }
+									</div>
+								</td>
+								<td>
+									@LevelBadge(is.Level)
+								</td>
+								<td class="cell-spark">
+									@templ.Raw(d.Sparks[is.Fingerprint])
+								</td>
+								<td class="num" title={ i64(is.EventCount) + " events (" + i64(is.StoredCount) + " stored)" }>{ compact(is.EventCount) }</td>
+								<td class="num">{ compact(d.Users[is.Fingerprint]) }</td>
+								<td class="cell-time" title={ idTime(is.FirstSeen) }>{ idAgo(is.FirstSeen) }</td>
+								<td class="cell-time" title={ idTime(is.LastSeen) }>{ idAgo(is.LastSeen) }</td>
+								<td class="mono-cell">{ releaseSpan(is) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+		<nav class="pager" aria-label="Issue pages">
+			<span>
+				if d.Total > 0 {
+					Showing <span class="pager-page">{ itoa(pg.S.Offset + 1) }</span>–<span class="pager-page">{ itoa(pg.S.Offset + len(d.Issues)) }</span> of <span class="pager-page">{ i64(d.Total) }</span>
+				} else {
+					No issues
+				}
+			</span>
+			<div data-slot="button-group" role="group">
+				if pg.S.Offset > 0 {
+					<a data-slot="button" data-variant="outline" data-size="sm" href={ u(pg.S.WithOffset(pg.S.Offset - issuesPage).Href("/issues")) }>Previous</a>
+				} else {
+					<button type="button" data-slot="button" data-variant="outline" data-size="sm" disabled>Previous</button>
+				}
+				if int64(pg.S.Offset+len(d.Issues)) < d.Total {
+					<a data-slot="button" data-variant="outline" data-size="sm" href={ u(pg.S.WithOffset(pg.S.Offset + issuesPage).Href("/issues")) }>Next</a>
+				} else {
+					<button type="button" data-slot="button" data-variant="outline" data-size="sm" disabled>Next</button>
+				}
+			</div>
+		</nav>
+	</div>
+}

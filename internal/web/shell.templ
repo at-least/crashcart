@@ -1,0 +1,192 @@
+package web
+
+import "strings"
+
+// ── icons ───────────────────────────────────────────────────
+
+templ WarnIcon() {
+	<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path>
+		<path d="M12 9v4"></path>
+		<path d="M12 17h.01"></path>
+	</svg>
+}
+
+templ XIcon() {
+	<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+		<path d="M18 6 6 18M6 6l12 12"></path>
+	</svg>
+}
+
+templ ChevronIcon() {
+	<svg aria-hidden="true" data-slot="native-select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<path d="m6 9 6 6 6-6"></path>
+	</svg>
+}
+
+templ CrashIcon() {
+	<svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"></path>
+		<path d="m15 9-6 6"></path>
+		<path d="m9 9 6 6"></path>
+	</svg>
+}
+
+templ CopyIcon() {
+	<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+		<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+	</svg>
+}
+
+// BrandMark: rounded square in the primary token with a bolt glyph.
+templ BrandMark() {
+	<span class="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground" aria-hidden="true">
+		<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+			<path d="M13 2 3 14h7l-1 8 11-13h-7l1-7z"></path>
+		</svg>
+	</span>
+}
+
+templ ThemeToggle() {
+	<button type="button" data-slot="button" data-variant="ghost" data-size="icon" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
+		<svg class="dark:hidden" aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<circle cx="12" cy="12" r="4"></circle>
+			<path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+		</svg>
+		<svg class="hidden dark:block" aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9"></path>
+		</svg>
+	</button>
+}
+
+// ── shell ───────────────────────────────────────────────────
+
+type navItem struct{ Section, Label, Path string }
+
+var navItems = []navItem{
+	{"overview", "Overview", ""}, {"issues", "Issues", "/issues"}, {"events", "Events", "/events"},
+	{"releases", "Releases", "/releases"}, {"settings", "Settings", "/settings"},
+}
+
+func u(s string) templ.SafeURL { return templ.SafeURL(s) }
+
+func winVariant(active bool) string {
+	if active {
+		return "secondary"
+	}
+	return "outline"
+}
+
+func winLabel(w string) string { return strings.ToUpper(w[:1]) + w[1:] }
+
+// Shell: header (brand, project nav, window control, theme) + the
+// "new issues" banner slot + page body.
+templ Shell(pg Page) {
+	<div id="shell" class="min-h-dvh bg-background text-foreground" data-stream={ pg.Stream } data-regressions={ i64(pg.Regressions) }>
+		<header class="app-header">
+			<div class="page app-header-row">
+				<div class="flex min-w-0 items-center gap-3">
+					<a class="brand" href="/" title="All projects">
+						@BrandMark()
+						<span class="brand-name">CrashCart</span>
+					</a>
+					if pg.Project != nil {
+						<span class="brand-sep" aria-hidden="true"></span>
+						<a class="brand-project" href={ u(pg.S.Persist().Href("")) }>{ pg.Project.Name }</a>
+						<nav class="nav" aria-label="Project">
+							for _, it := range navItems {
+								<a class="nav-link" data-active={ boolAttr(it.Section == pg.Section) } href={ u(pg.S.Persist().Href(it.Path)) }>{ it.Label }</a>
+							}
+						</nav>
+					}
+				</div>
+				<div class="flex flex-wrap items-center justify-end gap-2">
+					if pg.Project != nil && pg.Section != "settings" {
+						<div data-slot="button-group" role="group" aria-label="Time window">
+							for _, wn := range Windows {
+								<a data-slot="button" data-size="sm" data-variant={ winVariant(wn == pg.S.Win) } href={ u(pg.S.WithWin(wn).Href(pg.Path)) }>{ wn }</a>
+							}
+						</div>
+					}
+					@ThemeToggle()
+				</div>
+			</div>
+		</header>
+		<div id="new-issues" class="page" hidden>
+			<div data-slot="alert" role="status" class="mt-3 banner">
+				@WarnIcon()
+				<p data-slot="alert-description">
+					<span id="new-issues-text"></span>
+					{ " — " }
+					<button type="button" class="banner-link" data-action="reload">refresh</button>
+				</p>
+			</div>
+		</div>
+		<main class="page pt-5 pb-10">
+			{ children... }
+		</main>
+	</div>
+}
+
+// LevelBadge renders the severity badge.
+templ LevelBadge(level string) {
+	<span class="level-badge" data-level={ levelKey(level) }>{ level }</span>
+}
+
+func statusVariant(s string) string {
+	switch s {
+	case "resolved":
+		return "secondary"
+	case "regression":
+		return "destructive"
+	case "ignored":
+		return "outline"
+	case "triaged":
+		return "default"
+	}
+	return "outline"
+}
+
+// StatusBadge renders an issue status.
+templ StatusBadge(status string) {
+	<span data-slot="badge" data-variant={ statusVariant(status) } class="status-badge" data-status={ status }>{ status }</span>
+}
+
+// StatCard: uppercase title + big value (+ optional hint).
+templ StatCard(title, value, hint string) {
+	<div data-slot="card" data-size="sm" class="stat-card">
+		<header data-slot="card-header">
+			<h2 class="stat-title">{ title }</h2>
+			<div data-slot="card-action">
+				<span class="stat-value">{ value }</span>
+			</div>
+		</header>
+		if hint != "" {
+			<section class="px-4 pb-3">
+				<p class="stat-hint">{ hint }</p>
+			</section>
+		}
+	</div>
+}
+
+// Empty is the empty-state frame.
+templ Empty(title, desc string) {
+	<div class="empty-frame">
+		<p class="empty-title">{ title }</p>
+		if desc != "" {
+			<p class="empty-desc">{ desc }</p>
+		}
+	</div>
+}
+
+// IssueLink is the compact issue line used by the overview and release lists.
+templ IssueLink(pg Page, is sqlcIssue) {
+	<li class="issue-item">
+		<a class="issue-item-link" href={ u(pg.S.Persist().Href("/issues/" + is.Fingerprint)) }>
+			@LevelBadge(is.Level)
+			<span class="issue-item-title">{ is.Title }</span>
+			<span class="issue-item-meta">{ compact(is.EventCount) } events · { idAgo(is.LastSeen) }</span>
+		</a>
+	</li>
+}

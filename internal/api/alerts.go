@@ -1,0 +1,148 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/newlix/crashcart/internal/db/sqlc"
+)
+
+var alertTypes = map[string]bool{"new_issue": true, "regression": true, "crash_spike": true}
+
+func (h *Handler) getAlerts(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	rules, err := h.Store.ListAlertRules(r.Context(), p.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	channels, err := h.Store.ListAlertChannels(r.Context(), p.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": rules, "channels": channels})
+}
+
+func (h *Handler) updateAlertRule(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	typ := r.PathValue("type")
+	if !alertTypes[typ] {
+		writeErr(w, http.StatusNotFound, "unknown alert type")
+		return
+	}
+	var in struct {
+		Enabled         *bool  `json:"enabled"`
+		CooldownMinutes *int32 `json:"cooldown_minutes"`
+	}
+	if err := readJSON(w, r, &in); err != nil {
+		h.fail(w, err)
+		return
+	}
+	cur := sqlc.AlertRule{Enabled: true, CooldownMinutes: 60}
+	if rule, err := h.Store.GetAlertRule(r.Context(), sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: typ}); err == nil {
+		cur = rule
+	}
+	if in.Enabled != nil {
+		cur.Enabled = *in.Enabled
+	}
+	if in.CooldownMinutes != nil {
+		if *in.CooldownMinutes < 0 {
+			writeErr(w, http.StatusBadRequest, "cooldown_minutes must be >= 0")
+			return
+		}
+		cur.CooldownMinutes = *in.CooldownMinutes
+	}
+	rule, err := h.Store.UpsertAlertRule(r.Context(), sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: typ, Enabled: cur.Enabled, CooldownMinutes: cur.CooldownMinutes})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (h *Handler) createAlertChannel(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Kind   string          `json:"kind"`
+		Config json.RawMessage `json:"config"`
+	}
+	if err := readJSON(w, r, &in); err != nil {
+		h.fail(w, err)
+		return
+	}
+	var cfg map[string]any
+	if len(in.Config) > 0 {
+		if err := json.Unmarshal(in.Config, &cfg); err != nil {
+			writeErr(w, http.StatusBadRequest, "config must be an object")
+			return
+		}
+	}
+	str := func(k string) string {
+		switch v := cfg[k].(type) {
+		case string:
+			return strings.TrimSpace(v)
+		case float64:
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return ""
+	}
+	switch in.Kind {
+	case "webhook":
+		u := str("url")
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			writeErr(w, http.StatusBadRequest, "webhook config needs an http(s) url")
+			return
+		}
+		in.Config, _ = json.Marshal(map[string]string{"url": u})
+	case "telegram":
+		id := str("chat_id")
+		if id == "" {
+			writeErr(w, http.StatusBadRequest, "telegram config needs a chat_id")
+			return
+		}
+		in.Config, _ = json.Marshal(map[string]string{"chat_id": id})
+	default:
+		writeErr(w, http.StatusBadRequest, "kind must be webhook or telegram")
+		return
+	}
+	ch, err := h.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: in.Kind, Config: in.Config})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, ch)
+}
+
+func (h *Handler) deleteAlertChannel(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	n, err := h.Store.DeleteAlertChannel(r.Context(), sqlc.DeleteAlertChannelParams{ProjectID: p.ID, ID: id})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if n == 0 {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

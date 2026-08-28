@@ -1,0 +1,67 @@
+package web
+
+// Overview: three stat cards, crash timeline by release, new issues and
+// regressions.
+templ Overview(pg Page, d OverviewData) {
+	<h1 class="page-title">Overview <span class="page-title-win">{ pg.S.Win }</span></h1>
+	<div class="stat-grid mt-4">
+		@StatCard("Crash-free sessions", d.CrashFree, latestHint(d.LatestRelease))
+		@StatCard("Crashes", compact(d.Crashes), "in the last "+pg.S.Win)
+		@StatCard("New issues", compact(d.NewIssues), "first seen in the last "+pg.S.Win)
+	</div>
+	<div data-slot="card" data-size="sm" class="mt-4">
+		<header data-slot="card-header">
+			<h2 class="stat-title">Crashes by release</h2>
+		</header>
+		<section class="px-3 pb-3">
+			@Chart(d.Chart)
+		</section>
+	</div>
+	<div class="mt-4 grid gap-4 md:grid-cols-2">
+		<div data-slot="card" data-size="sm">
+			<header data-slot="card-header">
+				<h2 class="stat-title">New issues (24h)</h2>
+				<div data-slot="card-action">
+					<a class="card-link" href={ u(pg.S.Persist().WithSort("first_seen").Href("/issues")) }>all</a>
+				</div>
+			</header>
+			<section class="px-2 pb-2">
+				if len(d.New) == 0 {
+					<p class="card-empty">Nothing new in the last 24 hours.</p>
+				} else {
+					<ul class="issue-items">
+						for _, is := range d.New {
+							@IssueLink(pg, is)
+						}
+					</ul>
+				}
+			</section>
+		</div>
+		<div data-slot="card" data-size="sm">
+			<header data-slot="card-header">
+				<h2 class="stat-title">Regressions</h2>
+				<div data-slot="card-action">
+					<a class="card-link" href={ u(pg.S.Persist().WithStatus("regression").Href("/issues")) }>all</a>
+				</div>
+			</header>
+			<section class="px-2 pb-2">
+				if len(d.Regressions) == 0 {
+					<p class="card-empty">No resolved issue has come back.</p>
+				} else {
+					<ul class="issue-items">
+						for _, is := range d.Regressions {
+							@IssueLink(pg, is)
+						}
+					</ul>
+				}
+			</section>
+		</div>
+	</div>
+}
+
+func latestHint(release string) string {
+	if release == "" {
+		return "no release with sessions in this window"
+	}
+	return "latest release " + release
+}

@@ -18,21 +18,25 @@ func TestProGuard(t *testing.T) {
 	if m.Classes["a.b.c"] != "com.example.CartFragment" || m.Classes["a.d"] != "com.example.Api" {
 		t.Fatalf("classes = %v", m.Classes)
 	}
-	f := m.Resolve(Frame{Filename: "a.b.c", Function: "b", Lineno: 13})
-	if f.Filename != "com.example.CartFragment.loadCart" || f.Function != "loadCart(java.lang.String)" || f.Lineno != 13 {
+	in := true
+	f := m.Resolve(Frame{Module: "a.b.c", Function: "b", Filename: "SourceFile", Lineno: 13, InApp: &in})
+	if f.Module != "com.example.CartFragment" || f.Function != "loadCart" || f.Lineno != 46 || f.Filename != "CartFragment.java" || !f.IsInApp() {
 		t.Errorf("method resolve = %+v", f)
 	}
 	f = m.Resolve(Frame{Filename: "a.d", Function: "x"})
-	if f.Filename != "com.example.Api.fetch" || f.Function != "fetch()" {
-		t.Errorf("simple method = %+v", f)
+	if f.Module != "com.example.Api" || f.Function != "fetch" || f.Filename != "a.d" {
+		t.Errorf("simple method (class in filename) = %+v", f)
 	}
-	f = m.Resolve(Frame{Filename: "a.b.c", Function: "unknown"})
-	if f.Filename != "com.example.CartFragment.unknown" {
+	f = m.Resolve(Frame{Module: "a.b.c", Function: "unknown"})
+	if f.Module != "com.example.CartFragment" || f.Function != "unknown" {
 		t.Errorf("class-only = %+v", f)
 	}
-	f = m.Resolve(Frame{Filename: "zzz", Function: "q"})
-	if f.Filename != "zzz" {
+	f = m.Resolve(Frame{Module: "zzz", Function: "q"})
+	if f.Module != "zzz" {
 		t.Errorf("unmapped should pass through: %+v", f)
+	}
+	if _, changed := m.ResolveAll([]Frame{{Module: "zzz"}}); changed {
+		t.Error("nothing should have changed")
 	}
 }
 
@@ -42,17 +46,27 @@ func TestSourceMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := sm.Resolve(Frame{Filename: "bundle.js", Lineno: 1, Colno: 0})
+	f := sm.Resolve(Frame{Filename: "bundle.js", Lineno: 1, Colno: 1})
 	if f.Filename != "src/a.js" || f.Lineno != 1 || f.Function != "foo" {
 		t.Errorf("first mapping = %+v", f)
 	}
-	f = sm.Resolve(Frame{Filename: "bundle.js", Lineno: 1, Colno: 12})
-	if f.Filename != "src/a.js" || f.Lineno != 3 || f.Colno != 4 {
+	f = sm.Resolve(Frame{Filename: "bundle.js", Lineno: 1, Colno: 13})
+	if f.Filename != "src/a.js" || f.Lineno != 3 || f.Colno != 5 {
 		t.Errorf("second mapping = %+v", f)
 	}
 	f = sm.Resolve(Frame{Filename: "bundle.js", Lineno: 5, Colno: 0})
 	if f.Filename != "bundle.js" || f.Lineno != 5 {
 		t.Errorf("unmapped line should pass through: %+v", f)
+	}
+
+	set := NewSourceMapSet(map[string][]byte{"bundle.js.map": []byte(`{"version":3,"sources":["src/a.js"],"names":["foo"],"mappings":"AAAAA,UAEI"}`)})
+	f = set.Resolve(Frame{Filename: "https://cdn.example.com/static/bundle.js?v=3", Lineno: 1, Colno: 1})
+	if f.Filename != "src/a.js" || f.Function != "foo" {
+		t.Errorf("set by name = %+v", f)
+	}
+	f = set.Resolve(Frame{Filename: "other.js", Lineno: 1, Colno: 1})
+	if f.Filename != "src/a.js" {
+		t.Errorf("single map should be the fallback = %+v", f)
 	}
 }
 
@@ -60,5 +74,40 @@ func TestFrameJSONOmitsZero(t *testing.T) {
 	b, _ := json.Marshal(Frame{Filename: "a"})
 	if string(b) != `{"filename":"a"}` {
 		t.Errorf("got %s", b)
+	}
+}
+
+func TestDetectKind(t *testing.T) {
+	cases := []struct {
+		name string
+		head string
+		want string
+	}{
+		{"mapping.txt", "", KindProGuard},
+		{"app-release-mapping.txt", "", KindProGuard},
+		{"bundle.js.map", "", KindSourceMap},
+		{"App.dSYM", "", KindDSYM},
+		{"dSYMs.zip", "", KindDSYM},
+		{"blob", "\xcf\xfa\xed\xfe\x0c\x00\x00\x01", KindDSYM},
+		{"blob", `{"version":3,"mappings":"AAAA"}`, KindSourceMap},
+		{"blob", "# compiler: R8\ncom.a -> b:\n", KindProGuard},
+		{"blob", "hello", ""},
+	}
+	for _, c := range cases {
+		if got := DetectKind(c.name, []byte(c.head)); got != c.want {
+			t.Errorf("DetectKind(%q, %q) = %q, want %q", c.name, c.head, got, c.want)
+		}
+	}
+}
+
+func TestParseHexAndDebugID(t *testing.T) {
+	if v, ok := parseHex("0x1049e2b50"); !ok || v != 0x1049e2b50 {
+		t.Errorf("parseHex = %x %v", v, ok)
+	}
+	if _, ok := parseHex(""); ok {
+		t.Error("empty should fail")
+	}
+	if got := normalizeDebugID("4A3B4C5D-1234-5678-9ABC-DEF012345678-1"); got != "4a3b4c5d-1234-5678-9abc-def012345678" {
+		t.Errorf("normalizeDebugID = %q", got)
 	}
 }

@@ -1,0 +1,191 @@
+package web
+
+import (
+	"encoding/json"
+	"strconv"
+)
+
+type alertLabel struct{ Title, Desc string }
+
+var alertLabels = map[string]alertLabel{
+	"new_issue":   {"New issue", "A fingerprint seen for the first time"},
+	"regression":  {"Regression", "A resolved issue reappears on another release"},
+	"crash_spike": {"Crash spike", "Crashes in the last hour are 3× the 24 h baseline"},
+}
+
+func labelFor(t string) alertLabel {
+	if l, ok := alertLabels[t]; ok {
+		return l
+	}
+	return alertLabel{Title: t}
+}
+
+func channelTarget(c sqlcAlertChannel) string {
+	var m map[string]string
+	_ = json.Unmarshal(c.Config, &m)
+	if c.Kind == "telegram" {
+		return "chat " + m["chat_id"]
+	}
+	return m["url"]
+}
+
+func sizeLabel(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return strconv.FormatInt(n>>20, 10) + " MB"
+	case n >= 1<<10:
+		return strconv.FormatInt(n>>10, 10) + " KB"
+	}
+	return strconv.FormatInt(n, 10) + " B"
+}
+
+// Settings: DSN, sampling, alert rules, channels, symbol files.
+templ Settings(pg Page, d SettingsData) {
+	<div id="settings" class="mx-auto w-full max-w-3xl">
+		<h1 class="page-title">Settings</h1>
+		<section class="settings-section">
+			<h2 class="section-title">DSN</h2>
+			<p class="section-desc">Point the Sentry SDK at this DSN; events arrive on the envelope endpoint.</p>
+			<div data-slot="card" data-size="sm" class="mt-3">
+				<section class="grid gap-3 px-4 py-3">
+					<div>
+						<div class="meta-k">DSN</div>
+						<div class="flex items-center gap-2">
+							<code id="dsn" class="code-inline break-all">{ d.DSN }</code>
+							<button type="button" data-slot="button" data-variant="outline" data-size="xs" data-copy="#dsn" title="Copy DSN">
+								@CopyIcon()
+								Copy
+							</button>
+						</div>
+					</div>
+					<div>
+						<div class="meta-k">Envelope endpoint</div>
+						<code class="code-inline break-all">{ d.EnvelopeURL }</code>
+					</div>
+					<div class="grid grid-cols-2 gap-3">
+						<div><div class="meta-k">Public key</div><code class="code-inline">{ pg.Project.PublicKey }</code></div>
+						<div><div class="meta-k">Project id</div><code class="code-inline">{ i64(pg.Project.ID) }</code></div>
+					</div>
+				</section>
+			</div>
+		</section>
+		<section class="settings-section">
+			<h2 class="section-title">Sampling</h2>
+			<p class="section-desc">Per issue: the first N events are always stored, then this fraction; fatal events are always stored. Counts stay exact.</p>
+			<form data-slot="card" data-size="sm" class="mt-3" hx-patch={ pg.S.Href("/settings/sampling") } hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">
+				<section class="flex flex-wrap items-end gap-3 px-4 py-3">
+					<div class="grid gap-1">
+						<label data-slot="label" for="keep-first">Keep first</label>
+						<input data-slot="input" class="h-8 w-28 text-xs" id="keep-first" name="keep_first" type="number" min="0" step="1" value={ strconv.Itoa(int(pg.Project.SampleKeepFirst)) }/>
+					</div>
+					<div class="grid gap-1">
+						<label data-slot="label" for="rate">Then keep fraction</label>
+						<input data-slot="input" class="h-8 w-28 text-xs" id="rate" name="rate" type="number" min="0" max="1" step="0.01" value={ strconv.FormatFloat(pg.Project.SampleRate, 'f', -1, 64) }/>
+					</div>
+					<button type="submit" data-slot="button" data-size="sm">Save</button>
+				</section>
+			</form>
+		</section>
+		<section class="settings-section">
+			<h2 class="section-title">Alerts</h2>
+			<p class="section-desc">Each rule notifies every channel below, at most once per cooldown.</p>
+			<div class="mt-3 grid gap-2">
+				for _, ru := range d.Rules {
+					<form data-slot="card" data-size="sm" class="settings-row flex-row" hx-patch={ pg.S.Href("/settings/alerts/" + ru.Type) } hx-trigger="change" hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">
+						<div class="min-w-0">
+							<div class="flex items-center gap-2">
+								<p class="settings-title">{ labelFor(ru.Type).Title }</p>
+								if ru.Enabled {
+									<span data-slot="badge" data-variant="secondary">on</span>
+								} else {
+									<span data-slot="badge" data-variant="outline">off</span>
+								}
+							</div>
+							<p class="settings-desc">{ labelFor(ru.Type).Desc }</p>
+							if ru.LastTriggered != nil {
+								<p class="settings-meta">Last triggered { formatDateTime(*ru.LastTriggered) }</p>
+							}
+						</div>
+						<div class="flex items-center gap-3">
+							<label class="toolbar-check">cooldown <input data-slot="input" class="h-7 w-20 text-xs" name="cooldown" type="number" min="0" step="1" value={ strconv.Itoa(int(ru.CooldownMinutes)) } aria-label="Cooldown minutes"/> min</label>
+							<label class="toolbar-check"><input type="checkbox" class="cb" name="enabled" checked?={ ru.Enabled } aria-label={ "Enable " + labelFor(ru.Type).Title }/> enabled</label>
+						</div>
+					</form>
+				}
+			</div>
+		</section>
+		<section class="settings-section">
+			<h2 class="section-title">Notification channels</h2>
+			<div class="mt-3 grid gap-2">
+				if len(d.Channels) == 0 {
+					<p class="card-empty">No channels — alerts are evaluated but go nowhere.</p>
+				}
+				for _, c := range d.Channels {
+					<div data-slot="card" data-size="sm" class="settings-row flex-row">
+						<div class="min-w-0">
+							<div class="flex items-center gap-2">
+								<p class="settings-title">{ c.Kind }</p>
+							</div>
+							<p class="settings-meta truncate">{ channelTarget(c) }</p>
+						</div>
+						<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-delete={ pg.S.Href("/settings/channels/" + i64(c.ID)) } hx-confirm="Remove this channel?" hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">Remove</button>
+					</div>
+				}
+				<form data-slot="card" data-size="sm" class="mt-1" hx-post={ pg.S.Href("/settings/channels") } hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">
+					<section class="flex flex-wrap items-end gap-3 px-4 py-3">
+						<div class="grid gap-1">
+							<label data-slot="label" for="ch-kind">Kind</label>
+							<span data-slot="native-select-wrapper">
+								<select data-slot="native-select" class="h-8 text-xs" id="ch-kind" name="kind" data-channel-kind>
+									<option value="webhook">webhook</option>
+									<option value="telegram">telegram</option>
+								</select>
+								@ChevronIcon()
+							</span>
+						</div>
+						<div class="grid gap-1" data-channel-field="webhook">
+							<label data-slot="label" for="ch-url">URL</label>
+							<input data-slot="input" class="h-8 w-72 max-w-full text-xs" id="ch-url" name="url" type="url" placeholder="https://hooks.example.com/…"/>
+						</div>
+						<div class="grid gap-1" data-channel-field="telegram" hidden>
+							<label data-slot="label" for="ch-chat">Chat id</label>
+							<input data-slot="input" class="h-8 w-40 text-xs" id="ch-chat" name="chat_id" placeholder="-100123456"/>
+						</div>
+						<button type="submit" data-slot="button" data-size="sm">Add channel</button>
+					</section>
+				</form>
+			</div>
+		</section>
+		<section class="settings-section" id="symbols">
+			<h2 class="section-title">Symbol files</h2>
+			<p class="section-desc">ProGuard mappings (.txt), source maps (.map) or dSYM bundles. Uploading re-symbolicates the release's recent events.</p>
+			<div class="mt-3 grid gap-2">
+				for _, sf := range d.Symbols {
+					<div data-slot="card" data-size="sm" class="settings-row flex-row">
+						<div class="min-w-0">
+							<div class="flex items-center gap-2">
+								<p class="settings-title font-mono">{ sf.Filename }</p>
+								<span data-slot="badge" data-variant="outline">{ sf.Kind }</span>
+							</div>
+							<p class="settings-meta">{ orDash(sf.Release) } · { sizeLabel(sf.Size) } · { formatDateTime(sf.UploadedAt) }</p>
+						</div>
+						<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-delete={ pg.S.Href("/settings/symbols/" + i64(sf.ID)) } hx-confirm="Delete this symbol file?" hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">Delete</button>
+					</div>
+				}
+				<form data-slot="card" data-size="sm" class="mt-1" hx-post={ pg.S.Href("/settings/symbols") } hx-encoding="multipart/form-data" hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">
+					<section class="flex flex-wrap items-end gap-3 px-4 py-3">
+						<div class="grid gap-1">
+							<label data-slot="label" for="sym-release">Release</label>
+							<input data-slot="input" class="h-8 w-40 text-xs" id="sym-release" name="release" placeholder="2.4.1"/>
+						</div>
+						<div class="grid gap-1">
+							<label data-slot="label" for="sym-file">File</label>
+							<input data-slot="input" class="h-8 text-xs" id="sym-file" name="file" type="file" required/>
+						</div>
+						<button type="submit" data-slot="button" data-size="sm">Upload</button>
+					</section>
+				</form>
+			</div>
+		</section>
+	</div>
+}

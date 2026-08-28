@@ -1,0 +1,185 @@
+package web
+
+import "strconv"
+
+func issueEventsHref(pg Page, fp string) string {
+	return pg.S.Persist().WithFilter("fingerprint", fp).Href("/events")
+}
+
+func breakdownHref(pg Page, fp, col, val string) string {
+	return pg.S.Persist().WithFilter("fingerprint", fp).WithFilter(col, val).Href("/events")
+}
+
+// IssuePage: header with status control, stack of the latest event,
+// breakdowns, timeline and the issue's events.
+templ IssuePage(pg Page, d IssueData) {
+	<div id="issue-head" class="issue-head">
+		<div class="min-w-0">
+			<div class="flex flex-wrap items-center gap-1.5">
+				@LevelBadge(d.Issue.Level)
+				@StatusBadge(d.Issue.Status)
+				if d.Issue.Platform != nil {
+					<span data-slot="badge" data-variant="outline" class="font-mono">{ *d.Issue.Platform }</span>
+				}
+			</div>
+			<h1 class="issue-title">{ d.Issue.Title }</h1>
+			<p class="issue-sub">
+				if d.Issue.ErrorType != nil {
+					<span>{ *d.Issue.ErrorType }</span>
+				}
+				if d.Issue.Screen != nil {
+					<span>{ " · " + *d.Issue.Screen }</span>
+				}
+				<span class="fp" title="fingerprint">{ " · " + d.Issue.Fingerprint }</span>
+			</p>
+		</div>
+		<div class="issue-side">
+			<span data-slot="native-select-wrapper">
+				<select
+					name="status"
+					data-slot="native-select"
+					class="h-8 text-xs"
+					aria-label="Status"
+					hx-patch={ pg.S.Href("/issues/" + d.Issue.Fingerprint + "/status") }
+					hx-trigger="change"
+					hx-target="#issue-head"
+					hx-select="#issue-head"
+					hx-swap="outerHTML"
+					hx-push-url="false"
+				>
+					for _, st := range []string{"unresolved", "triaged", "resolved", "ignored"} {
+						<option value={ st } selected?={ st == d.Issue.Status }>{ statusLabels[st] }</option>
+					}
+					if d.Issue.Status == "regression" {
+						<option value="regression" selected>Regression</option>
+					}
+				</select>
+				@ChevronIcon()
+			</span>
+			<dl class="issue-stats">
+				<div><dt>Events</dt><dd title={ i64(d.Issue.EventCount) }>{ compact(d.Issue.EventCount) }</dd></div>
+				<div><dt>Users ({ pg.S.Win })</dt><dd>{ compact(d.Users) }</dd></div>
+				<div><dt>First seen</dt><dd title={ idTime(d.Issue.FirstSeen) }>{ idAgo(d.Issue.FirstSeen) }</dd></div>
+				<div><dt>Last seen</dt><dd title={ idTime(d.Issue.LastSeen) }>{ idAgo(d.Issue.LastSeen) }</dd></div>
+				<div><dt>Release</dt><dd class="font-mono">{ releaseSpan(d.Issue) }</dd></div>
+			</dl>
+		</div>
+	</div>
+	<div class="issue-grid mt-5">
+		<div class="grid gap-4">
+			<div data-slot="card" data-size="sm">
+				<header data-slot="card-header">
+					<h2 class="stat-title">Latest event</h2>
+					<div data-slot="card-action" class="flex gap-2">
+						if d.OldestID > 0 {
+							<a class="card-link" href={ u(pg.S.Persist().Href("/events/" + strconv.FormatInt(d.OldestID, 10))) }>Oldest</a>
+						}
+						if d.LatestID > 0 {
+							<a class="card-link" href={ u(pg.S.Persist().Href("/events/" + strconv.FormatInt(d.LatestID, 10))) }>Latest</a>
+						}
+					</div>
+				</header>
+				<section class="px-4 pb-4">
+					if d.Latest == nil {
+						<p class="card-empty">No stored event (all sampled out).</p>
+					} else {
+						<p class="event-line">
+							<span class="cell-time">{ idTime(d.Latest.ID) }</span>
+							{ " · " }
+							<span class="font-mono text-xs">{ orDash(deref(d.Latest.Release)) }</span>
+							{ " · " }
+							<span class="font-mono text-xs">{ orDash(deref(d.Latest.DeviceModel)) } { deref(d.Latest.OsVersion) }</span>
+						</p>
+						if len(d.Stacks) == 0 {
+							<p class="message-block">{ d.Latest.Message }</p>
+						}
+						for _, st := range d.Stacks {
+							@StackTrace(st, pg.S.Persist().Href("/settings")+"#symbols")
+						}
+					}
+				</section>
+			</div>
+			<div data-slot="card" data-size="sm">
+				<header data-slot="card-header">
+					<h2 class="stat-title">Events over { pg.S.Win }</h2>
+				</header>
+				<section class="px-3 pb-3">
+					@Chart(d.Chart)
+				</section>
+			</div>
+			<div data-slot="card" data-size="sm">
+				<header data-slot="card-header">
+					<h2 class="stat-title">Events</h2>
+					<div data-slot="card-action">
+						<a class="card-link" href={ u(issueEventsHref(pg, d.Issue.Fingerprint)) }>filter in explorer</a>
+					</div>
+				</header>
+				<section class="px-0 pb-2">
+					if len(d.Events) == 0 {
+						<p class="card-empty px-4">No stored events.</p>
+					} else {
+						<table class="log-table compact">
+							<thead>
+								<tr><th>Time</th><th>User</th><th>Release</th><th>Device</th><th>OS</th></tr>
+							</thead>
+							<tbody>
+								for _, e := range d.Events {
+									<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10)) } tabindex="0">
+										<td class="cell-time"><a href={ u(pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10))) }>{ idTime(e.ID) }</a></td>
+										<td class="mono-cell">{ orDash(deref(e.UserID)) }</td>
+										<td class="mono-cell">{ orDash(deref(e.Release)) }</td>
+										<td class="mono-cell">{ orDash(deref(e.DeviceModel)) }</td>
+										<td class="mono-cell">{ orDash(deref(e.OSVersion)) }</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					}
+					<nav class="pager px-4" aria-label="Event pages">
+						<span>
+							if pg.S.Before > 0 {
+								<a class="card-link" href={ u(pg.S.WithBefore(0).Href("/issues/" + d.Issue.Fingerprint)) }>Newest</a>
+							}
+						</span>
+						if d.More && len(d.Events) > 0 {
+							<a data-slot="button" data-variant="outline" data-size="sm" href={ u(pg.S.WithBefore(d.Events[len(d.Events)-1].ID).Href("/issues/" + d.Issue.Fingerprint)) }>Older</a>
+						}
+					</nav>
+				</section>
+			</div>
+		</div>
+		<aside class="grid content-start gap-4">
+			for _, b := range d.Breakdowns {
+				<div data-slot="card" data-size="sm">
+					<header data-slot="card-header">
+						<h2 class="stat-title">{ b.Label }</h2>
+					</header>
+					<section class="px-4 pb-3">
+						if len(b.Items) == 0 {
+							<p class="card-empty">—</p>
+						} else {
+							<ul class="breakdown">
+								for _, it := range b.Items {
+									<li>
+										<a class="breakdown-link" href={ u(breakdownHref(pg, d.Issue.Fingerprint, b.Column, it.Value)) }>
+											<span class="breakdown-v">{ orDash(it.Value) }</span>
+											<span class="breakdown-n">{ compact(it.Count) } · { percent(it.Count, b.Total) }</span>
+										</a>
+										<div class="breakdown-bar"><i style={ barWidth(it.Count, b.Total) }></i></div>
+									</li>
+								}
+							</ul>
+						}
+					</section>
+				</div>
+			}
+		</aside>
+	</div>
+}
+
+func barWidth(n, total int64) string {
+	if total <= 0 {
+		return "width:0"
+	}
+	return "width:" + strconv.FormatInt(n*100/total, 10) + "%"
+}

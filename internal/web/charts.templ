@@ -1,0 +1,34 @@
+package web
+
+// Chart renders a stacked bar chart with axis end labels and a legend.
+templ Chart(c ChartData) {
+	<div class="chart-box">
+		if c.Empty {
+			<p class="chart-empty">No data in this window</p>
+		}
+		@templ.Raw(bars(c.Buckets, c.Series))
+	</div>
+	<div class="chart-axis"><span>{ c.First }</span><span>{ c.Last }</span></div>
+	if len(c.Series) > 1 {
+		<div class="chart-legend">
+			for _, s := range c.Series {
+				<span><i class={ "swatch swatch-" + s.Token }></i>{ s.Name }</span>
+			}
+		</div>
+	}
+}
+
+// CrashFreeChart renders the daily crash-free rate.
+templ CrashFreeChart(points []HealthPoint) {
+	<div class="chart-box">
+		@templ.Raw(crashFreeBars(points))
+	</div>
+	if len(points) > 0 {
+		<div class="chart-axis"><span>{ points[0].Label }</span><span>{ points[len(points)-1].Label }</span></div>
+	}
+	<div class="chart-legend">
+		<span><i class="swatch swatch-ok"></i>≥ 99%</span>
+		<span><i class="swatch swatch-level-warning"></i>95–99%</span>
+		<span><i class="swatch swatch-level-fatal"></i>&lt; 95%</span>
+	</div>
+}

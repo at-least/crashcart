@@ -109,14 +109,19 @@ func decodeVLQs(s string) ([]int, error) {
 }
 
 // Resolve maps a minified (line, column) back to the original source.
+// Sentry columns are 1-based, source maps 0-based.
 func (sm *SourceMap) Resolve(f Frame) Frame {
 	if f.Lineno < 1 || len(sm.mappings) == 0 {
 		return f
 	}
-	// last mapping with (line, col) <= (f.Lineno, f.Colno)
+	col := f.Colno
+	if col > 0 {
+		col--
+	}
+	// last mapping with (line, col) <= (f.Lineno, col)
 	i := sort.Search(len(sm.mappings), func(i int) bool {
 		m := sm.mappings[i]
-		return m.genLine > f.Lineno || (m.genLine == f.Lineno && m.genCol > f.Colno)
+		return m.genLine > f.Lineno || (m.genLine == f.Lineno && m.genCol > col)
 	}) - 1
 	if i < 0 {
 		return f
@@ -125,9 +130,12 @@ func (sm *SourceMap) Resolve(f Frame) Frame {
 	if !m.hasOrig || m.genLine != f.Lineno {
 		return f
 	}
-	out := Frame{Filename: f.Filename, Function: f.Function, Lineno: m.origLine, Colno: m.origCol}
+	out := f
+	out.Lineno = m.origLine
+	out.Colno = m.origCol + 1
 	if m.source != "" {
 		out.Filename = m.source
+		out.AbsPath = ""
 	}
 	if m.name != "" {
 		out.Function = m.name
@@ -135,11 +143,83 @@ func (sm *SourceMap) Resolve(f Frame) Frame {
 	return out
 }
 
-// ResolveAll maps every frame.
-func (sm *SourceMap) ResolveAll(frames []Frame) []Frame {
+// ResolveAll maps every frame and reports whether any changed.
+func (sm *SourceMap) ResolveAll(frames []Frame) ([]Frame, bool) {
 	out := make([]Frame, len(frames))
+	changed := false
 	for i, f := range frames {
 		out[i] = sm.Resolve(f)
+		if out[i] != f {
+			changed = true
+		}
 	}
-	return out
+	return out, changed
+}
+
+// SourceMapSet holds every source map uploaded for one release, keyed by
+// the generated file name (mapping "bundle.js.map" ↔ frame "bundle.js").
+type SourceMapSet struct {
+	byFile map[string]*SourceMap
+	single *SourceMap // used when only one map exists and nothing matches
+}
+
+// NewSourceMapSet parses files; unparsable ones are skipped.
+func NewSourceMapSet(files map[string][]byte) *SourceMapSet {
+	set := &SourceMapSet{byFile: map[string]*SourceMap{}}
+	for name, data := range files {
+		sm, err := ParseSourceMap(data)
+		if err != nil {
+			continue
+		}
+		key := strings.TrimSuffix(baseName(name), ".map")
+		set.byFile[key] = sm
+		set.single = sm
+	}
+	if len(set.byFile) != 1 {
+		set.single = nil
+	}
+	return set
+}
+
+// Len is the number of parsed maps.
+func (s *SourceMapSet) Len() int { return len(s.byFile) }
+
+// Resolve picks the map for the frame's file and resolves it.
+func (s *SourceMapSet) Resolve(f Frame) Frame {
+	name := f.Filename
+	if name == "" {
+		name = f.AbsPath
+	}
+	name = baseName(name)
+	if i := strings.IndexAny(name, "?#"); i >= 0 {
+		name = name[:i]
+	}
+	sm := s.byFile[name]
+	if sm == nil {
+		sm = s.single
+	}
+	if sm == nil {
+		return f
+	}
+	return sm.Resolve(f)
+}
+
+// ResolveAll maps every frame and reports whether any changed.
+func (s *SourceMapSet) ResolveAll(frames []Frame) ([]Frame, bool) {
+	out := make([]Frame, len(frames))
+	changed := false
+	for i, f := range frames {
+		out[i] = s.Resolve(f)
+		if out[i] != f {
+			changed = true
+		}
+	}
+	return out, changed
+}
+
+func baseName(p string) string {
+	if i := strings.LastIndexAny(p, "/\\"); i >= 0 {
+		p = p[i+1:]
+	}
+	return p
 }
