@@ -27,7 +27,9 @@ analysis, issue grouping, release health and alerting — on your own server.
 
 Storage is write-cost first: every table has only its primary key, and the event time is
 encoded in `events.id`, so an event costs one row + one index entry and every read is a
-bounded primary-key range scan. See [ARCHITECTURE.md](ARCHITECTURE.md).
+bounded primary-key range scan. If a filter gets slow at your volume, add the specific
+index you need from `sql/optional_indexes.sql` (never applied automatically). See
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start
 

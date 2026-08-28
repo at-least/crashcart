@@ -32,6 +32,8 @@ large payloads; symbol files are `bytea` in `symbol_files`. Tables: `events`,
   btree entry. Every read is a bounded PK range scan + filter (`id >= since AND id <
   until`), which is fine because every dashboard/API query carries a time window and
   `LIMIT`. Unranged `ListEvents` calls are bounded to `store.DefaultLookback` (30 d).
+  Optional indexes live in `sql/optional_indexes.sql` — a plain file operators apply by
+  hand, nothing in the binary knows about them.
 - `events.tags JSONB` object; tag filters are `tags @> '{"k":"v"}'` evaluated inside the
   range scan (no GIN — it cost 2–3 index entries per event).
 - `events.fingerprint` links to `issues`. Event-scoped issue filters run
