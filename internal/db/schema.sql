@@ -49,7 +49,7 @@ CREATE TABLE projects (
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (time dimension)
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    event_id       TEXT NOT NULL,                    -- Sentry event_id (or a derived one); the dedupe key
+    event_id       UUID NOT NULL,                    -- Sentry event_id (or a derived one); the dedupe key
     level          event_level NOT NULL,                    -- fatal | error | warning | info | debug
     message        TEXT NOT NULL,
     platform       TEXT,
@@ -64,7 +64,7 @@ CREATE TABLE events (
     handled        BOOLEAN,                          -- false = crash, true = caught, null = no exception
     sdk_name       TEXT,
     user_id        TEXT,
-    fingerprint    TEXT,                             -- issues.fingerprint (null when nothing to group)
+    fingerprint    UUID,                             -- issues.fingerprint (null when nothing to group)
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     payload        BYTEA NOT NULL,                   -- the Sentry event exactly as sent (JSON bytes); never parsed or rewritten by the database
@@ -111,7 +111,7 @@ CREATE INDEX releases_project_first_seen ON releases (project_id, first_seen DES
 
 CREATE TABLE issues (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    fingerprint      TEXT NOT NULL,
+    fingerprint      UUID NOT NULL,
     title            TEXT NOT NULL,
     level            event_level NOT NULL,
     error_type       TEXT,

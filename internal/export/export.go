@@ -38,6 +38,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
@@ -253,7 +254,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := stream(ctx, st, selectIssues, p.ID, func(r sqlc.Issue) error {
 			return enc.Encode(issueRow{
-				T: "issues", Project: p.Slug, Fingerprint: r.Fingerprint, Title: r.Title, Level: string(r.Level),
+				T: "issues", Project: p.Slug, Fingerprint: string(r.Fingerprint), Title: r.Title, Level: string(r.Level),
 				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: string(r.Status),
 				EventCount: r.EventCount, StoredCount: r.StoredCount, FirstSeen: at(r.FirstSeen), LastSeen: at(r.LastSeen),
 				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, ResolvedRelease: r.ResolvedRelease,
@@ -266,11 +267,11 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := stream(ctx, st, selectEvents, p.ID, func(r sqlc.Event) error {
 			return enc.Encode(eventRow{
-				T: "events", Project: p.Slug, OccurredAt: at(r.OccurredAt), EventID: r.EventID, Level: string(r.Level), Message: r.Message,
+				T: "events", Project: p.Slug, OccurredAt: at(r.OccurredAt), EventID: string(r.EventID), Level: string(r.Level), Message: r.Message,
 				Platform: r.Platform, Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID,
 				DeviceModel: r.DeviceModel, OSVersion: r.OsVersion, Screen: r.Screen, ErrorType: r.ErrorType,
 				ErrorLocation: r.ErrorLocation, Handled: r.Handled, SDKName: r.SdkName, UserID: r.UserID,
-				Fingerprint: r.Fingerprint, Symbolicated: r.Symbolicated, Tags: r.Tags,
+				Fingerprint: idStr(r.Fingerprint), Symbolicated: r.Symbolicated, Tags: r.Tags,
 				Payload: json.RawMessage(r.Payload), Symbols: r.Symbols,
 			})
 		}); err != nil {
@@ -497,7 +498,11 @@ func (im *importer) line(b []byte) error {
 		if r.Status == "" {
 			r.Status = "unresolved"
 		}
-		im.batch.Queue(upsertIssue, pid, r.Fingerprint, r.Title, r.Level, r.ErrorType, r.Screen, r.Platform, r.Status,
+		fp, ok := sentry.ParseID(r.Fingerprint)
+		if !ok {
+			return fmt.Errorf("issues row: fingerprint %q is not a 32-hex id", r.Fingerprint)
+		}
+		im.batch.Queue(upsertIssue, pid, fp, r.Title, r.Level, r.ErrorType, r.Screen, r.Platform, r.Status,
 			r.EventCount, r.StoredCount, tsOrNow(r.FirstSeen), tsOrNow(r.LastSeen), r.FirstRelease, r.LastRelease, r.ResolvedRelease,
 			tsOrNow(r.CreatedAt), tsOrNow(r.UpdatedAt))
 	case "events":
@@ -512,11 +517,23 @@ func (im *importer) line(b []byte) error {
 		if r.OccurredAt.IsZero() || r.EventID == "" || len(r.Payload) == 0 {
 			return errors.New("events row needs occurred_at, event_id and payload")
 		}
+		eid, ok := sentry.ParseID(r.EventID)
+		if !ok {
+			return fmt.Errorf("events row: event_id %q is not a 32-hex id", r.EventID)
+		}
+		var fp *sentry.ID
+		if r.Fingerprint != nil {
+			id, ok := sentry.ParseID(*r.Fingerprint)
+			if !ok {
+				return fmt.Errorf("events row: fingerprint %q is not a 32-hex id", *r.Fingerprint)
+			}
+			fp = &id
+		}
 		im.events = append(im.events, store.EventInsert{
-			OccurredAt: r.OccurredAt.Time, ProjectID: pid, EventID: r.EventID, Level: r.Level, Message: r.Message, Platform: r.Platform,
+			OccurredAt: r.OccurredAt.Time, ProjectID: pid, EventID: eid, Level: r.Level, Message: r.Message, Platform: r.Platform,
 			Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID, DeviceModel: r.DeviceModel,
 			OSVersion: r.OSVersion, Screen: r.Screen, ErrorType: r.ErrorType, ErrorLocation: r.ErrorLocation,
-			Handled: r.Handled, SDKName: r.SDKName, UserID: r.UserID, Fingerprint: r.Fingerprint,
+			Handled: r.Handled, SDKName: r.SDKName, UserID: r.UserID, Fingerprint: fp,
 			Symbolicated: r.Symbolicated, Tags: orJSON(r.Tags, "{}"),
 			Payload: []byte(r.Payload), Symbols: r.Symbols,
 		})
@@ -668,5 +685,13 @@ func nilIfEmptyStr(s string) *string {
 	if s == "" {
 		return nil
 	}
+	return &s
+}
+
+func idStr(id *sentry.ID) *string {
+	if id == nil {
+		return nil
+	}
+	s := string(*id)
 	return &s
 }

@@ -33,7 +33,7 @@ func newProject(t *testing.T, st *store.Store) sqlc.Project {
 
 // storeEvent writes one unsymbolicated event plus its issue the way ingest
 // does, from a raw Sentry payload. Returns the event_id and fingerprint.
-func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (string, string) {
+func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (sentry.ID, sentry.ID) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -63,7 +63,7 @@ func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (stri
 	return id, fp
 }
 
-func storeEventAt(t *testing.T, st *store.Store, p sqlc.Project, raw string) (string, time.Time) {
+func storeEventAt(t *testing.T, st *store.Store, p sqlc.Project, raw string) (sentry.ID, time.Time) {
 	t.Helper()
 	now := time.Now().UTC()
 	ev := sentry.ParseEvent("", now, []byte(raw), now)
@@ -152,7 +152,7 @@ func TestEventProGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Missing event is not an error.
-	if err := svc.Event(ctx, p.ID, id+"-missing"); err != nil {
+	if err := svc.Event(ctx, p.ID, sentry.DerivedID([]byte("missing"))); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -178,7 +178,7 @@ func TestReleaseSourceMap(t *testing.T) {
 	w := &jobs.Worker{Store: st, Handlers: map[string]jobs.Handler{
 		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
 			var a struct {
-				Event string `json:"event"`
+				Event sentry.ID `json:"event"`
 			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return err
@@ -189,7 +189,7 @@ func TestReleaseSourceMap(t *testing.T) {
 	if n, err := w.RunOnce(ctx); err != nil || n != 2 {
 		t.Fatalf("symbolicate jobs: %d %v", n, err)
 	}
-	for _, id := range []string{id1, id2} {
+	for _, id := range []sentry.ID{id1, id2} {
 		row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 		if err != nil {
 			t.Fatal(err)

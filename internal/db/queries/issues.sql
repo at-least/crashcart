@@ -32,7 +32,7 @@ WHERE project_id = $1 AND fingerprint = $2 RETURNING *;
 UPDATE issues SET status = sqlc.arg(status)::issue_status,
     resolved_release = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
     updated_at = now()
-WHERE project_id = $1 AND fingerprint = ANY($2::text[]);
+WHERE project_id = $1 AND fingerprint = ANY($2::uuid[]);
 
 -- name: AdjustIssueStoredCount :exec
 UPDATE issues SET stored_count = GREATEST(0, stored_count + $3), event_count = GREATEST(0, event_count + $3), updated_at = now()
@@ -66,11 +66,11 @@ DELETE FROM issues WHERE last_seen < $1 AND status IN ('resolved', 'ignored');
 WITH h AS (
     SELECT fingerprint, crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, sum(events) AS events
     FROM issue_stats_hourly
-    WHERE project_id = sqlc.arg(project_id)::bigint AND fingerprint = ANY(sqlc.arg(fingerprints)::text[])
+    WHERE project_id = sqlc.arg(project_id)::bigint AND fingerprint = ANY(sqlc.arg(fingerprints)::uuid[])
       AND bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
     GROUP BY 1, 2)
-SELECT f.fingerprint::text AS fingerprint, array_agg(COALESCE(h.events, 0)::bigint ORDER BY b)::bigint[] AS counts
-FROM unnest(sqlc.arg(fingerprints)::text[]) AS f(fingerprint)
+SELECT f.fingerprint::uuid AS fingerprint, array_agg(COALESCE(h.events, 0)::bigint ORDER BY b)::bigint[] AS counts
+FROM unnest(sqlc.arg(fingerprints)::uuid[]) AS f(fingerprint)
 CROSS JOIN crashcart_buckets(sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS b
 LEFT JOIN h ON h.fingerprint = f.fingerprint AND h.bucket = b
 GROUP BY f.fingerprint;
@@ -79,7 +79,7 @@ GROUP BY f.fingerprint;
 WITH h AS (
     SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, sum(events) AS events
     FROM issue_stats_hourly
-    WHERE project_id = sqlc.arg(project_id)::bigint AND fingerprint = sqlc.arg(fingerprint)::text
+    WHERE project_id = sqlc.arg(project_id)::bigint AND fingerprint = sqlc.arg(fingerprint)::uuid
       AND bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
     GROUP BY 1)
 SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events

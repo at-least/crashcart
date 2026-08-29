@@ -7,9 +7,9 @@ import (
 )
 
 func TestViewStateRoundTrip(t *testing.T) {
-	q, _ := url.ParseQuery("win=24h&status=resolved&sort=events&offset=50&before=2026-08-29T10%3A00%3A00Z_e1&level=fatal&release=1.2&tag.build=42&bogus=1&search_col=error_type&search_q=NPE&crash=1")
+	q, _ := url.ParseQuery("win=24h&status=resolved&sort=events&offset=50&before=2026-08-29T10%3A00%3A00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1&level=fatal&release=1.2&tag.build=42&bogus=1&search_col=error_type&search_q=NPE&crash=1")
 	s := ParseViewState("app", q)
-	if s.Slug != "app" || s.Win != "24h" || s.Status != "resolved" || s.Sort != "events" || s.Offset != 50 || s.Before != "2026-08-29T10:00:00Z_e1" {
+	if s.Slug != "app" || s.Win != "24h" || s.Status != "resolved" || s.Sort != "events" || s.Offset != 50 || s.Before != "2026-08-29T10:00:00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1" {
 		t.Errorf("state = %+v", s)
 	}
 	if s.Filters["level"] != "fatal" || s.Filters["release"] != "1.2" || s.Filters["tag.build"] != "42" || s.Filters["error_type"] != "NPE" || s.Filters["crash"] != "1" {
@@ -18,7 +18,7 @@ func TestViewStateRoundTrip(t *testing.T) {
 	if _, ok := s.Filters["bogus"]; ok {
 		t.Error("unknown params are not filters")
 	}
-	want := "/p/app/issues?before=2026-08-29T10%3A00%3A00Z_e1&crash=1&error_type=NPE&level=fatal&offset=50&release=1.2&sort=events&status=resolved&tag.build=42&win=24h"
+	want := "/p/app/issues?before=2026-08-29T10%3A00%3A00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1&crash=1&error_type=NPE&level=fatal&offset=50&release=1.2&sort=events&status=resolved&tag.build=42&win=24h"
 	if got := s.Href("/issues"); got != want {
 		t.Errorf("href = %s\nwant %s", got, want)
 	}

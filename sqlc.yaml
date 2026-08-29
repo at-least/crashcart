@@ -20,6 +20,16 @@ sql:
             go_type:
               type: "time.Time"
               pointer: true
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/crashcartapp/crashcart/internal/sentry"
+              type: "ID"
+          - db_type: "uuid"
+            nullable: true
+            go_type:
+              import: "github.com/crashcartapp/crashcart/internal/sentry"
+              type: "ID"
+              pointer: true
           - db_type: "jsonb"
             go_type: "encoding/json.RawMessage"
           - db_type: "jsonb"

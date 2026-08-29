@@ -34,7 +34,7 @@ templ IssuePage(pg Page, d IssueData) {
 				if d.Issue.Screen != nil {
 					<span>{ " · " + *d.Issue.Screen }</span>
 				}
-				<span class="fp" title="fingerprint">{ " · " + d.Issue.Fingerprint }</span>
+				<span class="fp" title="fingerprint">{ " · " + string(d.Issue.Fingerprint) }</span>
 			</p>
 		</div>
 		<div class="issue-side">
@@ -44,7 +44,7 @@ templ IssuePage(pg Page, d IssueData) {
 					data-slot="native-select"
 					class="h-8 text-xs"
 					aria-label="Status"
-					hx-patch={ pg.S.Href("/issues/" + d.Issue.Fingerprint + "/status") }
+					hx-patch={ pg.S.Href("/issues/" + string(d.Issue.Fingerprint) + "/status") }
 					hx-trigger="change"
 					hx-target="#issue-head"
 					hx-select="#issue-head"
@@ -115,7 +115,7 @@ templ IssuePage(pg Page, d IssueData) {
 				<header data-slot="card-header">
 					<h2 class="stat-title">Events</h2>
 					<div data-slot="card-action">
-						<a class="card-link" href={ u(issueEventsHref(pg, d.Issue.Fingerprint)) }>filter in explorer</a>
+						<a class="card-link" href={ u(issueEventsHref(pg, string(d.Issue.Fingerprint))) }>filter in explorer</a>
 					</div>
 				</header>
 				<section class="px-0 pb-2">
@@ -128,8 +128,8 @@ templ IssuePage(pg Page, d IssueData) {
 							</thead>
 							<tbody>
 								for _, e := range d.Events {
-									<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + e.EventID) } tabindex="0">
-										<td class="cell-time"><a href={ u(pg.S.Persist().Href("/events/" + e.EventID)) }>{ formatDateTime(e.OccurredAt) }</a></td>
+									<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + string(e.EventID)) } tabindex="0">
+										<td class="cell-time"><a href={ u(pg.S.Persist().Href("/events/" + string(e.EventID))) }>{ formatDateTime(e.OccurredAt) }</a></td>
 										<td class="mono-cell">{ orDash(deref(e.UserID)) }</td>
 										<td class="mono-cell">{ orDash(deref(e.Release)) }</td>
 										<td class="mono-cell">{ orDash(deref(e.DeviceModel)) }</td>
@@ -142,11 +142,11 @@ templ IssuePage(pg Page, d IssueData) {
 					<nav class="pager px-4" aria-label="Event pages">
 						<span>
 							if pg.S.Before != "" {
-								<a class="card-link" href={ u(pg.S.WithBefore(store.Cursor{}).Href("/issues/" + d.Issue.Fingerprint)) }>Newest</a>
+								<a class="card-link" href={ u(pg.S.WithBefore(store.Cursor{}).Href("/issues/" + string(d.Issue.Fingerprint))) }>Newest</a>
 							}
 						</span>
 						if d.More && len(d.Events) > 0 {
-							<a data-slot="button" data-variant="outline" data-size="sm" href={ u(pg.S.WithBefore(store.CursorOf(d.Events[len(d.Events)-1])).Href("/issues/" + d.Issue.Fingerprint)) }>Older</a>
+							<a data-slot="button" data-variant="outline" data-size="sm" href={ u(pg.S.WithBefore(store.CursorOf(d.Events[len(d.Events)-1])).Href("/issues/" + string(d.Issue.Fingerprint))) }>Older</a>
 						}
 					</nav>
 				</section>
@@ -165,7 +165,7 @@ templ IssuePage(pg Page, d IssueData) {
 							<ul class="breakdown">
 								for _, it := range b.Items {
 									<li>
-										<a class="breakdown-link" href={ u(breakdownHref(pg, d.Issue.Fingerprint, b.Column, it.Value)) }>
+										<a class="breakdown-link" href={ u(breakdownHref(pg, string(d.Issue.Fingerprint), b.Column, it.Value)) }>
 											<span class="breakdown-v">{ orDash(it.Value) }</span>
 											<span class="breakdown-n">{ compact(it.Count) } · { percent(it.Count, b.Total) }</span>
 										</a>

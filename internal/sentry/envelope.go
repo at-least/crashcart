@@ -5,12 +5,8 @@ package sentry
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"math"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -67,7 +63,7 @@ type DebugImage struct {
 
 // Event is one parsed "event" envelope item.
 type Event struct {
-	EventID        string
+	EventID        ID
 	Timestamp      time.Time
 	Level          string
 	Message        string
@@ -370,8 +366,6 @@ type rawEvent struct {
 	} `json:"user"`
 }
 
-var eventIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
 const (
 	maxMessage = 500
 	noMessage  = "(no message)"
@@ -406,14 +400,15 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	if ev.Timestamp.After(now.Add(time.Hour)) {
 		ev.Timestamp = now
 	}
-	switch {
-	case eventIDRe.MatchString(re.EventID):
-		ev.EventID = re.EventID
-	case eventIDRe.MatchString(headerEventID):
-		ev.EventID = headerEventID
-	default:
-		sum := sha256.Sum256(trimmed)
-		ev.EventID = "ts-" + strconv.FormatInt(ev.Timestamp.UnixMilli(), 10) + "-" + hex.EncodeToString(sum[:6])
+	// The SDK's event_id (a 32-hex UUID per the protocol), the envelope
+	// header's, or — no usable id — one derived from the body, so a resend
+	// still lands on the same row.
+	if id, ok := ParseID(re.EventID); ok {
+		ev.EventID = id
+	} else if id, ok := ParseID(headerEventID); ok {
+		ev.EventID = id
+	} else {
+		ev.EventID = DerivedID(trimmed)
 	}
 	if c := re.Contexts; c != nil {
 		if c.OS != nil {

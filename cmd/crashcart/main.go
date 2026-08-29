@@ -182,7 +182,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	handlers := map[string]jobs.Handler{
 		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
 			var a struct {
-				Event string `json:"event"`
+				Event sentry.ID `json:"event"`
 			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return err

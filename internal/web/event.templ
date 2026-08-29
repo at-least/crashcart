@@ -62,11 +62,11 @@ templ EventBody(pg Page, d EventData) {
 			@Meta("Screen", deref(d.E.Screen), "")
 			@Meta("SDK", deref(d.E.SdkName), "")
 			@Meta("Device ID", deref(d.E.DeviceID), "")
-			@Meta("Event ID", d.E.EventID, "")
+			@Meta("Event ID", string(d.E.EventID), "")
 			<div class="min-w-0">
 				<div class="meta-k">Issue</div>
 				if d.Issue != nil {
-					<a class="meta-v underline" href={ u(pg.S.Persist().Href("/issues/" + d.Issue.Fingerprint)) }>{ d.Issue.Title }</a>
+					<a class="meta-v underline" href={ u(pg.S.Persist().Href("/issues/" + string(d.Issue.Fingerprint))) }>{ d.Issue.Title }</a>
 				} else {
 					<div class="meta-v null-mark">—</div>
 				}

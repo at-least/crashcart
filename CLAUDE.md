@@ -61,6 +61,9 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
   on those columns, buckets are UTC-aligned (`t.Truncate(width)` in Go matches
   `time_bucket` / `date_trunc(…, 'UTC')`). Events are addressed by `event_id`;
   event lists page with `store.Cursor` (`occurred_at` + `event_id`).
+- `event_id` / `fingerprint` are Postgres `UUID` ↔ `sentry.ID` (32-hex string with
+  pgx UUID scanner/valuer); parse untrusted input with `sentry.ParseID`, make test
+  ids with `sentry.DerivedID([]byte("name"))`.
 - Nullable text columns are `*string` (sqlc `emit_pointers_for_null_types`);
   `TIMESTAMPTZ` → `time.Time`; `JSONB` → `json.RawMessage`. Level / status /
   kind columns are Postgres enum types → `sqlc.EventLevel`, `sqlc.IssueStatus`,

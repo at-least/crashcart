@@ -97,7 +97,7 @@ func parsePayload(e sqlc.Event) *sentry.Event {
 	if len(e.Payload) == 0 {
 		return nil
 	}
-	return sentry.ParseEvent(e.EventID, e.OccurredAt, e.Payload, time.Now().UTC())
+	return sentry.ParseEvent(string(e.EventID), e.OccurredAt, e.Payload, time.Now().UTC())
 }
 
 // KV is one key/value line of a context group.

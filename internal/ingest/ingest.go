@@ -113,15 +113,15 @@ type cachedProject struct {
 
 // Result summarizes one Ingest call.
 type Result struct {
-	Received    int      // events parsed
-	Stored      int      // events written
-	Sampled     int      // events counted but not stored
-	Duplicates  int      // resent events already stored
-	Mismatched  int      // events whose platform family is not the project's
-	Invalid     int      // event items that did not parse
-	Sessions    int      // session rows written
-	NewIssues   []string // fingerprints created by this envelope
-	Regressions []string // fingerprints flipped to 'regression'
+	Received    int         // events parsed
+	Stored      int         // events written
+	Sampled     int         // events counted but not stored
+	Duplicates  int         // resent events already stored
+	Mismatched  int         // events whose platform family is not the project's
+	Invalid     int         // event items that did not parse
+	Sessions    int         // session rows written
+	NewIssues   []sentry.ID // fingerprints created by this envelope
+	Regressions []sentry.ID // fingerprints flipped to 'regression'
 	Jobs        int
 }
 
@@ -273,7 +273,7 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 
 func firstEventID(env sentry.Envelope) string {
 	if len(env.Events) > 0 {
-		return env.Events[0].EventID
+		return string(env.Events[0].EventID)
 	}
 	return ""
 }
@@ -306,7 +306,7 @@ type prepared struct {
 	frames       []sentry.Frame // symbolicated when Resolve succeeded
 	symbolicated bool
 	retry        bool // Resolve failed transiently: queue a job
-	fingerprint  string
+	fingerprint  sentry.ID
 	location     string
 	store        bool
 }
@@ -331,7 +331,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	//    gets one time budget per envelope; what it cannot finish goes to
 	//    the job worker.
 	preps := make([]*prepared, 0, len(env.Events))
-	seenEvent := map[string]bool{}
+	seenEvent := map[sentry.ID]bool{}
 	symCtx, cancelSym := context.WithTimeout(ctx, SymbolicateBudget)
 	defer cancelSym()
 	for _, ev := range env.Events {
@@ -371,7 +371,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		// cache) carries event_ids already stored: those must not be
 		// counted twice.
 		if len(preps) > 0 {
-			ids := make([]string, len(preps))
+			ids := make([]sentry.ID, len(preps))
 			for i, pr := range preps {
 				ids[i] = pr.ev.EventID
 			}
@@ -380,7 +380,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				return fmt.Errorf("dedupe: %w", err)
 			}
 			if len(existing) > 0 {
-				stored := map[string]bool{}
+				stored := map[sentry.ID]bool{}
 				for _, id := range existing {
 					stored[id] = true
 				}
@@ -436,8 +436,8 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			}
 		}
 
-		groups := map[string][]*prepared{}
-		var order []string
+		groups := map[sentry.ID][]*prepared{}
+		var order []sentry.ID
 		for _, pr := range preps {
 			if pr.fingerprint == "" {
 				pr.store = in.Cfg.PIIRedact || p.SampleRate >= 1 || mrand.Float64() < p.SampleRate
@@ -542,7 +542,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				DeviceID: nilIfEmpty(ev.DeviceID()), DeviceModel: nilIfEmpty(ev.DeviceModel), OSVersion: nilIfEmpty(ev.OSVersion),
 				Screen: nilIfEmpty(ev.Screen), ErrorType: nilIfEmpty(ev.ErrorType), ErrorLocation: nilIfEmpty(pr.location),
 				Handled: ev.Handled, SDKName: nilIfEmpty(ev.SDKName), UserID: nilIfEmpty(ev.UserID),
-				Fingerprint: nilIfEmpty(pr.fingerprint), Symbolicated: pr.symbolicated,
+				Fingerprint: pr.fingerprint.Ptr(), Symbolicated: pr.symbolicated,
 				Tags: tags, Payload: ev.Raw, Symbols: symbols,
 			})
 			if pr.retry && pr.fingerprint != "" {
@@ -615,7 +615,7 @@ func sessionID(s sentry.Session) string {
 	return "agg-" + hex.EncodeToString(b[:])
 }
 
-func alertJob(projectID int64, typ, fp string) sqlc.EnqueueJobParams {
+func alertJob(projectID int64, typ string, fp sentry.ID) sqlc.EnqueueJobParams {
 	args, _ := json.Marshal(map[string]any{"type": typ, "fingerprint": fp})
 	return sqlc.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
 }

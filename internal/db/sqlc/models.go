@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 type AlertType string
@@ -336,7 +338,7 @@ type AlertRule struct {
 type Event struct {
 	OccurredAt    time.Time       `json:"occurred_at"`
 	ProjectID     int64           `json:"project_id"`
-	EventID       string          `json:"event_id"`
+	EventID       sentry.ID       `json:"event_id"`
 	Level         EventLevel      `json:"level"`
 	Message       string          `json:"message"`
 	Platform      *string         `json:"platform"`
@@ -351,7 +353,7 @@ type Event struct {
 	Handled       *bool           `json:"handled"`
 	SdkName       *string         `json:"sdk_name"`
 	UserID        *string         `json:"user_id"`
-	Fingerprint   *string         `json:"fingerprint"`
+	Fingerprint   *sentry.ID      `json:"fingerprint"`
 	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
 	Payload       []byte          `json:"payload"`
@@ -371,7 +373,7 @@ type EventStatsHourly struct {
 
 type Issue struct {
 	ProjectID       int64       `json:"project_id"`
-	Fingerprint     string      `json:"fingerprint"`
+	Fingerprint     sentry.ID   `json:"fingerprint"`
 	Title           string      `json:"title"`
 	Level           EventLevel  `json:"level"`
 	ErrorType       *string     `json:"error_type"`
@@ -392,7 +394,7 @@ type Issue struct {
 type IssueStatsHourly struct {
 	Bucket      time.Time `json:"bucket"`
 	ProjectID   int64     `json:"project_id"`
-	Fingerprint string    `json:"fingerprint"`
+	Fingerprint sentry.ID `json:"fingerprint"`
 	Events      int64     `json:"events"`
 }
 

@@ -8,6 +8,8 @@ package sqlc
 import (
 	"context"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 const addIssueStored = `-- name: AddIssueStored :exec
@@ -15,9 +17,9 @@ UPDATE issues SET stored_count = stored_count + $3 WHERE project_id = $1 AND fin
 `
 
 type AddIssueStoredParams struct {
-	ProjectID   int64  `json:"project_id"`
-	Fingerprint string `json:"fingerprint"`
-	StoredCount int64  `json:"stored_count"`
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
+	StoredCount int64     `json:"stored_count"`
 }
 
 func (q *Queries) AddIssueStored(ctx context.Context, arg AddIssueStoredParams) error {
@@ -31,9 +33,9 @@ WHERE project_id = $1 AND fingerprint = $2
 `
 
 type AdjustIssueStoredCountParams struct {
-	ProjectID   int64  `json:"project_id"`
-	Fingerprint string `json:"fingerprint"`
-	StoredCount int64  `json:"stored_count"`
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
+	StoredCount int64     `json:"stored_count"`
 }
 
 func (q *Queries) AdjustIssueStoredCount(ctx context.Context, arg AdjustIssueStoredCountParams) error {
@@ -91,8 +93,8 @@ DELETE FROM issues WHERE project_id = $1 AND fingerprint = $2 AND event_count <=
 `
 
 type DeleteEmptyIssueParams struct {
-	ProjectID   int64  `json:"project_id"`
-	Fingerprint string `json:"fingerprint"`
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
 }
 
 func (q *Queries) DeleteEmptyIssue(ctx context.Context, arg DeleteEmptyIssueParams) error {
@@ -117,8 +119,8 @@ SELECT project_id, fingerprint, title, level, error_type, screen, platform, stat
 `
 
 type GetIssueParams struct {
-	ProjectID   int64  `json:"project_id"`
-	Fingerprint string `json:"fingerprint"`
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
 }
 
 func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (Issue, error) {
@@ -150,27 +152,27 @@ const issueSparklines = `-- name: IssueSparklines :many
 WITH h AS (
     SELECT fingerprint, crashcart_bucket(bucket, $4::bigint) AS bucket, sum(events) AS events
     FROM issue_stats_hourly
-    WHERE project_id = $5::bigint AND fingerprint = ANY($1::text[])
+    WHERE project_id = $5::bigint AND fingerprint = ANY($1::uuid[])
       AND bucket >= $2::timestamptz AND bucket < $3::timestamptz
     GROUP BY 1, 2)
-SELECT f.fingerprint::text AS fingerprint, array_agg(COALESCE(h.events, 0)::bigint ORDER BY b)::bigint[] AS counts
-FROM unnest($1::text[]) AS f(fingerprint)
+SELECT f.fingerprint::uuid AS fingerprint, array_agg(COALESCE(h.events, 0)::bigint ORDER BY b)::bigint[] AS counts
+FROM unnest($1::uuid[]) AS f(fingerprint)
 CROSS JOIN crashcart_buckets($2::timestamptz, $3::timestamptz, $4::bigint) AS b
 LEFT JOIN h ON h.fingerprint = f.fingerprint AND h.bucket = b
 GROUP BY f.fingerprint
 `
 
 type IssueSparklinesParams struct {
-	Fingerprints []string  `json:"fingerprints"`
-	FromAt       time.Time `json:"from_at"`
-	ToAt         time.Time `json:"to_at"`
-	Width        int64     `json:"width"`
-	ProjectID    int64     `json:"project_id"`
+	Fingerprints []sentry.ID `json:"fingerprints"`
+	FromAt       time.Time   `json:"from_at"`
+	ToAt         time.Time   `json:"to_at"`
+	Width        int64       `json:"width"`
+	ProjectID    int64       `json:"project_id"`
 }
 
 type IssueSparklinesRow struct {
-	Fingerprint string  `json:"fingerprint"`
-	Counts      []int64 `json:"counts"`
+	Fingerprint sentry.ID `json:"fingerprint"`
+	Counts      []int64   `json:"counts"`
 }
 
 // Per fingerprint, the event counts of every bucket in the window as one
@@ -205,7 +207,7 @@ const issueTimeline = `-- name: IssueTimeline :many
 WITH h AS (
     SELECT crashcart_bucket(bucket, $3::bigint) AS bucket, sum(events) AS events
     FROM issue_stats_hourly
-    WHERE project_id = $4::bigint AND fingerprint = $5::text
+    WHERE project_id = $4::bigint AND fingerprint = $5::uuid
       AND bucket >= $1::timestamptz AND bucket < $2::timestamptz
     GROUP BY 1)
 SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events
@@ -219,7 +221,7 @@ type IssueTimelineParams struct {
 	ToAt        time.Time `json:"to_at"`
 	Width       int64     `json:"width"`
 	ProjectID   int64     `json:"project_id"`
-	Fingerprint string    `json:"fingerprint"`
+	Fingerprint sentry.ID `json:"fingerprint"`
 }
 
 type IssueTimelineRow struct {
@@ -406,7 +408,7 @@ WHERE project_id = $1 AND fingerprint = $2 RETURNING project_id, fingerprint, ti
 
 type SetIssueStatusParams struct {
 	ProjectID   int64       `json:"project_id"`
-	Fingerprint string      `json:"fingerprint"`
+	Fingerprint sentry.ID   `json:"fingerprint"`
 	Status      IssueStatus `json:"status"`
 }
 
@@ -439,12 +441,12 @@ const setIssuesStatus = `-- name: SetIssuesStatus :execrows
 UPDATE issues SET status = $3::issue_status,
     resolved_release = CASE WHEN $3::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
     updated_at = now()
-WHERE project_id = $1 AND fingerprint = ANY($2::text[])
+WHERE project_id = $1 AND fingerprint = ANY($2::uuid[])
 `
 
 type SetIssuesStatusParams struct {
 	ProjectID int64       `json:"project_id"`
-	Column2   []string    `json:"column_2"`
+	Column2   []sentry.ID `json:"column_2"`
 	Status    IssueStatus `json:"status"`
 }
 
@@ -476,7 +478,7 @@ RETURNING project_id, fingerprint, title, level, error_type, screen, platform, s
 
 type UpsertIssueParams struct {
 	ProjectID    int64      `json:"project_id"`
-	Fingerprint  string     `json:"fingerprint"`
+	Fingerprint  sentry.ID  `json:"fingerprint"`
 	Title        string     `json:"title"`
 	Level        EventLevel `json:"level"`
 	ErrorType    *string    `json:"error_type"`
@@ -491,7 +493,7 @@ type UpsertIssueParams struct {
 
 type UpsertIssueRow struct {
 	ProjectID       int64       `json:"project_id"`
-	Fingerprint     string      `json:"fingerprint"`
+	Fingerprint     sentry.ID   `json:"fingerprint"`
 	Title           string      `json:"title"`
 	Level           EventLevel  `json:"level"`
 	ErrorType       *string     `json:"error_type"`

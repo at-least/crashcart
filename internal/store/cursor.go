@@ -3,6 +3,8 @@ package store
 import (
 	"strings"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 // Cursor is a keyset position in the newest-first event order
@@ -10,7 +12,7 @@ import (
 // sort strictly after it. Zero = start from the newest event.
 type Cursor struct {
 	At      time.Time
-	EventID string
+	EventID sentry.ID
 }
 
 // IsZero reports whether the cursor is unset.
@@ -22,7 +24,7 @@ func (c Cursor) String() string {
 	if c.IsZero() {
 		return ""
 	}
-	return c.At.UTC().Format(time.RFC3339Nano) + "_" + c.EventID
+	return c.At.UTC().Format(time.RFC3339Nano) + "_" + string(c.EventID)
 }
 
 // ParseCursor decodes String(); "" is the zero cursor.
@@ -38,7 +40,11 @@ func ParseCursor(s string) (Cursor, bool) {
 	if err != nil {
 		return Cursor{}, false
 	}
-	return Cursor{At: t.UTC(), EventID: id}, true
+	eid, ok := sentry.ParseID(id)
+	if !ok {
+		return Cursor{}, false
+	}
+	return Cursor{At: t.UTC(), EventID: eid}, true
 }
 
 // CursorOf is the cursor pointing at row r.

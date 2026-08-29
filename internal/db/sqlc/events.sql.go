@@ -9,27 +9,29 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 const existingEventIDs = `-- name: ExistingEventIDs :many
-SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::text[])
+SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::uuid[])
 `
 
 type ExistingEventIDsParams struct {
-	ProjectID int64    `json:"project_id"`
-	Column2   []string `json:"column_2"`
+	ProjectID int64       `json:"project_id"`
+	Column2   []sentry.ID `json:"column_2"`
 }
 
 // Which of these event_ids are already stored (resent envelopes).
-func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsParams) ([]string, error) {
+func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsParams) ([]sentry.ID, error) {
 	rows, err := q.db.Query(ctx, existingEventIDs, arg.ProjectID, arg.Column2)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []string{}
+	items := []sentry.ID{}
 	for rows.Next() {
-		var event_id string
+		var event_id sentry.ID
 		if err := rows.Scan(&event_id); err != nil {
 			return nil, err
 		}
@@ -46,8 +48,8 @@ SELECT occurred_at, project_id, event_id, level, message, platform, environment,
 `
 
 type GetEventParams struct {
-	ProjectID int64  `json:"project_id"`
-	EventID   string `json:"event_id"`
+	ProjectID int64     `json:"project_id"`
+	EventID   sentry.ID `json:"event_id"`
 }
 
 // By Sentry event_id (the newest row when a resend carried another timestamp).
@@ -82,21 +84,21 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 }
 
 const issueEventRange = `-- name: IssueEventRange :one
-SELECT COALESCE((SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::text ORDER BY e.occurred_at DESC LIMIT 1), '')::text AS latest,
-       COALESCE((SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::text ORDER BY e.occurred_at ASC LIMIT 1), '')::text AS oldest
+SELECT (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid ORDER BY e.occurred_at DESC LIMIT 1)::uuid AS latest,
+       (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest
 `
 
 type IssueEventRangeParams struct {
-	ProjectID   int64  `json:"project_id"`
-	Fingerprint string `json:"fingerprint"`
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
 }
 
 type IssueEventRangeRow struct {
-	Latest string `json:"latest"`
-	Oldest string `json:"oldest"`
+	Latest sentry.ID `json:"latest"`
+	Oldest sentry.ID `json:"oldest"`
 }
 
-// Newest and oldest stored event of an issue (” when none are stored).
+// Newest and oldest stored event of an issue (NULL when none are stored).
 func (q *Queries) IssueEventRange(ctx context.Context, arg IssueEventRangeParams) (IssueEventRangeRow, error) {
 	row := q.db.QueryRow(ctx, issueEventRange, arg.ProjectID, arg.Fingerprint)
 	var i IssueEventRangeRow
@@ -106,20 +108,20 @@ func (q *Queries) IssueEventRange(ctx context.Context, arg IssueEventRangeParams
 
 const issueUsers = `-- name: IssueUsers :many
 SELECT fingerprint, count(DISTINCT user_id)::bigint AS users
-FROM events WHERE project_id = $1 AND fingerprint = ANY($2::text[]) AND occurred_at >= $3 AND occurred_at < $4 AND user_id IS NOT NULL
+FROM events WHERE project_id = $1 AND fingerprint = ANY($2::uuid[]) AND occurred_at >= $3 AND occurred_at < $4 AND user_id IS NOT NULL
 GROUP BY fingerprint
 `
 
 type IssueUsersParams struct {
-	ProjectID    int64     `json:"project_id"`
-	Column2      []string  `json:"column_2"`
-	OccurredAt   time.Time `json:"occurred_at"`
-	OccurredAt_2 time.Time `json:"occurred_at_2"`
+	ProjectID    int64       `json:"project_id"`
+	Column2      []sentry.ID `json:"column_2"`
+	OccurredAt   time.Time   `json:"occurred_at"`
+	OccurredAt_2 time.Time   `json:"occurred_at_2"`
 }
 
 type IssueUsersRow struct {
-	Fingerprint *string `json:"fingerprint"`
-	Users       int64   `json:"users"`
+	Fingerprint *sentry.ID `json:"fingerprint"`
+	Users       int64      `json:"users"`
 }
 
 // Distinct users per issue in a window (index: project_id, fingerprint, occurred_at).
@@ -155,9 +157,9 @@ WHERE project_id = $1 AND event_id = $2
 
 type SetEventSymbolsParams struct {
 	ProjectID     int64           `json:"project_id"`
-	EventID       string          `json:"event_id"`
+	EventID       sentry.ID       `json:"event_id"`
 	Symbols       json.RawMessage `json:"symbols"`
-	Fingerprint   *string         `json:"fingerprint"`
+	Fingerprint   *sentry.ID      `json:"fingerprint"`
 	ErrorLocation *string         `json:"error_location"`
 }
 

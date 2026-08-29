@@ -136,9 +136,9 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
-		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(" · " + d.Issue.Fingerprint)
+		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(" · " + string(d.Issue.Fingerprint))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 37, Col: 71}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 37, Col: 79}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -149,9 +149,9 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var7 string
-		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(pg.S.Href("/issues/" + d.Issue.Fingerprint + "/status"))
+		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(pg.S.Href("/issues/" + string(d.Issue.Fingerprint) + "/status"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 47, Col: 71}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 47, Col: 79}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -520,9 +520,9 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var29 templ.SafeURL
-		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinURLErrs(u(issueEventsHref(pg, d.Issue.Fingerprint)))
+		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinURLErrs(u(issueEventsHref(pg, string(d.Issue.Fingerprint))))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 118, Col: 77}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 118, Col: 85}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
@@ -561,9 +561,9 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var31 string
-				templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(pg.S.Persist().Href("/events/" + e.EventID))
+				templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(pg.S.Persist().Href("/events/" + string(e.EventID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 131, Col: 91}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 131, Col: 99}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 				if templ_7745c5c3_Err != nil {
@@ -574,9 +574,9 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var32 templ.SafeURL
-				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.Persist().Href("/events/" + e.EventID)))
+				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.Persist().Href("/events/" + string(e.EventID))))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 132, Col: 88}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 132, Col: 96}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 				if templ_7745c5c3_Err != nil {
@@ -589,7 +589,7 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 				var templ_7745c5c3_Var33 string
 				templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(formatDateTime(e.OccurredAt))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 132, Col: 121}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 132, Col: 129}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 				if templ_7745c5c3_Err != nil {
@@ -667,9 +667,9 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var38 templ.SafeURL
-			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.WithBefore(store.Cursor{}).Href("/issues/" + d.Issue.Fingerprint)))
+			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.WithBefore(store.Cursor{}).Href("/issues/" + string(d.Issue.Fingerprint))))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 145, Col: 109}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 145, Col: 117}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 			if templ_7745c5c3_Err != nil {
@@ -690,9 +690,9 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var39 templ.SafeURL
-			templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.WithBefore(store.CursorOf(d.Events[len(d.Events)-1])).Href("/issues/" + d.Issue.Fingerprint)))
+			templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.WithBefore(store.CursorOf(d.Events[len(d.Events)-1])).Href("/issues/" + string(d.Issue.Fingerprint))))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 149, Col: 174}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 149, Col: 182}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 			if templ_7745c5c3_Err != nil {
@@ -741,9 +741,9 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var41 templ.SafeURL
-					templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinURLErrs(u(breakdownHref(pg, d.Issue.Fingerprint, b.Column, it.Value)))
+					templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinURLErrs(u(breakdownHref(pg, string(d.Issue.Fingerprint), b.Column, it.Value)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 168, Col: 104}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 168, Col: 112}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 					if templ_7745c5c3_Err != nil {

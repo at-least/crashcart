@@ -78,7 +78,7 @@ func TestPages(t *testing.T) {
 	if err != nil || len(is) != 1 {
 		t.Fatalf("issues: %v %d", err, len(is))
 	}
-	fp := is[0].Fingerprint
+	fp := string(is[0].Fingerprint)
 
 	assertPage(t, mux, "/", "Shop App", "Create project", "/p/shop", "Crashes 24h")
 	assertPage(t, mux, "/p/shop", "Overview", "Crash-free sessions", "NullPointerException in CartFragment", "Crashes by release", "data-stream=\"/p/shop/stream?since=")
@@ -117,7 +117,7 @@ func TestBulkAndMutations(t *testing.T) {
 	w, p, mux := setup(t)
 	ctx := context.Background()
 	is, _, _ := w.Store.ListIssues(ctx, storeIssueFilter(p.ID))
-	fp := is[0].Fingerprint
+	fp := string(is[0].Fingerprint)
 	form := url.Values{"fp": {fp}, "status": {"resolved"}}
 
 	// without HX-Request: 403, nothing changes
@@ -128,7 +128,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 403 {
 		t.Fatalf("bulk without HX-Request = %d", rec.Code)
 	}
-	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp}); got.Status != "unresolved" {
+	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "unresolved" {
 		t.Errorf("status changed without htmx: %s", got.Status)
 	}
 
@@ -141,7 +141,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 200 || !strings.HasPrefix(strings.TrimSpace(rec.Body.String()), "<div id=\"issues-table\"") || !strings.Contains(rec.Body.String(), "No issues") {
 		t.Fatalf("bulk = %d %.120s", rec.Code, rec.Body.String())
 	}
-	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp}); got.Status != "resolved" || got.ResolvedRelease == nil {
+	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "resolved" || got.ResolvedRelease == nil {
 		t.Errorf("bulk resolve: %+v", got)
 	}
 	assertPage(t, mux, "/p/shop/issues?status=resolved", "/p/shop/issues/"+fp)

@@ -25,7 +25,12 @@ is a range on them, buckets are `time_bucket(INTERVAL …)`, policies take
 intervals. The primary keys are `(project_id, event_id, occurred_at)` and
 `(project_id, sid, started_at)` — the SDK's own ids, so a resent envelope
 lands on the same row (`ON CONFLICT DO NOTHING`) and a session's status
-updates hit one row. Every per-project table references `projects` with
+updates hit one row. `event_id` and `fingerprint` are `UUID` columns (16
+bytes in every key, index and compression segment); in Go they are
+`sentry.ID`, a 32-hex string that encodes/decodes itself as a Postgres
+UUID, so URLs, JSON and the SDK protocol never see dashes. An SDK event
+without a proper id gets one derived from the event body (sha256), so a
+resend still dedupes. Every per-project table references `projects` with
 `ON DELETE CASCADE`: deleting a project deletes its data. Events are addressed by `event_id` everywhere (URLs,
 API, jobs); list pagination is a keyset cursor `(occurred_at, event_id)`.
 

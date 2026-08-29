@@ -27,7 +27,7 @@ func EventFilterFromQuery(projectID int64, q map[string][]string) (store.EventFi
 		ProjectID: projectID, Level: get("level"), Release: get("release"), Environment: get("environment"),
 		Platform: get("platform"), ErrorType: get("error_type"), UserID: get("user_id"), DeviceID: get("device_id"),
 		DeviceModel: get("device_model"), OSVersion: get("os_version"), Screen: get("screen"),
-		Fingerprint: get("fingerprint"), Location: get("error_location"), Query: get("q"),
+		Location: get("error_location"), Query: get("q"),
 	}
 	if c := get("crash"); c == "1" || c == "true" {
 		f.Crash = true
@@ -89,7 +89,12 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ev, err := h.Store.GetEvent(r.Context(), sqlc.GetEventParams{ProjectID: p.ID, EventID: r.PathValue("id")})
+	id, ok := sentry.ParseID(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	ev, err := h.Store.GetEvent(r.Context(), sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -107,7 +112,7 @@ type eventDetail struct {
 }
 
 func breadcrumbsOf(ev sqlc.Event) []sentry.Breadcrumb {
-	parsed := sentry.ParseEvent(ev.EventID, ev.OccurredAt, ev.Payload, time.Now().UTC())
+	parsed := sentry.ParseEvent(string(ev.EventID), ev.OccurredAt, ev.Payload, time.Now().UTC())
 	if parsed == nil || parsed.Breadcrumbs == nil {
 		return []sentry.Breadcrumb{}
 	}

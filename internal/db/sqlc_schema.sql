@@ -38,7 +38,7 @@ CREATE TABLE projects (
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    event_id       TEXT NOT NULL,
+    event_id       UUID NOT NULL,
     level          event_level NOT NULL,
     message        TEXT NOT NULL,
     platform       TEXT,
@@ -53,7 +53,7 @@ CREATE TABLE events (
     handled        BOOLEAN,
     sdk_name       TEXT,
     user_id        TEXT,
-    fingerprint    TEXT,
+    fingerprint    UUID,
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     payload        BYTEA NOT NULL,
@@ -82,7 +82,7 @@ CREATE TABLE releases (
 
 CREATE TABLE issues (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    fingerprint      TEXT NOT NULL,
+    fingerprint      UUID NOT NULL,
     title            TEXT NOT NULL,
     level            event_level NOT NULL,
     error_type       TEXT,
@@ -173,7 +173,7 @@ CREATE TABLE event_stats_hourly (
 CREATE TABLE issue_stats_hourly (
     bucket      TIMESTAMPTZ NOT NULL,
     project_id  BIGINT NOT NULL,
-    fingerprint TEXT NOT NULL,
+    fingerprint UUID NOT NULL,
     events      BIGINT NOT NULL
 );
 

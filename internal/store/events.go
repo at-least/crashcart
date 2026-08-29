@@ -11,13 +11,14 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 // EventInsert is one row for InsertEvents.
 type EventInsert struct {
 	OccurredAt    time.Time
 	ProjectID     int64
-	EventID       string
+	EventID       sentry.ID
 	Level         string
 	Message       string
 	Platform      *string
@@ -32,7 +33,7 @@ type EventInsert struct {
 	Handled       *bool
 	SDKName       *string
 	UserID        *string
-	Fingerprint   *string
+	Fingerprint   *sentry.ID
 	Symbolicated  bool
 	Tags          json.RawMessage
 	Payload       []byte // the raw Sentry event JSON
@@ -118,7 +119,7 @@ type EventFilter struct {
 	DeviceModel string
 	OSVersion   string
 	Screen      string
-	Fingerprint string
+	Fingerprint sentry.ID
 	Location    string
 	Query       string            // message ILIKE %q%
 	Tags        map[string]string // tags->>k = v
@@ -155,11 +156,14 @@ func (f EventFilter) where() (string, []any) {
 	for col, v := range map[string]string{
 		"level": f.Level, "release": f.Release, "environment": f.Environment, "platform": f.Platform,
 		"error_type": f.ErrorType, "user_id": f.UserID, "device_id": f.DeviceID, "device_model": f.DeviceModel,
-		"os_version": f.OSVersion, "screen": f.Screen, "fingerprint": f.Fingerprint, "error_location": f.Location,
+		"os_version": f.OSVersion, "screen": f.Screen, "error_location": f.Location,
 	} {
 		if v != "" {
 			add(filterColumns[col]+" = ?", v)
 		}
+	}
+	if f.Fingerprint != "" {
+		add("fingerprint = ?", f.Fingerprint)
 	}
 	if f.Query != "" {
 		add("message ILIKE ?", "%"+escapeLike(f.Query)+"%")
@@ -187,7 +191,7 @@ const eventListColumns = `occurred_at, project_id, event_id, level, message, pla
 type EventRow struct {
 	OccurredAt    time.Time       `json:"occurred_at"`
 	ProjectID     int64           `json:"project_id"`
-	EventID       string          `json:"event_id"`
+	EventID       sentry.ID       `json:"event_id"`
 	Level         string          `json:"level"`
 	Message       string          `json:"message"`
 	Platform      *string         `json:"platform"`
@@ -202,7 +206,7 @@ type EventRow struct {
 	Handled       *bool           `json:"handled"`
 	SDKName       *string         `json:"sdk_name"`
 	UserID        *string         `json:"user_id"`
-	Fingerprint   *string         `json:"fingerprint"`
+	Fingerprint   *sentry.ID      `json:"fingerprint"`
 	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
 }

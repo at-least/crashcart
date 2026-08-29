@@ -8,6 +8,7 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
@@ -82,10 +83,10 @@ func TestSweep(t *testing.T) {
 	fresh := now
 
 	mk := func(fp string, seen time.Time, status string) {
-		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 1, Fingerprint: fp, Title: fp, Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: seen, LastSeen: seen}); err != nil {
+		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 1, Fingerprint: sentry.DerivedID([]byte(fp)), Title: fp, Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: seen, LastSeen: seen}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 1, Fingerprint: fp, Status: sqlc.IssueStatus(status)}); err != nil {
+		if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 1, Fingerprint: sentry.DerivedID([]byte(fp)), Status: sqlc.IssueStatus(status)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -139,7 +140,7 @@ func TestRefreshAggregates(t *testing.T) {
 	// An event written directly (as import does) two days ago: outside the
 	// policy window, invisible until refreshed.
 	old := time.Now().Add(-48 * time.Hour)
-	if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, payload) VALUES ($1, 1, 'e1', 'fatal', 'm', '{}')`, old); err != nil {
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, payload) VALUES ($1, 1, 'e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1', 'fatal', 'm', '{}')`, old); err != nil {
 		t.Fatal(err)
 	}
 	if err := RefreshAggregates(ctx, st); err != nil {

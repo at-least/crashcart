@@ -15,6 +15,7 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
@@ -83,43 +84,44 @@ func TestIssueWebhookAndCooldown(t *testing.T) {
 	rel := "1.2.3"
 	id := time.Now().UTC()
 	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{
-		ProjectID: p.ID, Fingerprint: "abc123", Title: "NullPointerException in CartFragment", Level: "error",
+		ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("abc123")), Title: "NullPointerException in CartFragment", Level: "error",
 		EventCount: 3, StoredCount: 3, FirstSeen: id, LastSeen: id, FirstRelease: &rel,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.Issue(ctx, p.ID, TypeNewIssue, "abc123"); err != nil {
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("abc123")))); err != nil {
 		t.Fatal(err)
 	}
 	if s.count() != 1 {
 		t.Fatalf("payloads = %d", s.count())
 	}
+	abc := sentry.DerivedID([]byte("abc123"))
 	got := s.payloads[0]
 	if got.Type != TypeNewIssue || got.Project != "Shop" || got.ProjectSlug != "shop" || got.Title != "NullPointerException in CartFragment" ||
-		got.Fingerprint != "abc123" || got.Level != "error" || got.EventCount != 3 || got.FirstRelease == nil || *got.FirstRelease != rel ||
-		got.URL != "https://crash.example.com/p/shop/issues/abc123" || s.paths[0] != "/hook" {
+		got.Fingerprint != string(abc) || got.Level != "error" || got.EventCount != 3 || got.FirstRelease == nil || *got.FirstRelease != rel ||
+		got.URL != "https://crash.example.com/p/shop/issues/"+string(abc) || s.paths[0] != "/hook" {
 		t.Errorf("payload = %+v path=%s", got, s.paths[0])
 	}
 	// Cooling down: nothing sent, no error.
-	if err := n.Issue(ctx, p.ID, TypeNewIssue, "abc123"); err != nil || s.count() != 1 {
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("abc123")))); err != nil || s.count() != 1 {
 		t.Fatalf("cooldown: err=%v count=%d", err, s.count())
 	}
 	// A different rule type is independent.
-	if err := n.Issue(ctx, p.ID, TypeRegression, "abc123"); err != nil || s.count() != 2 || s.payloads[1].Type != TypeRegression {
+	if err := n.Issue(ctx, p.ID, TypeRegression, string(sentry.DerivedID([]byte("abc123")))); err != nil || s.count() != 2 || s.payloads[1].Type != TypeRegression {
 		t.Fatalf("regression: err=%v count=%d", err, s.count())
 	}
 	// Disabled rule: nothing.
 	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: TypeRegression, Enabled: false, CooldownMinutes: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.Issue(ctx, p.ID, TypeRegression, "abc123"); err != nil || s.count() != 2 {
+	if err := n.Issue(ctx, p.ID, TypeRegression, string(sentry.DerivedID([]byte("abc123")))); err != nil || s.count() != 2 {
 		t.Fatalf("disabled: err=%v count=%d", err, s.count())
 	}
 	// Unknown issue after the cooldown was claimed: nil, nothing sent.
 	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue, Enabled: true, CooldownMinutes: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.Issue(ctx, p.ID, TypeNewIssue, "missing"); err != nil || s.count() != 2 {
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("missing")))); err != nil || s.count() != 2 {
 		t.Fatalf("missing issue: err=%v count=%d", err, s.count())
 	}
 }
@@ -134,8 +136,8 @@ func TestWebhookFailureIsBestEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := time.Now().UTC()
-	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: "f", Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
-	if err := n.Issue(ctx, p.ID, TypeNewIssue, "f"); err != nil {
+	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("f")))); err != nil {
 		t.Fatalf("channel failures must not fail the job: %v", err)
 	}
 }
@@ -154,8 +156,8 @@ func TestTelegram(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := time.Now().UTC()
-	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: "tg", Title: "Crash in Checkout", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
-	if err := n.Issue(ctx, p.ID, TypeNewIssue, "tg"); err != nil {
+	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("tg")), Title: "Crash in Checkout", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("tg")))); err != nil {
 		t.Fatal(err)
 	}
 	if s.count() != 2 {
@@ -171,7 +173,7 @@ func TestTelegram(t *testing.T) {
 		t.Fatalf("telegram call = %v %v", s.paths, s.bodies)
 	}
 	text, _ := tgBody["text"].(string)
-	if text == "" || !strings.Contains(text, "New issue in Shop") || !strings.Contains(text, "Crash in Checkout") || !strings.Contains(text, "/p/shop/issues/tg") {
+	if text == "" || !strings.Contains(text, "New issue in Shop") || !strings.Contains(text, "Crash in Checkout") || !strings.Contains(text, "/p/shop/issues/"+string(sentry.DerivedID([]byte("tg")))) {
 		t.Errorf("text = %q", text)
 	}
 }
@@ -190,10 +192,10 @@ func TestCheckSpikes(t *testing.T) {
 	// (seconds apart, so they cannot straddle a bucket boundary).
 	rows := make([]store.EventInsert, 0, 12)
 	f := false
-	fp := "crashfp"
+	fp := sentry.DerivedID([]byte("crashfp"))
 	for i := 0; i < 12; i++ {
 		rows = append(rows, store.EventInsert{
-			OccurredAt: time.Now().UTC().Add(-time.Duration(i) * time.Second), ProjectID: p.ID, EventID: fmt.Sprint("e", i), Level: "fatal",
+			OccurredAt: time.Now().UTC().Add(-time.Duration(i) * time.Second), ProjectID: p.ID, EventID: sentry.DerivedID([]byte(fmt.Sprint("e", i))), Level: "fatal",
 			Message: "boom", Handled: &f, Fingerprint: &fp, Tags: []byte("{}"), Payload: []byte("{}"),
 		})
 	}

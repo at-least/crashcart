@@ -13,7 +13,7 @@ var now = time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 const crashEvent = `{"event_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","timestamp":"2026-08-29T10:15:30Z","level":"fatal","platform":"android","environment":"production","transaction":"CartFragment","tags":{"device_id":"did-1","build":"42"},"user":{"id":"user-001"},"sdk":{"name":"sentry.java.android"},"contexts":{"device":{"model":"Pixel 8"},"os":{"version":"14"},"app":{"app_version":"2.4.1"}},"exception":{"values":[{"type":"NullPointerException","value":"Attempt to invoke virtual method","mechanism":{"handled":false},"stacktrace":{"frames":[{"filename":"Looper.java","function":"loop","in_app":false,"lineno":10},{"filename":"com/example/CartFragment.java","function":"onCreateView","in_app":true,"lineno":142},{"filename":"Native.java","function":"call","in_app":false,"lineno":1}]}}]},"breadcrumbs":{"values":[{"timestamp":1787998500,"category":"navigation","message":"cart","level":"info","data":{"to":"/cart"}},{"timestamp":"2026-08-29T10:15:29Z","category":"http","message":"","data":{"method":"GET","url":"/api/cart","status_code":500}}]}}`
 
 func envelope(items ...string) []byte {
-	return []byte("{\"event_id\":\"h1\",\"sent_at\":\"2026-08-29T11:00:00Z\"}\n" + strings.Join(items, "\n") + "\n")
+	return []byte("{\"event_id\":\"11111111111111111111111111111111\",\"sent_at\":\"2026-08-29T11:00:00Z\"}\n" + strings.Join(items, "\n") + "\n")
 }
 
 func TestParseCrashEvent(t *testing.T) {
@@ -76,7 +76,7 @@ func TestParseFallbacks(t *testing.T) {
 	if e.Timestamp.Unix() != 1787998530 {
 		t.Errorf("unix ts = %v", e.Timestamp)
 	}
-	if e.EventID != "h1" {
+	if e.EventID != "11111111111111111111111111111111" {
 		t.Errorf("header event id fallback = %q", e.EventID)
 	}
 	if Fingerprint(e, e.Frames()) == "" {

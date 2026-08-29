@@ -89,7 +89,7 @@ func issueSub(is sqlcIssue) string {
 	if is.ErrorType != nil && !strings.HasPrefix(is.Title, *is.ErrorType) {
 		parts = append(parts, *is.ErrorType)
 	}
-	parts = append(parts, is.Fingerprint[:min(12, len(is.Fingerprint))])
+	parts = append(parts, string(is.Fingerprint)[:min(12, len(is.Fingerprint))])
 	return strings.Join(parts, " · ")
 }
 
@@ -116,10 +116,10 @@ templ IssuesTable(pg Page, d IssuesData) {
 					</thead>
 					<tbody>
 						for _, is := range d.Issues {
-							<tr data-fp={ is.Fingerprint } data-href={ pg.S.Persist().Href("/issues/" + is.Fingerprint) } data-level={ is.Level } tabindex="0">
-								<td><input type="checkbox" class="cb" name="fp" value={ is.Fingerprint } aria-label="Select issue"/></td>
+							<tr data-fp={ string(is.Fingerprint) } data-href={ pg.S.Persist().Href("/issues/" + string(is.Fingerprint)) } data-level={ is.Level } tabindex="0">
+								<td><input type="checkbox" class="cb" name="fp" value={ string(is.Fingerprint) } aria-label="Select issue"/></td>
 								<td class="cell-msg">
-									<a class="msg issue-title-link" href={ u(pg.S.Persist().Href("/issues/" + is.Fingerprint)) }>{ is.Title }</a>
+									<a class="msg issue-title-link" href={ u(pg.S.Persist().Href("/issues/" + string(is.Fingerprint))) }>{ is.Title }</a>
 									<div class="sub">
 										if string(is.Status) != pg.S.Status && pg.S.Status == "all" {
 											@StatusBadge(string(is.Status))

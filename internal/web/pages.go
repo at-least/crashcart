@@ -261,9 +261,9 @@ func singleChart(name, token string, points map[int64]int64, win Window) ChartDa
 type IssuesData struct {
 	Issues   []sqlc.Issue
 	Total    int64
-	Counts   map[string]int64  // per status
-	Users    map[string]int64  // per fingerprint, in window
-	Sparks   map[string]string // per fingerprint: SVG
+	Counts   map[string]int64     // per status
+	Users    map[sentry.ID]int64  // per fingerprint, in window
+	Sparks   map[sentry.ID]string // per fingerprint: SVG
 	Releases []string
 }
 
@@ -298,7 +298,7 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 	if err != nil {
 		return IssuesData{}, err
 	}
-	d := IssuesData{Issues: issues, Total: total, Counts: map[string]int64{}, Users: map[string]int64{}, Sparks: map[string]string{}}
+	d := IssuesData{Issues: issues, Total: total, Counts: map[string]int64{}, Users: map[sentry.ID]int64{}, Sparks: map[sentry.ID]string{}}
 	counts, err := w.Store.CountIssuesByStatus(ctx, p.ID)
 	if err != nil {
 		return d, err
@@ -307,7 +307,7 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 		d.Counts[string(c.Status)] = c.N
 		d.Counts["all"] += c.N
 	}
-	fps := make([]string, 0, len(issues))
+	fps := make([]sentry.ID, 0, len(issues))
 	for _, is := range issues {
 		fps = append(fps, is.Fingerprint)
 	}
@@ -332,7 +332,7 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 }
 
 // sparklines renders 7 days of hourly counts (folded to 4 h points) per issue.
-func (w *Web) sparklines(ctx context.Context, projectID int64, fps []string, n time.Time) (map[string]string, error) {
+func (w *Web) sparklines(ctx context.Context, projectID int64, fps []sentry.ID, n time.Time) (map[sentry.ID]string, error) {
 	const width = 4 * time.Hour
 	since := n.UTC().Add(-7 * day).Truncate(width)
 	rows, err := w.Store.IssueSparklines(ctx, sqlc.IssueSparklinesParams{
@@ -341,7 +341,7 @@ func (w *Web) sparklines(ctx context.Context, projectID int64, fps []string, n t
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]string, len(fps))
+	out := make(map[sentry.ID]string, len(fps))
 	for _, r := range rows {
 		out[r.Fingerprint] = sparkline(r.Counts)
 	}
@@ -362,7 +362,12 @@ func (w *Web) issuesBulk(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := r.PostForm.Get("status")
-	fps := r.PostForm["fp"]
+	var fps []sentry.ID
+	for _, s := range r.PostForm["fp"] {
+		if fp, ok := sentry.ParseID(s); ok {
+			fps = append(fps, fp)
+		}
+	}
 	if !bulkStatuses[status] || len(fps) == 0 {
 		http.Error(rw, "status and fp[] required", http.StatusBadRequest)
 		return
@@ -412,7 +417,11 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	fp := r.PathValue("fingerprint")
+	fp, ok := sentry.ParseID(r.PathValue("fingerprint"))
+	if !ok {
+		http.NotFound(rw, r)
+		return
+	}
 	is, err := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.NotFound(rw, r)
@@ -434,9 +443,9 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if nb, err := w.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp}); err == nil {
-		d.LatestID, d.OldestID = nb.Latest, nb.Oldest
+		d.LatestID, d.OldestID = string(nb.Latest), string(nb.Oldest)
 	}
-	if users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []string{fp}, OccurredAt: win.From, OccurredAt_2: win.To}); err == nil && len(users) > 0 {
+	if users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []sentry.ID{fp}, OccurredAt: win.From, OccurredAt_2: win.To}); err == nil && len(users) > 0 {
 		d.Users = users[0].Users
 	}
 	bf := store.EventFilter{ProjectID: p.ID, Fingerprint: fp, From: win.From, To: win.To}
@@ -494,7 +503,11 @@ func (w *Web) issueStatus(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "bad status", http.StatusBadRequest)
 		return
 	}
-	fp := r.PathValue("fingerprint")
+	fp, ok := sentry.ParseID(r.PathValue("fingerprint"))
+	if !ok {
+		http.NotFound(rw, r)
+		return
+	}
 	if _, err := w.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(status)}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(rw, r)
@@ -503,7 +516,7 @@ func (w *Web) issueStatus(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	redirect(rw, r, state(r).Href("/issues/"+fp))
+	redirect(rw, r, state(r).Href("/issues/"+string(fp)))
 }
 
 // ── events ──────────────────────────────────────────────────
@@ -522,7 +535,7 @@ func eventFilter(p sqlc.Project, s ViewState, win Window) store.EventFilter {
 	f := store.EventFilter{ProjectID: p.ID, From: win.From, To: win.To, Before: s.Cursor(), Limit: eventsPage,
 		Level: s.Filters["level"], Release: s.Filters["release"], Environment: s.Filters["environment"], Platform: s.Filters["platform"],
 		ErrorType: s.Filters["error_type"], UserID: s.Filters["user_id"], DeviceID: s.Filters["device_id"], DeviceModel: s.Filters["device_model"],
-		OSVersion: s.Filters["os_version"], Screen: s.Filters["screen"], Fingerprint: s.Filters["fingerprint"], Location: s.Filters["error_location"],
+		OSVersion: s.Filters["os_version"], Screen: s.Filters["screen"], Location: s.Filters["error_location"],
 		Query: s.Filters["q"], Crash: s.Filters["crash"] == "1"}
 	for k, v := range s.Filters {
 		if strings.HasPrefix(k, "tag.") {
@@ -572,7 +585,12 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	e, err := w.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: r.PathValue("id")})
+	id, ok := sentry.ParseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(rw, r)
+		return
+	}
+	e, err := w.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.NotFound(rw, r)
 		return

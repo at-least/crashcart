@@ -15,6 +15,7 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/symbolicate"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
@@ -145,7 +146,7 @@ func TestEndToEnd(t *testing.T) {
 	if res, body := do("POST", "/p/shop/issues/bulk", form, map[string]string{"Content-Type": "application/x-www-form-urlencoded", "HX-Request": "true"}); res.StatusCode != 200 {
 		t.Errorf("bulk → %d %.200s", res.StatusCode, body)
 	}
-	iss, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	iss, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)})
 	if iss.Status != "ignored" {
 		t.Errorf("bulk did not apply: %s", iss.Status)
 	}

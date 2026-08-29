@@ -103,8 +103,8 @@ templ Events(pg Page, d EventsData) {
 				</thead>
 				<tbody>
 					for _, e := range d.Events {
-						<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + e.EventID) } tabindex="0">
-							<td class="cell-time" title={ formatDateTime(e.OccurredAt) }><a href={ u(pg.S.Persist().Href("/events/" + e.EventID)) }>{ ago(e.OccurredAt) }</a></td>
+						<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + string(e.EventID)) } tabindex="0">
+							<td class="cell-time" title={ formatDateTime(e.OccurredAt) }><a href={ u(pg.S.Persist().Href("/events/" + string(e.EventID))) }>{ ago(e.OccurredAt) }</a></td>
 							<td>
 								<a class="level-badge" data-level={ levelKey(e.Level) } href={ u(filterHref(pg, "level", e.Level)) }>{ e.Level }</a>
 								if rowCrash(e) {
@@ -114,7 +114,7 @@ templ Events(pg Page, d EventsData) {
 								}
 							</td>
 							<td class="cell-msg">
-								<a class="msg" href={ u(pg.S.Persist().Href("/events/" + e.EventID)) }>{ e.Message }</a>
+								<a class="msg" href={ u(pg.S.Persist().Href("/events/" + string(e.EventID))) }>{ e.Message }</a>
 								<div class="sub">
 									if e.ErrorType != nil {
 										<a class="filter-link" href={ u(filterHref(pg, "error_type", *e.ErrorType)) }>{ *e.ErrorType }</a>

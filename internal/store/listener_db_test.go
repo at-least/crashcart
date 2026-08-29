@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
@@ -40,7 +41,7 @@ func TestListenerNotifications(t *testing.T) {
 		break
 	}
 	now := time.Now()
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: "f", Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now}); err != nil {
+	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -57,7 +58,7 @@ func TestListenerNotifications(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	// A second event on the same issue is an update, not a new issue: no notification.
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: "f", Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now}); err != nil {
+	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -66,11 +67,11 @@ func TestListenerNotifications(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 	// Resolve, then see it again on another release: regression notifies.
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 7, Fingerprint: "f", Status: "resolved"}); err != nil {
+	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Status: "resolved"}); err != nil {
 		t.Fatal(err)
 	}
 	rel := "2.0"
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: "f", Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now.Add(time.Second), FirstRelease: &rel}); err != nil {
+	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now.Add(time.Second), FirstRelease: &rel}); err != nil {
 		t.Fatal(err)
 	}
 	select {

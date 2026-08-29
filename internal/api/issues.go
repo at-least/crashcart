@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
@@ -39,7 +40,7 @@ type issueOut struct {
 
 func toIssueOut(i sqlc.Issue) issueOut {
 	return issueOut{
-		Fingerprint: i.Fingerprint, Title: i.Title, Level: string(i.Level), ErrorType: i.ErrorType, Screen: i.Screen,
+		Fingerprint: string(i.Fingerprint), Title: i.Title, Level: string(i.Level), ErrorType: i.ErrorType, Screen: i.Screen,
 		Platform: i.Platform, Status: string(i.Status), EventCount: i.EventCount, StoredCount: i.StoredCount,
 		FirstSeen: i.FirstSeen.UTC(), LastSeen: i.LastSeen.UTC(),
 		FirstRelease: i.FirstRelease, LastRelease: i.LastRelease, ResolvedRelease: i.ResolvedRelease,
@@ -89,7 +90,7 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]issueOut, 0, len(issues))
-	fps := make([]string, 0, len(issues))
+	fps := make([]sentry.ID, 0, len(issues))
 	for _, i := range issues {
 		out = append(out, toIssueOut(i))
 		fps = append(fps, i.Fingerprint)
@@ -100,9 +101,11 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
-		byFP := map[string]int64{}
+		byFP := map[sentry.ID]int64{}
 		for _, u := range users {
-			byFP[deref(u.Fingerprint)] = u.Users
+			if u.Fingerprint != nil {
+				byFP[*u.Fingerprint] = u.Users
+			}
 		}
 		end := to.Truncate(time.Hour).Add(time.Hour)
 		sp, err := h.Store.IssueSparklines(r.Context(), sqlc.IssueSparklinesParams{
@@ -112,13 +115,13 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
-		spark := map[string][]int64{}
+		spark := map[sentry.ID][]int64{}
 		for _, s := range sp {
 			spark[s.Fingerprint] = s.Counts
 		}
 		for i := range out {
-			out[i].Users = byFP[out[i].Fingerprint]
-			if s := spark[out[i].Fingerprint]; s != nil {
+			out[i].Users = byFP[sentry.ID(out[i].Fingerprint)]
+			if s := spark[sentry.ID(out[i].Fingerprint)]; s != nil {
 				out[i].Sparkline = s
 			} else {
 				out[i].Sparkline = make([]int64, sparklineHours)
@@ -150,7 +153,11 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	fp := r.PathValue("fingerprint")
+	fp, ok := sentry.ParseID(r.PathValue("fingerprint"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
 	issue, err := h.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
 	if err != nil {
 		h.fail(w, err)
@@ -158,7 +165,7 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	out := issueDetailOut{issueOut: toIssueOut(issue), Breakdown: map[string][]store.Breakdown{}}
 
-	users, err := h.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []string{fp}, OccurredAt: from, OccurredAt_2: to})
+	users, err := h.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []sentry.ID{fp}, OccurredAt: from, OccurredAt_2: to})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -186,7 +193,7 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	out.LatestEventID, out.OldestEventID = rng.Latest, rng.Oldest
+	out.LatestEventID, out.OldestEventID = string(rng.Latest), string(rng.Oldest) // "" when none stored
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -206,7 +213,12 @@ func (h *Handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, triaged, resolved, ignored, regression")
 		return
 	}
-	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: r.PathValue("fingerprint"), Status: sqlc.IssueStatus(in.Status)})
+	fp, ok := sentry.ParseID(r.PathValue("fingerprint"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(in.Status)})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -235,7 +247,16 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "fingerprints must not be empty")
 		return
 	}
-	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: in.Fingerprints, Status: sqlc.IssueStatus(in.Status)})
+	fps := make([]sentry.ID, 0, len(in.Fingerprints))
+	for _, s := range in.Fingerprints {
+		fp, ok := sentry.ParseID(s)
+		if !ok {
+			h.fail(w, badRequest("fingerprints must be 32-hex ids"))
+			return
+		}
+		fps = append(fps, fp)
+	}
+	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(in.Status)})
 	if err != nil {
 		h.fail(w, err)
 		return

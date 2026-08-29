@@ -274,7 +274,7 @@ func (s *Service) Invalidate(projectID int64, release string) {
 // nil when nothing can be resolved yet (the event stays unsymbolicated —
 // a later upload re-queues it); only sidecar / database failures are
 // errors, so the job retries.
-func (s *Service) Event(ctx context.Context, projectID int64, eventID string) error {
+func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID) error {
 	row, err := s.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: projectID, EventID: eventID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // dropped by retention, or never stored
@@ -286,7 +286,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID string) er
 		return nil
 	}
 	now := time.Now().UTC()
-	ev := sentry.ParseEvent(row.EventID, row.OccurredAt, row.Payload, now)
+	ev := sentry.ParseEvent(string(row.EventID), row.OccurredAt, row.Payload, now)
 	if ev == nil {
 		return nil
 	}
@@ -307,14 +307,14 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID string) er
 	if err != nil {
 		return err
 	}
-	oldFP := ""
+	var oldFP sentry.ID
 	if row.Fingerprint != nil {
 		oldFP = *row.Fingerprint
 	}
 	return s.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		if err := q.SetEventSymbols(ctx, sqlc.SetEventSymbolsParams{
 			ProjectID: projectID, EventID: eventID, Symbols: symbols,
-			Fingerprint: nilIfEmpty(newFP), ErrorLocation: nilIfEmpty(location),
+			Fingerprint: newFP.Ptr(), ErrorLocation: nilIfEmpty(location),
 		}); err != nil {
 			return err
 		}

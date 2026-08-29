@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
@@ -31,7 +32,7 @@ func TestTagsFilterAndBreakdowns(t *testing.T) {
 		}
 		tags, _ := json.Marshal(map[string]string{"build": build, "device_id": fmt.Sprintf("d%d", i)})
 		rows = append(rows, store.EventInsert{
-			OccurredAt: now.Add(-time.Duration(i) * time.Minute), ProjectID: 1, EventID: fmt.Sprintf("e%d", i), Level: "error", Message: "m",
+			OccurredAt: now.Add(-time.Duration(i) * time.Minute), ProjectID: 1, EventID: sentry.DerivedID([]byte(fmt.Sprintf("e%d", i))), Level: "error", Message: "m",
 			Release: &rel, Tags: tags, Payload: []byte("{}"),
 		})
 	}

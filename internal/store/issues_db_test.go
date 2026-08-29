@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
@@ -20,7 +21,7 @@ func TestListIssuesDB(t *testing.T) {
 	rel := "1.0"
 	for i, fp := range []string{"a", "b", "c"} {
 		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{
-			ProjectID: p.ID, Fingerprint: fp, Title: "Issue " + fp, Level: "error", EventCount: int64(3 - i),
+			ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte(fp)), Title: "Issue " + fp, Level: "error", EventCount: int64(3 - i),
 			FirstSeen: time.Unix(int64(100+i), 0), LastSeen: time.Unix(int64(200+i), 0), FirstRelease: &rel,
 		}); err != nil {
 			t.Fatal(err)
@@ -30,11 +31,11 @@ func TestListIssuesDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 3 || len(rows) != 2 || rows[0].Fingerprint != "a" {
+	if total != 3 || len(rows) != 2 || rows[0].Fingerprint != sentry.DerivedID([]byte("a")) {
 		t.Errorf("events sort: total=%d rows=%v", total, rows)
 	}
 	rows, _, err = st.ListIssues(ctx, store.IssueFilter{ProjectID: p.ID, Offset: 2})
-	if err != nil || len(rows) != 1 || rows[0].Fingerprint != "a" {
+	if err != nil || len(rows) != 1 || rows[0].Fingerprint != sentry.DerivedID([]byte("a")) {
 		t.Errorf("last_seen desc offset 2: %v %v", rows, err)
 	}
 	_, total, err = st.ListIssues(ctx, store.IssueFilter{ProjectID: p.ID, Query: "issue b", Release: "1.0", From: time.Unix(150, 0)})

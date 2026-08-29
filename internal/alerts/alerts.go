@@ -19,6 +19,7 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
@@ -85,7 +86,11 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 	if claimed == 0 {
 		return nil // disabled, cooling down, or no rule row
 	}
-	issue, err := n.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: projectID, Fingerprint: fingerprint})
+	fp, ok := sentry.ParseID(fingerprint)
+	if !ok {
+		return nil
+	}
+	issue, err := n.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: projectID, Fingerprint: fp})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -97,7 +102,7 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 		return err
 	}
 	payload := Payload{
-		Type: typ, Project: p.Name, ProjectSlug: p.Slug, Title: issue.Title, Fingerprint: issue.Fingerprint,
+		Type: typ, Project: p.Name, ProjectSlug: p.Slug, Title: issue.Title, Fingerprint: string(issue.Fingerprint),
 		Level: string(issue.Level), EventCount: issue.EventCount, FirstRelease: issue.FirstRelease, LastRelease: issue.LastRelease,
 		URL: n.link(p.Slug, "/issues/"+url.PathEscape(fingerprint)),
 	}

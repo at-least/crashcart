@@ -7,6 +7,8 @@ package sqlc
 
 import (
 	"context"
+
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 const issuesIntroducedPerRelease = `-- name: IssuesIntroducedPerRelease :many
@@ -48,8 +50,8 @@ SELECT occurred_at, project_id, event_id, level, message, platform, environment,
 `
 
 type LatestIssueEventParams struct {
-	ProjectID   int64   `json:"project_id"`
-	Fingerprint *string `json:"fingerprint"`
+	ProjectID   int64      `json:"project_id"`
+	Fingerprint *sentry.ID `json:"fingerprint"`
 }
 
 func (q *Queries) LatestIssueEvent(ctx context.Context, arg LatestIssueEventParams) (Event, error) {
@@ -186,8 +188,8 @@ SELECT occurred_at, project_id, event_id, level, message, platform, environment,
 `
 
 type OldestIssueEventParams struct {
-	ProjectID   int64   `json:"project_id"`
-	Fingerprint *string `json:"fingerprint"`
+	ProjectID   int64      `json:"project_id"`
+	Fingerprint *sentry.ID `json:"fingerprint"`
 }
 
 func (q *Queries) OldestIssueEvent(ctx context.Context, arg OldestIssueEventParams) (Event, error) {

@@ -1,8 +1,6 @@
 package sentry
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -16,7 +14,7 @@ import (
 // text plus stack, like Sentry's message grouping. The result is a stable
 // 32-hex-char digest, safe as a primary key and URL segment. "" means the
 // event has nothing to group by.
-func Fingerprint(e *Event, frames []Frame) string {
+func Fingerprint(e *Event, frames []Frame) ID {
 	var sig string
 	switch {
 	case len(e.SDKFingerprint) > 0:
@@ -28,8 +26,7 @@ func Fingerprint(e *Event, frames []Frame) string {
 	default:
 		return ""
 	}
-	sum := sha256.Sum256([]byte(sig))
-	return hex.EncodeToString(sum[:16])
+	return DerivedID([]byte(sig))
 }
 
 // frameSignature renders the last five code frames (in-app when the SDK
