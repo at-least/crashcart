@@ -23,8 +23,8 @@ environment:
   API_KEYS: "…"
   # Protect the viewer (any username, this password).
   VIEWER_PASSWORD: "…"
-  # Which web origins may send events. Default is any.
-  CORS_ORIGIN: https://shop.example.com
+  # Only if you use a browser SDK and want to restrict which sites may send events.
+  # CORS_ORIGIN: https://shop.example.com
   # Days to keep raw events.
   RETENTION_DAYS: "30"
 ```
