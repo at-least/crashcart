@@ -29,7 +29,9 @@ the Sentry product.
 
 CrashCart is for error tracking. It does not do performance tracing,
 profiling or session replay. If your SDK sends those, they are accepted
-and discarded — no errors, just nothing stored.
+and discarded — no errors, just nothing stored. There are no user
+accounts either: one viewer password and API keys. The full picture is
+in [Compared to Sentry](./compared-to-sentry).
 
 ## Two editions
 

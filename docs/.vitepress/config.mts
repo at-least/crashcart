@@ -17,19 +17,25 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/guide/introduction', activeMatch: '/guide/' },
-      { text: 'Install', link: '/deploy/docker', activeMatch: '/deploy/' },
+      { text: 'Install', link: '/deploy/which-edition', activeMatch: '/deploy/' },
       { text: 'Reference', link: '/reference/cli', activeMatch: '/reference/' },
     ],
 
     sidebar: {
       '/guide/': [
         {
-          text: 'Guide',
+          text: 'Start here',
           items: [
             { text: 'Introduction', link: '/guide/introduction' },
+            { text: 'Compared to Sentry', link: '/guide/compared-to-sentry' },
             { text: 'Getting started', link: '/guide/getting-started' },
             { text: 'Projects & DSNs', link: '/guide/projects' },
             { text: 'Connect an SDK', link: '/guide/sdks' },
+          ],
+        },
+        {
+          text: 'Day to day',
+          items: [
             { text: 'The viewer', link: '/guide/viewer' },
             { text: 'Issues & grouping', link: '/guide/issues' },
             { text: 'Releases & release health', link: '/guide/releases' },
@@ -70,6 +76,7 @@ export default defineConfig({
           text: 'Operate',
           items: [
             { text: 'Before going live', link: '/deploy/checklist' },
+            { text: 'Security & privacy', link: '/deploy/security' },
             { text: 'Configuration', link: '/deploy/configuration' },
             { text: 'Postgres options', link: '/deploy/postgres' },
             { text: 'Operations', link: '/deploy/operations' },

@@ -56,6 +56,10 @@ Sentry.init({ dsn: 'DSN', environment: 'production' });
 
 :::
 
+iOS note: ingest and grouping are verified from captured sentry-cocoa
+envelopes, not yet with a real device end to end — see
+[SDK compatibility](/reference/sdks).
+
 For Android, the
 [Sentry Android Gradle plugin](https://docs.sentry.io/platforms/android/configuration/gradle/)
 uploads ProGuard / R8 mappings automatically — see

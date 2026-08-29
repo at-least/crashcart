@@ -4,14 +4,17 @@ layout: home
 hero:
   name: CrashCart
   text: Open-source error tracking
-  tagline: Point any Sentry SDK at CrashCart and it receives crashes, errors, messages and release-health sessions. One Go binary, one Postgres, nothing else.
+  tagline: Point any Sentry SDK at CrashCart and it receives crashes, errors, messages and release-health sessions. Run it as one Go binary with Postgres, or serverless on Cloudflare — free for small apps.
   actions:
     - theme: brand
       text: Get started
       link: /guide/getting-started
     - theme: alt
-      text: What is CrashCart?
-      link: /guide/introduction
+      text: Compared to Sentry
+      link: /guide/compared-to-sentry
+    - theme: alt
+      text: Which edition?
+      link: /deploy/which-edition
     - theme: alt
       text: GitHub
       link: https://github.com/crashcartapp/crashcart
@@ -21,8 +24,8 @@ features:
     title: Sentry SDK compatible
     details: Keep the SDKs you already ship — iOS, Android, Flutter, React Native, web and backend. CrashCart speaks the envelope protocol; the viewer, API and data model are its own.
   - icon: 📦
-    title: One binary, one database
-    details: A single stateless Go binary and Postgres. TimescaleDB is optional; Neon, Supabase or RDS work too. Run it with Docker Compose in a minute.
+    title: Run it your way
+    details: One Go binary and a Postgres — Docker Compose on a VPS, Kubernetes, or Fly.io with a free Neon database. Or the serverless edition on Cloudflare Workers, nothing to run at all.
   - icon: 🧭
     title: Issue-centric viewer
     details: Overview, issues grouped by fingerprint, stack traces, breakdowns by release / device / OS, release health with crash-free rates. Server-rendered, keyboard triage.
@@ -32,7 +35,7 @@ features:
   - icon: 🔔
     title: Alerts
     details: New issue, regression and crash-spike detectors per project, delivered to webhooks or Telegram.
-  - icon: 🔁
-    title: Portable data
-    details: A versioned NDJSON export format shared by every CrashCart implementation. Back up, restore, or move between the Go edition and the serverless edition on Cloudflare Workers + D1.
+  - icon: 🔒
+    title: Your data, your server
+    details: Events stay in your Postgres or your Cloudflare account. No telemetry, no outbound calls. Optional PII scrubbing, retention you set, and a plain-text export that restores into any CrashCart.
 ---

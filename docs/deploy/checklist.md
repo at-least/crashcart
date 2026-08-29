@@ -20,4 +20,5 @@ apps at it.
       want to keep raw events.
 - [ ] Health check `GET /health` is wired into your monitoring.
 
-Details for every setting: [Configuration](./configuration).
+Details for every setting: [Configuration](./configuration). What is
+stored and who can reach it: [Security & privacy](./security).

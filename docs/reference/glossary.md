@@ -62,9 +62,3 @@ The vocabulary used across the viewer, the API and this documentation.
 | **stored_count** | Events of the issue actually kept |
 | **users** | Distinct `user.id`s seen on the issue |
 | **crash-free rate** | Sessions that did not crash ÷ all sessions, per release |
-
-## Positioning
-
-CrashCart is **Sentry SDK compatible** and **works with the Sentry SDK**. It
-is not a Sentry backend, mirror or drop-in replacement for the Sentry
-product: the protocol is shared, the product is its own.

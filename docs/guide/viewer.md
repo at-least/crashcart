@@ -1,8 +1,8 @@
 # The viewer
 
-The viewer is the web UI at `/`. It is server-rendered (templ + htmx), keeps
-all state in the URL, and is issue-centric: you move from an overview to a
-list of issues, into one issue, then into individual events.
+The viewer is the web UI at `/`. Every view is a URL you can share, and
+it is issue-centric: you move from an overview to a list of issues, into
+one issue, then into individual events.
 
 Protect it with [`VIEWER_PASSWORD`](/deploy/configuration) (HTTP basic
 auth, any username) before exposing it.
@@ -14,8 +14,7 @@ auth, any username) before exposing it.
 ## Overview
 
 `/p/{slug}` — totals for the selected window, an events timeline, the
-latest release with its crash-free rate, and the top issues. Charts are
-inline SVG rendered by the server.
+latest release with its crash-free rate, and the top issues.
 
 Every page carries the same filter bar: **time window**, **release**,
 **environment**, and any [`CUSTOM_TAGS`](/deploy/configuration) you
@@ -42,8 +41,8 @@ location). Select rows to change status in bulk.
 | `t` | Mark triaged |
 | `x` | Toggle selection |
 
-A banner appears when new issues arrive while the page is open (server-sent
-events from `/p/{slug}/stream`); it does not reload the list under you.
+A banner appears when new issues arrive while the page is open; it does
+not reload the list under you.
 
 ## Issue
 
