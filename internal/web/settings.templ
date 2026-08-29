@@ -3,6 +3,8 @@ package web
 import (
 	"encoding/json"
 	"strconv"
+
+	"github.com/newlix/crashcart/internal/sentry"
 )
 
 type alertLabel struct{ Title, Desc string }
@@ -68,6 +70,27 @@ templ Settings(pg Page, d SettingsData) {
 					</div>
 				</section>
 			</div>
+		</section>
+		<section class="settings-section">
+			<h2 class="section-title">Platform</h2>
+			<p class="section-desc">What this project expects. Events from other platforms are still stored, but flagged on the portal and the overview.</p>
+			<form data-slot="card" data-size="sm" class="mt-3" hx-patch={ pg.S.Href("/settings/platform") } hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">
+				<section class="flex flex-wrap items-end gap-3 px-4 py-3">
+					<div class="grid gap-1">
+						<label data-slot="label" for="platform">Platform</label>
+						<span data-slot="native-select-wrapper">
+							<select data-slot="native-select" class="h-8 text-xs" id="platform" name="platform">
+								<option value="" selected?={ pg.Project.Platform == nil }>unspecified</option>
+								for _, f := range sentry.Families {
+									<option value={ f } selected?={ pg.Project.Platform != nil && *pg.Project.Platform == f }>{ f }</option>
+								}
+							</select>
+							@ChevronIcon()
+						</span>
+					</div>
+					<button type="submit" data-slot="button" data-size="sm">Save</button>
+				</section>
+			</form>
 		</section>
 		<section class="settings-section">
 			<h2 class="section-title">Sampling</h2>

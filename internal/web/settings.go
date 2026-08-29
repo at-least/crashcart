@@ -142,6 +142,31 @@ func (w *Web) settingsSampling(rw http.ResponseWriter, r *http.Request) {
 	redirect(rw, r, state(r).Href("/settings"))
 }
 
+func (w *Web) settingsPlatform(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(rw, "bad form", http.StatusBadRequest)
+		return
+	}
+	platform := strings.TrimSpace(r.Form.Get("platform"))
+	if platform != "" && !sentry.IsFamily(platform) {
+		http.Error(rw, "platform must be one of "+strings.Join(sentry.Families, ", "), http.StatusBadRequest)
+		return
+	}
+	var plat *string
+	if platform != "" {
+		plat = &platform
+	}
+	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: plat, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate}); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	redirect(rw, r, state(r).Href("/settings"))
+}
+
 func (w *Web) settingsAlert(rw http.ResponseWriter, r *http.Request) {
 	p, ok := w.project(rw, r)
 	if !ok {

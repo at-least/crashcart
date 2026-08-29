@@ -171,6 +171,15 @@ func TestBulkAndMutations(t *testing.T) {
 	if got, _ := w.Store.GetProject(ctx, "shop"); got.SampleKeepFirst != 10 || got.SampleRate != 0.5 {
 		t.Errorf("sampling not saved: %+v", got)
 	}
+	if r := hx("PATCH", "/p/shop/settings/platform", "platform=android"); r.Code != 303 {
+		t.Errorf("platform = %d %s", r.Code, r.Body)
+	}
+	if got, _ := w.Store.GetProject(ctx, "shop"); got.Platform == nil || *got.Platform != "android" {
+		t.Errorf("platform not saved: %+v", got.Platform)
+	}
+	if r := hx("PATCH", "/p/shop/settings/platform", "platform=windows"); r.Code != 400 {
+		t.Errorf("bad platform accepted: %d", r.Code)
+	}
 	if r := hx("PATCH", "/p/shop/settings/alerts/crash_spike", "cooldown=30"); r.Code != 303 {
 		t.Errorf("alert = %d", r.Code)
 	}
