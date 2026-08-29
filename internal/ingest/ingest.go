@@ -153,7 +153,7 @@ func (in *Ingester) Handler() http.Handler {
 	mux.HandleFunc("POST /api/{project}/envelope", in.serveEnvelope)
 	mux.HandleFunc("POST /api/{project}/store/", in.serveStore)
 	mux.HandleFunc("POST /api/{project}/store", in.serveStore)
-	rl := auth.RateLimit(in.Store, in.Cfg.RateLimit, auth.SentryKey)
+	rl := auth.RateLimit(in.Cfg.RateLimit, auth.SentryKey)
 	return auth.Chain(mux, auth.CORS(in.Cfg.CORSOrigin), rl)
 }
 

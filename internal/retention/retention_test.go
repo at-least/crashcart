@@ -103,11 +103,6 @@ func TestSweep(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, w := range []int64{now.Unix() - 600, now.Unix()} {
-		if _, err := st.BumpRateLimit(ctx, sqlc.BumpRateLimitParams{RlKey: "k", WindowStart: w - w%60}); err != nil {
-			t.Fatal(err)
-		}
-	}
 	for _, age := range []string{"90 days", "1 day"} {
 		if _, err := st.Pool.Exec(ctx, `INSERT INTO symbol_files (project_id, kind, release, filename, size, data, uploaded_at) VALUES (1, 'proguard', $1, 'mapping.txt', 1, '\x00'::bytea, now() - $2::interval)`, age, age); err != nil {
 			t.Fatal(err)
@@ -117,13 +112,12 @@ func TestSweep(t *testing.T) {
 	if err := Sweep(ctx, st, cfg, slog.Default()); err != nil {
 		t.Fatal(err)
 	}
-	var issues, jobs, limits, symbols int64
+	var issues, jobs, symbols int64
 	st.Pool.QueryRow(ctx, "SELECT count(*) FROM issues").Scan(&issues)
 	st.Pool.QueryRow(ctx, "SELECT count(*) FROM jobs").Scan(&jobs)
-	st.Pool.QueryRow(ctx, "SELECT count(*) FROM rate_limits").Scan(&limits)
 	st.Pool.QueryRow(ctx, "SELECT count(*) FROM symbol_files").Scan(&symbols)
-	if issues != 2 || jobs != 1 || limits != 1 || symbols != 1 {
-		t.Errorf("after sweep: issues=%d jobs=%d rate_limits=%d symbol_files=%d", issues, jobs, limits, symbols)
+	if issues != 2 || jobs != 1 || symbols != 1 {
+		t.Errorf("after sweep: issues=%d jobs=%d symbol_files=%d", issues, jobs, symbols)
 	}
 	left, _ := st.ListSymbolFiles(ctx, 1)
 	if len(left) != 1 || left[0].Release != "1 day" {

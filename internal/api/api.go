@@ -37,7 +37,7 @@ type Handler struct {
 func (h *Handler) Register(mux *http.ServeMux) {
 	wrap := func(fn http.HandlerFunc) http.Handler {
 		return auth.Chain(fn, auth.CORS(h.Cfg.CORSOrigin), auth.Bearer(h.Cfg.APIKeys),
-			auth.RateLimit(h.Store, h.Cfg.RateLimit, auth.BearerCredential))
+			auth.RateLimit(h.Cfg.RateLimit, auth.BearerCredential))
 	}
 	routes := map[string]http.HandlerFunc{
 		// projects

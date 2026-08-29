@@ -1,18 +1,14 @@
 // Package auth holds the HTTP middleware: bearer keys for /api, basic auth
-// for the viewer, CORS, and the Postgres-backed rate limiter.
+// for the viewer, CORS, and an in-memory rate limiter.
 package auth
 
 import (
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
-
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // Chain applies middlewares right-to-left (the first listed runs outermost).
@@ -91,26 +87,44 @@ func CORS(origin string) func(http.Handler) http.Handler {
 // Credential extracts the string a rate-limit bucket is keyed by.
 type Credential func(r *http.Request) string
 
-// RateLimit enforces limit requests per fixed 60 s window per credential.
-// Buckets are keyed by the SHA-256 of the credential; limit <= 0 disables.
-func RateLimit(st *store.Store, limit int, cred Credential) func(http.Handler) http.Handler {
+// limiter counts requests per credential in the current fixed 60 s window,
+// in memory. The map is dropped at each window boundary, so it holds at
+// most one minute of distinct credentials. Per process: with several
+// replicas each enforces the limit on its own share of the traffic.
+type limiter struct {
+	mu     sync.Mutex
+	window int64 // unix seconds, start of the counted window
+	counts map[string]int
+}
+
+// bump counts one request for key at now and returns the count so far in
+// the window plus the window start.
+func (l *limiter) bump(key string, now int64) (n int, window int64) {
+	window = now - now%60
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if window != l.window {
+		l.window, l.counts = window, map[string]int{}
+	}
+	l.counts[key]++
+	return l.counts[key], window
+}
+
+// RateLimit enforces limit requests per fixed 60 s window per credential
+// (in memory, per process); limit <= 0 disables.
+func RateLimit(limit int, cred Credential) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if limit <= 0 {
 			return next
 		}
+		l := &limiter{}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			c := cred(r)
 			if c == "" {
 				c = "anon:" + clientIP(r)
 			}
-			sum := sha256.Sum256([]byte(c))
 			now := time.Now().Unix()
-			window := now - now%60
-			n, err := st.BumpRateLimit(r.Context(), sqlc.BumpRateLimitParams{RlKey: hex.EncodeToString(sum[:]), WindowStart: window})
-			if err != nil {
-				http.Error(w, `{"error":"rate limiter unavailable"}`, http.StatusServiceUnavailable)
-				return
-			}
+			n, window := l.bump(c, now)
 			remaining := int64(limit) - int64(n)
 			if remaining < 0 {
 				remaining = 0

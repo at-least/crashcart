@@ -123,12 +123,6 @@ CREATE TABLE alert_channels (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE rate_limits (
-    rl_key       TEXT NOT NULL,
-    window_start BIGINT NOT NULL,
-    count        INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (rl_key, window_start)
-);
 
 -- continuous aggregates (as tables for sqlc)
 CREATE TABLE event_stats_hourly (

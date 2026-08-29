@@ -112,12 +112,6 @@ type Project struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-type RateLimit struct {
-	RlKey       string `json:"rl_key"`
-	WindowStart int64  `json:"window_start"`
-	Count       int32  `json:"count"`
-}
-
 type ReleaseHealthDaily struct {
 	Bucket    time.Time `json:"bucket"`
 	ProjectID int64     `json:"project_id"`

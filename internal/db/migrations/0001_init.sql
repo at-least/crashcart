@@ -156,12 +156,3 @@ CREATE TABLE alert_channels (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX alert_channels_project ON alert_channels (project_id);
-
--- ── rate limits (fixed 60 s windows) ───────────────────────────────────
-
-CREATE TABLE rate_limits (
-    rl_key       TEXT NOT NULL,                      -- sha256 of the credential
-    window_start BIGINT NOT NULL,                    -- unix seconds truncated to the minute
-    count        INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (rl_key, window_start)
-);

@@ -67,7 +67,7 @@ func Reconcile(ctx context.Context, st *store.Store, cfg config.Config, log *slo
 	return nil
 }
 
-// Sweep expires issues, jobs, rate-limit windows and symbol files.
+// Sweep expires issues, jobs, upload chunks and symbol files.
 func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
 	days := cfg.RetentionDays
 	if days < 1 {
@@ -105,15 +105,11 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 		return fmt.Errorf("expire upload chunks: %w", err)
 	}
 	log.Info("retention: upload chunks expired", "rows", chunks)
-	limits, err := st.ExpireRateLimits(ctx, now.Add(-120*time.Second).Unix())
-	if err != nil {
-		return fmt.Errorf("expire rate limits: %w", err)
-	}
 	symbols, err := st.ExpireSymbolFiles(ctx, now.Add(-2*retention))
 	if err != nil {
 		return fmt.Errorf("expire symbol files: %w", err)
 	}
-	log.Info("retention: sweep", "issues", issues, "jobs", jobs, "rate_limits", limits, "symbol_files", symbols)
+	log.Info("retention: sweep", "issues", issues, "jobs", jobs, "symbol_files", symbols)
 	return nil
 }
 

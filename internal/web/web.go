@@ -45,7 +45,7 @@ type Web struct {
 // Register mounts the HTML routes and /static on mux.
 func (w *Web) Register(mux *http.ServeMux) {
 	page := func(h http.HandlerFunc) http.Handler {
-		return auth.Chain(h, auth.Basic(w.Cfg.ViewerPassword), auth.RateLimit(w.Store, w.Cfg.RateLimit, auth.IPCredential))
+		return auth.Chain(h, auth.Basic(w.Cfg.ViewerPassword), auth.RateLimit(w.Cfg.RateLimit, auth.IPCredential))
 	}
 	mutation := func(h http.HandlerFunc) http.Handler { return page(requireHX(h)) }
 
