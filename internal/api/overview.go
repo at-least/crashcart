@@ -145,7 +145,7 @@ func foldTimeline(rows []sqlc.TimelineRow, lo, hi int64) []timelinePoint {
 		pt.Events += r.Events
 		pt.Crashes += r.Crashes
 	}
-	var out []timelinePoint
+	out := []timelinePoint{}
 	for b := pk.Bucket(lo, pk.Hour); b < hi; b += pk.Hour {
 		for _, rel := range series {
 			if pt := agg[key{b, rel}]; pt != nil {

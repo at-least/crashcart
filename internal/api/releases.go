@@ -32,7 +32,7 @@ type releaseOut struct {
 // per release, most recently active first.
 func mergeReleaseStats(rows []sqlc.ReleaseStatsRow) []*releaseOut {
 	byRel := map[string]*releaseOut{}
-	var order []*releaseOut
+	order := []*releaseOut{}
 	for _, r := range rows {
 		o := byRel[r.Release]
 		if o == nil {
