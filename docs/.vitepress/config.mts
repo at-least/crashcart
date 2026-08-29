@@ -46,7 +46,7 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Go edition · your own Postgres (TimescaleDB)',
+          text: 'TimescaleDB · Go edition',
           items: [
             { text: 'Docker Compose on a VPS', link: '/deploy/docker' },
             { text: 'Go binary + systemd', link: '/deploy/binary' },
@@ -54,14 +54,14 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Go edition · managed Postgres (plain)',
+          text: 'Plain Postgres · Go edition',
           items: [
             { text: 'Fly.io + Neon', link: '/deploy/fly' },
             { text: 'Managed Postgres providers', link: '/deploy/managed-postgres' },
           ],
         },
         {
-          text: 'Serverless edition · Cloudflare (D1)',
+          text: 'D1 · Serverless edition',
           items: [
             { text: 'Cloudflare Workers + D1', link: '/deploy/serverless' },
           ],
