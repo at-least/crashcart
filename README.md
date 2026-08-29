@@ -32,6 +32,12 @@ Paste the DSN into the SDK:
 SentrySDK.start { $0.dsn = "http://<key>@localhost:8080/1" }
 ```
 
+A project is one DSN. Any SDK holding that DSN reports into it — the
+`platform` argument is a label, not a filter. Use one project per platform
+(`shop-ios`, `shop-android`): issues never merge across platforms, but the
+overview's "latest release" and the crash-spike baseline are computed per
+project, so mixing platforms in one project blends those two numbers.
+
 Open <http://localhost:8080> for the viewer. `docker compose exec crashcart
 /crashcart seed` writes a week of demo data into a project called `demo`.
 
