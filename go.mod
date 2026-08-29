@@ -1,4 +1,4 @@
-module github.com/at-least/crashcart
+module github.com/crashcartapp/crashcart
 
 go 1.24
 

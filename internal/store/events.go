@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
 
 // EventInsert is one row for InsertEvents.

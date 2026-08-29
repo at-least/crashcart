@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
 
 func newKey() string {

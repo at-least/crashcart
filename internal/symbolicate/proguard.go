@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 // Frame is the frame shape all resolvers work on: the Sentry frame itself,

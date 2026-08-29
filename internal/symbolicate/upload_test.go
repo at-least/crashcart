@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 func TestUpload(t *testing.T) {

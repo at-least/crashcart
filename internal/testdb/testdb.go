@@ -10,8 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/at-least/crashcart/internal/db"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/db"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // New returns a Store on a throwaway schema (dropped at cleanup). The test is

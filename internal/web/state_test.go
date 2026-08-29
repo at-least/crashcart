@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/pk"
+	"github.com/crashcartapp/crashcart/internal/pk"
 )
 
 func TestViewStateRoundTrip(t *testing.T) {

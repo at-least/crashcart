@@ -11,9 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/pk"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/pk"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // AggregateRetentionDays is how long the continuous aggregates keep

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
-	"github.com/at-least/crashcart/internal/pk"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/pk"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 func TestReconcile(t *testing.T) {

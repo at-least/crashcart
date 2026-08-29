@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
-	"github.com/at-least/crashcart/internal/symbolicate"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/symbolicate"
 )
 
 func (h *Handler) listSymbols(w http.ResponseWriter, r *http.Request) {

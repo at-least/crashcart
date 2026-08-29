@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
-	"github.com/at-least/crashcart/internal/pk"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/pk"
 )
 
 type sessionsOut struct {

@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
-	"github.com/at-least/crashcart/internal/symbolicate"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/symbolicate"
 )
 
 // Chunked upload protocol (sentry-cli `debug-files upload`, `upload-proguard`):

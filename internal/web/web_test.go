@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
-	"github.com/at-least/crashcart/internal/ingest"
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/symbolicate"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/ingest"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/symbolicate"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 const crashEvent = `{"event_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","timestamp":"%s","level":"fatal","platform":"android","environment":"production","transaction":"CartFragment","tags":{"device_id":"did-1","build":"42"},"user":{"id":"user-001","email":"u@example.com"},"sdk":{"name":"sentry.java.android"},"contexts":{"device":{"model":"Pixel 8","arch":"arm64"},"os":{"name":"Android","version":"14"},"app":{"app_version":"2.4.1"}},"exception":{"values":[{"type":"NullPointerException","value":"Attempt to invoke virtual method","mechanism":{"type":"UncaughtExceptionHandler","handled":false},"stacktrace":{"frames":[{"filename":"Looper.java","function":"loop","in_app":false,"lineno":10},{"filename":"com/example/CartFragment.java","function":"onCreateView","in_app":true,"lineno":142},{"instruction_addr":"0xdeadbeef","in_app":false}]}}]},"breadcrumbs":{"values":[{"timestamp":"2026-08-29T10:15:00Z","category":"navigation","message":"cart","level":"info"},{"timestamp":"2026-08-29T10:15:29Z","category":"http","message":"GET /api/cart 500","level":"error"}]}}`
