@@ -14,11 +14,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/newlix/crashcart/internal/auth"
-	"github.com/newlix/crashcart/internal/config"
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/store"
-	"github.com/newlix/crashcart/internal/symbolicate"
+	"github.com/at-least/crashcart/internal/auth"
+	"github.com/at-least/crashcart/internal/config"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/symbolicate"
 )
 
 // Handler holds the dependencies of the API routes.

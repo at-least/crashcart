@@ -1,4 +1,4 @@
-module github.com/newlix/crashcart
+module github.com/at-least/crashcart
 
 go 1.24
 

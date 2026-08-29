@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/newlix/crashcart/internal/config"
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/sentry"
-	"github.com/newlix/crashcart/internal/testdb"
+	"github.com/at-least/crashcart/internal/config"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/testdb"
 )
 
 func crash(release, ts string, n int) string {

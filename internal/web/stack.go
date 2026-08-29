@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/pk"
-	"github.com/newlix/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/pk"
+	"github.com/at-least/crashcart/internal/sentry"
 )
 
 // Stack is one exception rendered innermost-first.

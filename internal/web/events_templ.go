@@ -9,7 +9,7 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 import (
-	"github.com/newlix/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/store"
 	"strconv"
 	"strings"
 )

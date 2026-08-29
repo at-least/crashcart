@@ -1,9 +1,9 @@
 package web
 
 import (
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/sentry"
-	"github.com/newlix/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // Short aliases so templates stay readable.

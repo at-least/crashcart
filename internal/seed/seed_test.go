@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/newlix/crashcart/internal/config"
-	"github.com/newlix/crashcart/internal/ingest"
-	"github.com/newlix/crashcart/internal/testdb"
+	"github.com/at-least/crashcart/internal/config"
+	"github.com/at-least/crashcart/internal/ingest"
+	"github.com/at-least/crashcart/internal/testdb"
 )
 
 func TestRun(t *testing.T) {

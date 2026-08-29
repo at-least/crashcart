@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 var alertTypes = map[string]bool{"new_issue": true, "regression": true, "crash_spike": true}

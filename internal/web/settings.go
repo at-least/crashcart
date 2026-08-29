@@ -14,9 +14,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/sentry"
-	"github.com/newlix/crashcart/internal/symbolicate"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/symbolicate"
 )
 
 // AlertTypes are the rule types in display order (alert_rules CHECK).

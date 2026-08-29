@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 // MaxUpload caps one symbol upload (and one zip entry).

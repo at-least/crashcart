@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // Chain applies middlewares right-to-left (the first listed runs outermost).

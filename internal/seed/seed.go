@@ -18,9 +18,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/ingest"
-	"github.com/newlix/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/ingest"
+	"github.com/at-least/crashcart/internal/sentry"
 )
 
 // Days of history written, and the per-Ingest batch size.

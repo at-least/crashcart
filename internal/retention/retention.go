@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/newlix/crashcart/internal/config"
-	"github.com/newlix/crashcart/internal/pk"
-	"github.com/newlix/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/config"
+	"github.com/at-least/crashcart/internal/pk"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // AggregateRetentionDays is how long the continuous aggregates keep

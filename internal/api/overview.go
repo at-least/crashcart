@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/pk"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/pk"
 )
 
 // topReleases is how many releases the overview timeline keeps apart;

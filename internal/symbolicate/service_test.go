@@ -12,11 +12,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/newlix/crashcart/internal/db/sqlc"
-	"github.com/newlix/crashcart/internal/pk"
-	"github.com/newlix/crashcart/internal/sentry"
-	"github.com/newlix/crashcart/internal/store"
-	"github.com/newlix/crashcart/internal/testdb"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/pk"
+	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/testdb"
 )
 
 func newProject(t *testing.T, st *store.Store) sqlc.Project {

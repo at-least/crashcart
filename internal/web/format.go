@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/newlix/crashcart/internal/pk"
+	"github.com/at-least/crashcart/internal/pk"
 )
 
 // now is the render clock (overridable in tests).

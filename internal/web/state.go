@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/newlix/crashcart/internal/pk"
+	"github.com/at-least/crashcart/internal/pk"
 )
 
 // ViewState is everything a page needs from the URL query. Every navigation
