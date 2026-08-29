@@ -25,7 +25,7 @@ features:
     details: Keep the SDKs you already ship — iOS, Android, Flutter, React Native, web and backend. CrashCart speaks the envelope protocol; the viewer, API and data model are its own.
   - icon: 📦
     title: Run it your way
-    details: One Go binary, any Postgres, an S3 bucket — Docker Compose on a VPS, Kubernetes, or your cloud's managed database and storage. Retention that costs nothing.
+    details: One Go binary and any Postgres — Docker Compose on a VPS, Kubernetes, or your cloud's managed database. Nothing else to run.
   - icon: 🧭
     title: Issue-centric viewer
     details: Overview, issues grouped by fingerprint, stack traces, breakdowns by release / device / OS, release health with crash-free rates. Server-rendered, keyboard triage.

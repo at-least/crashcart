@@ -59,7 +59,7 @@ export default defineConfig({
             { text: 'Before going live', link: '/deploy/checklist' },
             { text: 'Security & privacy', link: '/deploy/security' },
             { text: 'Configuration', link: '/deploy/configuration' },
-            { text: 'Database & object store', link: '/deploy/postgres' },
+            { text: 'The database', link: '/deploy/postgres' },
             { text: 'Operations', link: '/deploy/operations' },
           ],
         },

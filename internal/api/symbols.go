@@ -87,7 +87,7 @@ type sentryDebugFile struct {
 	Release     string         `json:"release,omitempty"`
 }
 
-func sentryDebugFileFrom(f sqlc.SymbolFile, sha string) sentryDebugFile {
+func sentryDebugFileFrom(f sqlc.ListSymbolFilesRow, sha string) sentryDebugFile {
 	// symbolType is the file format; data.features what the file provides.
 	// data.type (symbolic's object class) is optional for sentry-cli and its
 	// accepted spellings vary between versions, so it is left out.
@@ -119,7 +119,7 @@ func (h *Handler) sentryUploadDSYMs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]sentryDebugFile, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, sentryDebugFileFrom(row, ""))
+		out = append(out, sentryDebugFileFrom(sqlc.ListSymbolFilesRow(row), ""))
 	}
 	writeJSON(w, http.StatusCreated, out)
 }

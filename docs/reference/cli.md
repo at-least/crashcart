@@ -38,9 +38,8 @@ database before `import`).
 
 ## `retention`
 
-Creates the coming weeks' partitions, sets the bucket's lifecycle rules
-from `RETENTION_DAYS`, runs one retention sweep and rolls the statistics
-up. Exits when done — for cron.
+Creates the coming weeks' partitions, runs one retention sweep and rolls
+the statistics up. Exits when done — for cron.
 
 ## `alerts`
 

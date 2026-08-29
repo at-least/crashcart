@@ -4,10 +4,8 @@
 //	POST /api/{project_id}/store/      (legacy single-event JSON)
 //
 // The DSN public key authenticates the request. Per envelope, one
-// transaction writes events — each with the place its payload has in a
-// pack (store.SpoolPayloads) — their payloads (payload_spool, uploaded
-// pack by pack by retention.PackPayloads), sessions and the folded issue
-// upserts. The only work deferred to the job worker is
+// transaction writes events (payload gzipped), sessions and the folded
+// issue upserts. The only work deferred to the job worker is
 // symbolication that needs a symbol file not yet cached, and alert
 // delivery.
 package ingest
@@ -33,7 +31,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/auth"
-	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
@@ -50,6 +47,10 @@ const (
 	// Symbolicator (the dSYM sidecar) before the remaining native events
 	// are left to the job worker.
 	SymbolicateBudget = 3 * time.Second
+	// FatalKeepFactor: crashes get this many times sample_keep_first
+	// before sampling starts — more samples of what matters most, still
+	// bounded (a crash loop must not fill the database).
+	FatalKeepFactor = 5
 )
 
 // Symbolicator resolves frames at ingest. ok=false stores the event as-is
@@ -484,21 +485,12 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 					level = "fatal"
 				}
 			}
-			// Sampling: keep the first N per issue, then a fraction; fatal
-			// always. When nothing can be sampled out (the default
-			// sample_rate 1, or an all-fatal group) the stored count is
-			// known up front and goes into the upsert; otherwise the
-			// decision needs the issue's count and is a second update.
+			// Sampling: keep the first N per issue (FatalKeepFactor × N
+			// for crashes), then a fraction. When nothing can be sampled
+			// out (sample_rate 1) the stored count is known up front and
+			// goes into the upsert; otherwise the decision needs the
+			// issue's count and is a second update.
 			keepAll := p.SampleRate >= 1
-			if !keepAll {
-				keepAll = true
-				for _, pr := range g {
-					if pr.ev.Level != "fatal" {
-						keepAll = false
-						break
-					}
-				}
-			}
 			stored := int64(0)
 			if keepAll {
 				for _, pr := range g {
@@ -530,7 +522,11 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			prev := row.EventCount - int64(len(g))
 			for i, pr := range g {
 				seq := prev + int64(i) + 1
-				pr.store = pr.ev.Level == "fatal" || seq <= int64(p.SampleKeepFirst) || mrand.Float64() < p.SampleRate
+				keep := int64(p.SampleKeepFirst)
+				if pr.ev.Level == "fatal" {
+					keep *= FatalKeepFactor
+				}
+				pr.store = seq <= keep || mrand.Float64() < p.SampleRate
 				if pr.store {
 					stored++
 				}
@@ -543,7 +539,6 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		}
 
 		rows := make([]store.EventInsert, 0, len(preps))
-		var payloads [][]byte
 		for _, pr := range preps {
 			if !pr.store {
 				res.Sampled++
@@ -555,7 +550,6 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			if pr.symbolicated {
 				symbols, _ = json.Marshal(pr.frames)
 			}
-			payloads = append(payloads, blob.Gzip(ev.Raw)) // compressed once, here
 			rows = append(rows, store.EventInsert{
 				OccurredAt: ev.Timestamp.UTC(), ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message,
 				Platform: nilIfEmpty(ev.Platform), Environment: nilIfEmpty(ev.Environment), Release: nilIfEmpty(ev.Release),
@@ -563,21 +557,12 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				Screen: nilIfEmpty(ev.Screen), ErrorType: nilIfEmpty(ev.ErrorType), ErrorLocation: nilIfEmpty(pr.location),
 				Handled: ev.Handled, SDKName: nilIfEmpty(ev.SDKName), UserID: nilIfEmpty(ev.UserID),
 				Fingerprint: pr.fingerprint.Ptr(), Symbolicated: pr.symbolicated,
-				Tags: tags, Symbols: symbols,
+				Tags: tags, Symbols: symbols, Payload: store.Gzip(ev.Raw),
 			})
 			if pr.retry && pr.fingerprint != "" {
 				args, _ := json.Marshal(map[string]any{"event": ev.EventID, "at": ev.Timestamp})
 				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
 			}
-		}
-		// Payloads into a pack (the rows carry where): as late as possible,
-		// since the pack's lock is held from here to commit.
-		places, err := store.SpoolPayloads(ctx, q, payloads)
-		if err != nil {
-			return err
-		}
-		for i := range rows {
-			rows[i].Pack = &places[i]
 		}
 		if err := store.InsertEvents(ctx, tx, rows); err != nil {
 			return fmt.Errorf("insert events: %w", err)

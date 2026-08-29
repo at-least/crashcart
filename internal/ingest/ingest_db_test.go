@@ -47,7 +47,7 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.SampleKeepFirst, p.SampleRate = 2, 0 // keep first 2 per issue, then nothing (fatal always)
+	p.SampleKeepFirst, p.SampleRate = 2, 0 // keep first 2 per issue, then nothing
 	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
 	now := time.Now().UTC()
 	ts := now.Add(-time.Minute).Format(time.RFC3339)

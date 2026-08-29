@@ -103,6 +103,10 @@ func (e *env) createProject(slug string) sqlc.Project {
 	if rec.Code != http.StatusCreated {
 		e.t.Fatalf("create project: %d %s", rec.Code, rec.Body.String())
 	}
+	// Store everything: these tests count events, ungrouped ones included.
+	if _, err := e.st.Pool.Exec(context.Background(), "UPDATE projects SET sample_rate = 1 WHERE slug = $1", slug); err != nil {
+		e.t.Fatal(err)
+	}
 	p, err := e.st.GetProject(context.Background(), slug)
 	if err != nil {
 		e.t.Fatal(err)

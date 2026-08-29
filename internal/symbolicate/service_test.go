@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/ingest"
@@ -51,14 +50,10 @@ func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (id, 
 		}); err != nil {
 			return err
 		}
-		places, err := store.SpoolPayloads(ctx, q, [][]byte{blob.Gzip(ev.Raw)})
-		if err != nil {
-			return err
-		}
 		return store.InsertEvents(ctx, tx, []store.EventInsert{{
 			OccurredAt: at, ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message, Platform: nilIfEmpty(ev.Platform),
 			Release: nilIfEmpty(ev.Release), ErrorType: nilIfEmpty(ev.ErrorType), Fingerprint: &fp,
-			Tags: []byte("{}"), Pack: &places[0],
+			Tags: []byte("{}"), Payload: store.Gzip(ev.Raw),
 		}})
 	})
 	if err != nil {
@@ -73,13 +68,10 @@ func upload(t *testing.T, st *store.Store, p sqlc.Project, kind, release, debugI
 	if debugID != "" {
 		did = &debugID
 	}
-	row, err := st.UpsertSymbolFile(context.Background(), sqlc.UpsertSymbolFileParams{
-		ProjectID: p.ID, Kind: sqlc.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: did, Filename: filename, Size: int64(len(data)),
+	_, err := st.UpsertSymbolFile(context.Background(), sqlc.UpsertSymbolFileParams{
+		ProjectID: p.ID, Kind: sqlc.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: did, Filename: filename, Size: int64(len(data)), Data: data,
 	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Blobs.Put(context.Background(), blob.SymbolKey(p.ID, row.ID), data); err != nil {
 		t.Fatal(err)
 	}
 }

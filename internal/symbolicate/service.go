@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -234,11 +233,7 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 		// are disjoint per module, so one merged table serves them all.
 		var sb strings.Builder
 		for _, f := range files {
-			data, err := s.data(ctx, f)
-			if err != nil {
-				return nil, err
-			}
-			sb.Write(data)
+			sb.Write(f.Data)
 			sb.WriteByte('\n')
 		}
 		m := ParseProGuard(sb.String())
@@ -249,11 +244,7 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 	case KindSourceMap:
 		byName := make(map[string][]byte, len(files))
 		for _, f := range files {
-			data, err := s.data(ctx, f)
-			if err != nil {
-				return nil, err
-			}
-			byName[f.Filename] = data
+			byName[f.Filename] = f.Data
 		}
 		set := NewSourceMapSet(byName)
 		if set.Len() == 0 {
@@ -262,18 +253,6 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 		return set, nil
 	}
 	return nil, nil
-}
-
-// data reads a symbol file's bytes from the object store. A row whose
-// object is gone (expired before the row, or never written) reads as
-// empty rather than failing every event that needs it.
-func (s *Service) data(ctx context.Context, f sqlc.SymbolFile) ([]byte, error) {
-	b, err := s.Store.Blobs.Get(ctx, blob.SymbolKey(f.ProjectID, f.ID))
-	if errors.Is(err, blob.ErrNotFound) {
-		slog.Warn("symbolicate: symbol file has no object", "project", f.ProjectID, "id", f.ID, "filename", f.Filename)
-		return nil, nil
-	}
-	return b, err
 }
 
 // Invalidate drops the cached mappings of (project, release) — and every
@@ -310,7 +289,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 		return err
 	}
 	if payload == nil {
-		return nil // the payload never reached the object store: nothing to resolve
+		return nil // imported without a payload: nothing to resolve
 	}
 	now := time.Now().UTC()
 	ev := sentry.ParseEvent(string(row.EventID), row.OccurredAt, payload, now)
@@ -436,14 +415,7 @@ func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event) (
 		for i, lk := range lks {
 			addrs[i] = DSYMAddr{Address: lk.addr - base, Module: module}
 		}
-		data, err := s.data(ctx, *file)
-		if err != nil {
-			return nil, false, err
-		}
-		if len(data) == 0 {
-			continue
-		}
-		results, err := s.DSYM.Resolve(ctx, data, addrs)
+		results, err := s.DSYM.Resolve(ctx, file.Data, addrs)
 		if err != nil {
 			return nil, false, err
 		}

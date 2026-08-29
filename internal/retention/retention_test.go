@@ -2,20 +2,12 @@ package retention
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/ingest"
-	"github.com/crashcartapp/crashcart/internal/sentry"
-	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
@@ -240,132 +232,3 @@ func TestRollup(t *testing.T) {
 		t.Fatalf("rolled health after update = %d/%d", crashed, total)
 	}
 }
-
-func TestPackPayloads(t *testing.T) {
-	st := testdb.New(t)
-	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	in := &ingest.Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
-	now := time.Now().UTC()
-	event := func(id string) []byte {
-		return []byte("{}\n" + `{"type":"event"}` + "\n" + `{"event_id":"` + id + `","level":"error","message":"boom ` + id + `","timestamp":"` + now.Format(time.RFC3339) + `"}` + "\n")
-	}
-	get := func(id string) sqlc.Event {
-		t.Helper()
-		ev, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: sentry.ID(id)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return ev
-	}
-	ref := func(id string) (pack int64, off int64) {
-		t.Helper()
-		ev := get(id)
-		if ev.PackID == nil || ev.PackOffset == nil || ev.PackLen == nil {
-			t.Fatalf("%s has no pack", id)
-		}
-		return *ev.PackID, int64(*ev.PackOffset)
-	}
-	const a, b, c = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
-	if _, err := in.Ingest(ctx, p, sentry.Parse(event(a), now), now); err != nil {
-		t.Fatal(err)
-	}
-	// The row carries its ref from the start, at offset 0 of a fresh pack;
-	// the payload is read from the spool while the pack is open.
-	keyA, offA := ref(a)
-	if offA != 0 || keyA == 0 {
-		t.Fatalf("first ref = %d#%d", keyA, offA)
-	}
-	if bs, err := st.Payload(ctx, get(a)); err != nil || !strings.Contains(string(bs), `"message":"boom a1`) {
-		t.Fatalf("payload from spool: %q %v", bs, err)
-	}
-	// An open pack is not uploaded.
-	if n, err := PackPayloads(ctx, st); err != nil || n != 0 {
-		t.Fatalf("packed the open pack: %d %v", n, err)
-	}
-	// A rolled-back envelope returns its bytes: the next one continues
-	// right after the first, in the same pack.
-	err = st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		if _, err := store.SpoolPayloads(ctx, q, [][]byte{make([]byte, 500)}); err != nil {
-			return err
-		}
-		return errors.New("quota")
-	})
-	if err == nil {
-		t.Fatal("rollback expected")
-	}
-	if _, err := in.Ingest(ctx, p, sentry.Parse(event(b), now), now); err != nil {
-		t.Fatal(err)
-	}
-	gzA := blob.Gzip(sentry.Parse(event(a), now).Events[0].Raw)
-	if keyB, offB := ref(b); keyB != keyA || offB != int64(len(gzA)) {
-		t.Fatalf("second ref = %d#%d, want %d#%d", keyB, offB, keyA, len(gzA))
-	}
-	// Two envelopes at once take two different packs (the row lock is held
-	// to commit), and both refs stay valid.
-	var otherKey int64
-	err = st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		places, err := store.SpoolPayloads(ctx, q, [][]byte{blob.Gzip([]byte("{}"))})
-		if err != nil {
-			return err
-		}
-		otherKey = places[0].PackID
-		// While this holds pack A (or B), another transaction goes elsewhere.
-		if _, err := in.Ingest(ctx, p, sentry.Parse(event(c), now), now); err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if keyC, _ := ref(c); keyC == otherKey {
-		t.Fatalf("concurrent envelopes shared pack %d", keyC)
-	}
-	// Closing (the CLI's PackAll) uploads every pack: spool empty, refs
-	// unchanged, payloads now come from the objects.
-	if err := PackAll(ctx, st); err != nil {
-		t.Fatal(err)
-	}
-	if n, _ := st.CountSpool(ctx); n != 0 {
-		t.Fatalf("spool rows after packing = %d", n)
-	}
-	if keys := st.Blobs.(*blob.Memory).Keys(blob.PrefixEvents); len(keys) != 2 {
-		t.Fatalf("pack objects = %v", keys)
-	}
-	for _, id := range []string{a, b, c} {
-		if bs, err := st.Payload(ctx, get(id)); err != nil || !strings.Contains(string(bs), `"message":"boom `+id[:2]) {
-			t.Fatalf("payload %s from pack: %q %v", id, bs, err)
-		}
-	}
-	if n, err := PackPayloads(ctx, st); err != nil || n != 0 {
-		t.Fatalf("nothing left to pack, got %d %v", n, err)
-	}
-
-	// A failing object store leaves the spool, the packs and the refs
-	// intact, and the payload readable.
-	st2 := testdb.New(t)
-	p2, _ := st2.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
-	in2 := &ingest.Ingester{Store: st2, Cfg: config.Config{}, Log: slog.Default()}
-	if _, err := in2.Ingest(ctx, p2, sentry.Parse(event(a), now), now); err != nil {
-		t.Fatal(err)
-	}
-	st2.Blobs = failingStore{blob.NewMemory()}
-	if err := PackAll(ctx, st2); err == nil {
-		t.Fatal("pack with a failing store succeeded")
-	}
-	if n, _ := st2.CountSpool(ctx); n != 1 {
-		t.Fatalf("spool rows after failed pack = %d", n)
-	}
-	ev2, _ := st2.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p2.ID, EventID: a})
-	if bs, err := st2.Payload(ctx, ev2); err != nil || !strings.Contains(string(bs), "boom a1") {
-		t.Fatalf("payload still readable from spool: %q %v", bs, err)
-	}
-}
-
-type failingStore struct{ *blob.Memory }
-
-func (failingStore) PutRaw(context.Context, string, []byte) error { return errors.New("bucket down") }

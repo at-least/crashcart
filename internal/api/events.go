@@ -108,32 +108,13 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(payload), Breadcrumbs: breadcrumbsOf(ev, payload)})
 }
 
-// eventDetail is the JSON API's event: the row, with the raw payload from
-// the object store embedded as JSON (null when it has none) and the
-// breadcrumbs (newest last, at most 20) read from it.
+// eventDetail is the JSON API's event: the row, with the raw payload
+// embedded as JSON (null when it has none) and the breadcrumbs (newest
+// last, at most 20) read from it.
 type eventDetail struct {
 	sqlc.Event
 	Payload     json.RawMessage     `json:"payload"`
 	Breadcrumbs []sentry.Breadcrumb `json:"breadcrumbs"`
-}
-
-// MarshalJSON leaves out where the payload sits (pack_id, pack_offset,
-// pack_len): storage detail, not part of the API.
-func (d eventDetail) MarshalJSON() ([]byte, error) {
-	b, err := json.Marshal(d.Event)
-	if err != nil {
-		return nil, err
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, err
-	}
-	delete(m, "pack_id")
-	delete(m, "pack_offset")
-	delete(m, "pack_len")
-	m["payload"], _ = json.Marshal(d.Payload)
-	m["breadcrumbs"], _ = json.Marshal(d.Breadcrumbs)
-	return json.Marshal(m)
 }
 
 func breadcrumbsOf(ev sqlc.Event, payload []byte) []sentry.Breadcrumb {

@@ -56,7 +56,7 @@ CREATE TABLE projects (
     platform          TEXT,
     public_key        TEXT NOT NULL UNIQUE,
     sample_keep_first INTEGER NOT NULL DEFAULT 100,
-    sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 0.01,
     daily_quota       INTEGER NOT NULL DEFAULT 100000,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -83,28 +83,10 @@ CREATE TABLE events (
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     symbols        JSONB,
-    pack_id        BIGINT,
-    pack_offset    INTEGER,
-    pack_len       INTEGER,
+    payload        BYTEA,
     PRIMARY KEY (project_id, event_id, occurred_at)
 );
 
-
-CREATE TABLE packs (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    next_offset BIGINT NOT NULL DEFAULT 0,
-    closed      BOOLEAN NOT NULL DEFAULT false,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE payload_spool (
-    pack_id    BIGINT NOT NULL,
-    "offset"   INTEGER NOT NULL,
-    size       INTEGER NOT NULL,
-    data       BYTEA NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (pack_id, "offset")
-);
 
 CREATE TABLE sessions (
     started_at  TIMESTAMPTZ NOT NULL,
@@ -156,8 +138,15 @@ CREATE TABLE symbol_files (
     debug_id    TEXT,
     filename    TEXT NOT NULL,
     size        BIGINT NOT NULL,
+    data        BYTEA NOT NULL,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename)
+);
+
+CREATE TABLE upload_chunks (
+    sha1       TEXT PRIMARY KEY,
+    data       BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE project_usage (

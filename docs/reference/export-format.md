@@ -154,14 +154,13 @@ user_id?          str
 fingerprint?      str    references issues.fingerprint in the same project
 symbolicated      bool
 tags              json   object; default {}
-payload?          json   the raw Sentry event object exactly as the SDK sent it (from the object store; absent when it has none)
+payload?          json   the raw Sentry event object exactly as the SDK sent it (absent when the row has none)
 symbols?          json   symbolicated frames (only when symbolicated)
 ```
 
 Import: insert; conflict on `(project, event_id, occurred_at)` → skip
-(`ON CONFLICT DO NOTHING`); `payload`, when present, is written to the
-object store. `tags` missing or `null` → default. A row without
-`occurred_at` or `event_id` is an error.
+(`ON CONFLICT DO NOTHING`). `tags` missing or `null` → default. A row
+without `occurred_at` or `event_id` is an error.
 
 ### `sessions`
 
@@ -186,13 +185,12 @@ release           str
 debug_id?         str
 filename          str
 size              int    bytes; 0 → derived from data
-data?             b64    the file (from the object store; absent when it has none)
+data              b64
 uploaded_at       ts
 ```
 
 Import: upsert on `(project, kind, release, filename)`; `debug_id`, `size`,
-`uploaded_at` replaced, `data` (when present) written to the object store
-under the row's id.
+`data`, `uploaded_at` replaced.
 
 ### `alert_rules`
 

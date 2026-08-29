@@ -36,10 +36,8 @@ full picture is in [Compared to Sentry](./compared-to-sentry).
 ## Where it runs
 
 Any Postgres 14+ — a container, your distro's package, RDS, Neon,
-Supabase — plus an S3-compatible bucket for the raw crash payloads and
-symbol files (the compose file bundles MinIO; any cloud bucket works).
-Docker Compose on a VPS, a binary under systemd, or Kubernetes. See
-[The database and the object store](/deploy/postgres).
+Supabase — and nothing else. Docker Compose on a VPS, a binary under
+systemd, or Kubernetes. See [The database](/deploy/postgres).
 
 ## Next
 

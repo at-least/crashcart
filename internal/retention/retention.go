@@ -1,7 +1,7 @@
 // Package retention keeps the time-series tables partitioned and bounded,
-// rolls the statistics up, sets the object store's lifecycle rules and
-// sweeps the non-partitioned tables. Everything here is idempotent and
-// runs on one replica at a time (store.RunAsLeader).
+// rolls the statistics up and sweeps the non-partitioned tables.
+// Everything here is idempotent and runs on one replica at a time
+// (store.RunAsLeader).
 package retention
 
 import (
@@ -15,9 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
@@ -43,49 +41,13 @@ var partitioned = []struct{ table, column string }{{"events", "occurred_at"}, {"
 var rolled = []string{"event_stats_hourly_rolled", "issue_stats_hourly_rolled", "release_health_hourly_rolled"}
 
 // Reconcile runs at startup: partitions for the retention window plus
-// partitionsAhead exist, and the object store's lifecycle rules match
-// RETENTION_DAYS. Idempotent.
+// partitionsAhead exist. Idempotent.
 func Reconcile(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
 	if err := EnsurePartitions(ctx, st, cfg, time.Now()); err != nil {
 		return err
 	}
-	if err := reconcileLifecycle(ctx, st, cfg, log); err != nil {
-		// Not fatal: a bucket policy the credentials may not set is
-		// something the operator can do by hand — the rules are logged.
-		log.Error("retention: object-store lifecycle rules not set (set them on the bucket by hand)", "err", err, "rules", lifecycleRules(cfg))
-	}
 	log.Info("retention: reconciled", "retention_days", days(cfg), "partition_width", PartitionWidth)
 	return nil
-}
-
-// lifecycleRules are the bucket's expiration rules for RETENTION_DAYS:
-// payloads outlive their partition, symbol files match ExpireSymbolFiles,
-// chunks never assembled go after a day.
-func lifecycleRules(cfg config.Config) []blob.LifecycleRule {
-	d := days(cfg)
-	return []blob.LifecycleRule{
-		{ID: "crashcart-events", Prefix: blob.PrefixEvents, Days: d + int(PartitionWidth/(24*time.Hour))},
-		{ID: "crashcart-symbols", Prefix: blob.PrefixSymbols, Days: 2 * d},
-		{ID: "crashcart-chunks", Prefix: blob.PrefixChunks, Days: 1},
-	}
-}
-
-// bucketAdmin is what an object store must offer for Reconcile to manage
-// the bucket (blob.S3 does; the in-memory test store does not).
-type bucketAdmin interface {
-	EnsureBucket(ctx context.Context) error
-	SetLifecycle(ctx context.Context, rules []blob.LifecycleRule) error
-}
-
-func reconcileLifecycle(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
-	admin, ok := st.Blobs.(bucketAdmin)
-	if !ok {
-		return nil
-	}
-	if err := admin.EnsureBucket(ctx); err != nil {
-		return err
-	}
-	return admin.SetLifecycle(ctx, lifecycleRules(cfg))
 }
 
 func days(cfg config.Config) int {
@@ -152,7 +114,7 @@ func ensurePartition(ctx context.Context, st *store.Store, table, column string,
 		// Create standalone, move the rows, attach (attach checks the
 		// default partition, which is empty for this range by then).
 		for _, q := range []string{
-			fmt.Sprintf("CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING CONSTRAINTS)", name, table),
+			fmt.Sprintf("CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE)", name, table),
 			fmt.Sprintf("INSERT INTO %s SELECT * FROM %s WHERE %s >= $1 AND %s < $2", name, def, column, column),
 			fmt.Sprintf("DELETE FROM %s WHERE %s >= $1 AND %s < $2", def, column, column),
 			fmt.Sprintf("ALTER TABLE %s ATTACH PARTITION %s %s", table, name, bounds),
@@ -237,9 +199,8 @@ func dropExpiredPartitions(ctx context.Context, st *store.Store, cfg config.Conf
 // ── sweep ──────────────────────────────────────────────────────────────
 
 // Sweep runs hourly: partitions (create ahead, drop expired), then the
-// row-level expiries — issues, jobs, usage counters, user sessions, symbol
-// files (their objects expire by lifecycle rule on the same schedule) and
-// rollup history past AggregateRetentionDays.
+// row-level expiries — issues, jobs, usage counters, user sessions, upload
+// chunks, symbol files and rollup history past AggregateRetentionDays.
 func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
 	now := time.Now()
 	retention := time.Duration(days(cfg)) * 24 * time.Hour
@@ -263,12 +224,12 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	if _, err := st.ExpireUserSessions(ctx); err != nil {
 		return fmt.Errorf("expire user sessions: %w", err)
 	}
+	if _, err := st.ExpireUploadChunks(ctx, now.Add(-24*time.Hour)); err != nil {
+		return fmt.Errorf("expire upload chunks: %w", err)
+	}
 	symbols, err := st.ExpireSymbolFiles(ctx, now.Add(-2*retention))
 	if err != nil {
 		return fmt.Errorf("expire symbol files: %w", err)
-	}
-	if _, err := st.ExpireSpool(ctx, now.Add(-retention)); err != nil {
-		return fmt.Errorf("expire payload spool: %w", err)
 	}
 	for _, t := range rolled {
 		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE bucket < $1", t), now.Add(-AggregateRetentionDays*24*time.Hour)); err != nil {
@@ -403,72 +364,4 @@ func DirtyHours(ctx context.Context, st *store.Store) (int64, error) {
 		return 0, nil
 	}
 	return int64(n), err
-}
-
-// ── payload packs ──────────────────────────────────────────────────────
-
-// PackInterval is how often each process looks for closed packs.
-const PackInterval = 5 * time.Second
-
-// PackPayloads uploads the closed packs: for each, lock its row (SKIP
-// LOCKED, so processes share the work), lay the spool rows out by offset,
-// PUT the object, delete the rows and the pack, commit. A failed PUT rolls
-// the pack back for the next run; a crash after the PUT only means the
-// same bytes are uploaded again. Returns how many payloads were packed.
-func PackPayloads(ctx context.Context, st *store.Store) (int, error) {
-	ids, err := st.ClosedPacks(ctx)
-	if err != nil {
-		return 0, err
-	}
-	total := 0
-	for _, id := range ids {
-		n, err := packOne(ctx, st, id)
-		if err != nil {
-			return total, err
-		}
-		total += n
-	}
-	return total, nil
-}
-
-func packOne(ctx context.Context, st *store.Store, id int64) (int, error) {
-	n := 0
-	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		if _, err := q.LockClosedPack(ctx, id); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil // another process has it, or already uploaded it
-			}
-			return err
-		}
-		rows, err := q.PackRows(ctx, id)
-		if err != nil {
-			return err
-		}
-		if len(rows) > 0 {
-			members := make([]blob.PackMember, len(rows))
-			for i, r := range rows {
-				members[i] = blob.PackMember{Off: int64(r.Offset), Data: r.Data}
-			}
-			if err := st.Blobs.PutRaw(ctx, blob.PackKey(id), blob.AssemblePack(members)); err != nil {
-				return err
-			}
-		}
-		if err := q.DeletePack(ctx, id); err != nil { // the spool rows cascade
-			return err
-		}
-		n = len(rows)
-		return nil
-	})
-	return n, err
-}
-
-// PackAll closes the open packs and uploads everything (the CLI after an
-// import or seed: the data should be in the bucket when the command
-// returns).
-func PackAll(ctx context.Context, st *store.Store) error {
-	if _, err := st.CloseOpenPacks(ctx); err != nil {
-		return err
-	}
-	_, err := PackPayloads(ctx, st)
-	return err
 }

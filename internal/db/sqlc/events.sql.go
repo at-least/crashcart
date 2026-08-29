@@ -54,7 +54,7 @@ func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsPara
 }
 
 const getEvent = `-- name: GetEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, pack_id, pack_offset, pack_len FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
 `
 
 type GetEventParams struct {
@@ -90,15 +90,13 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 		&i.Symbolicated,
 		&i.Tags,
 		&i.Symbols,
-		&i.PackID,
-		&i.PackOffset,
-		&i.PackLen,
+		&i.Payload,
 	)
 	return i, err
 }
 
 const getEventAt = `-- name: GetEventAt :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, pack_id, pack_offset, pack_len FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3
 `
 
 type GetEventAtParams struct {
@@ -133,9 +131,7 @@ func (q *Queries) GetEventAt(ctx context.Context, arg GetEventAtParams) (Event, 
 		&i.Symbolicated,
 		&i.Tags,
 		&i.Symbols,
-		&i.PackID,
-		&i.PackOffset,
-		&i.PackLen,
+		&i.Payload,
 	)
 	return i, err
 }

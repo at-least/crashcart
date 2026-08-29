@@ -368,9 +368,7 @@ type Event struct {
 	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
 	Symbols       json.RawMessage `json:"symbols"`
-	PackID        *int64          `json:"pack_id"`
-	PackOffset    *int32          `json:"pack_offset"`
-	PackLen       *int32          `json:"pack_len"`
+	Payload       []byte          `json:"payload"`
 }
 
 type EventStatsDirty struct {
@@ -449,21 +447,6 @@ type Job struct {
 	CreatedAt   time.Time       `json:"created_at"`
 }
 
-type Pack struct {
-	ID         int64     `json:"id"`
-	NextOffset int64     `json:"next_offset"`
-	Closed     bool      `json:"closed"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
-type PayloadSpool struct {
-	PackID    int64     `json:"pack_id"`
-	Offset    int32     `json:"offset"`
-	Size      int32     `json:"size"`
-	Data      []byte    `json:"data"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 type Project struct {
 	ID              int64     `json:"id"`
 	Slug            string    `json:"slug"`
@@ -531,7 +514,14 @@ type SymbolFile struct {
 	DebugID    *string    `json:"debug_id"`
 	Filename   string     `json:"filename"`
 	Size       int64      `json:"size"`
+	Data       []byte     `json:"data"`
 	UploadedAt time.Time  `json:"uploaded_at"`
+}
+
+type UploadChunk struct {
+	Sha1      string    `json:"sha1"`
+	Data      []byte    `json:"data"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type User struct {

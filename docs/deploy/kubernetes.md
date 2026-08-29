@@ -1,14 +1,8 @@
 # Kubernetes
 
 CrashCart as a Deployment behind an Ingress, with Postgres either managed
-or as a small in-cluster StatefulSet, and an S3-compatible bucket.
-
-::: info Storage
-Any Postgres 14+ — managed, or the in-cluster `postgres.yaml` below. The
-bucket is your cloud's (S3, GCS with the S3 API, R2, …) or a MinIO you
-run in the cluster (`minio.yaml` below). See
-[The database and the object store](./postgres).
-:::
+or as a small in-cluster StatefulSet. Any Postgres 14+ does — see
+[The database](./postgres).
 
 **You need**
 
@@ -39,11 +33,6 @@ stringData:
   # Replace every value. Generate keys with: openssl rand -hex 32
   POSTGRES_PASSWORD: change-me
   DATABASE_URL: postgres://crashcart:change-me@postgres:5432/crashcart?sslmode=disable
-  # The bucket. For a cloud bucket, its endpoint / region / keys instead.
-  S3_ENDPOINT: http://minio:9000
-  S3_BUCKET: crashcart
-  S3_ACCESS_KEY: crashcart
-  S3_SECRET_KEY: change-me-too
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -137,8 +126,7 @@ spec:
 ```
 
 If you're using a **managed Postgres**, set `DATABASE_URL` in the Secret
-to its connection string and skip the next file; with a **cloud bucket**,
-set the `S3_*` values to it and skip `minio.yaml`.
+to its connection string and skip the next file.
 
 `postgres.yaml` — an in-cluster Postgres for small installs:
 
@@ -207,74 +195,13 @@ spec:
             storage: 20Gi
 ```
 
-`minio.yaml` — an in-cluster object store for small installs:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: minio
-  namespace: crashcart
-spec:
-  selector:
-    app: minio
-  ports:
-    - port: 9000
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: minio
-  namespace: crashcart
-spec:
-  serviceName: minio
-  replicas: 1
-  selector:
-    matchLabels:
-      app: minio
-  template:
-    metadata:
-      labels:
-        app: minio
-    spec:
-      containers:
-        - name: minio
-          image: minio/minio
-          args: ["server", "/data"]
-          env:
-            - name: MINIO_ROOT_USER
-              valueFrom:
-                secretKeyRef:
-                  name: crashcart
-                  key: S3_ACCESS_KEY
-            - name: MINIO_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: crashcart
-                  key: S3_SECRET_KEY
-          ports:
-            - containerPort: 9000
-          volumeMounts:
-            - name: data
-              mountPath: /data
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 50Gi
-```
-
 ## 2. Edit the values
 
 In `crashcart.yaml`:
 
 - **Secret**: replace every `change-me`. Keep `POSTGRES_PASSWORD` and the
-  password inside `DATABASE_URL` identical; `S3_ACCESS_KEY` /
-  `S3_SECRET_KEY` are MinIO's root credentials when you run `minio.yaml`.
-  Generate keys with `openssl rand -hex 32`.
+  password inside `DATABASE_URL` identical. Generate keys with
+  `openssl rand -hex 32`.
 - **ConfigMap**: `PUBLIC_URL` is the HTTPS address your apps will use.
 - **Ingress**: your host name; uncomment the `tls` block and the
   cert-manager annotation if you use it.
@@ -282,19 +209,17 @@ In `crashcart.yaml`:
 ## 3. Apply
 
 ```sh
-kubectl apply -f crashcart.yaml -f postgres.yaml -f minio.yaml
+kubectl apply -f crashcart.yaml -f postgres.yaml
 kubectl -n crashcart rollout status deployment/crashcart
 ```
 
-CrashCart may restart once or twice while Postgres and MinIO are still
-starting — that's Kubernetes doing its job. Once `rollout status` reports
-success:
+CrashCart may restart once or twice while Postgres is still starting —
+that's Kubernetes doing its job. Once `rollout status` reports success:
 
 ```sh
 kubectl -n crashcart get pods
 # crashcart-…   1/1   Running
 # postgres-0    1/1   Running
-# minio-0       1/1   Running
 ```
 
 ## 4. Check
@@ -349,8 +274,8 @@ kubectl -n crashcart exec deploy/crashcart -- /crashcart export > backup-$(date 
 ```
 
 Restore with `kubectl -n crashcart exec -i deploy/crashcart -- /crashcart import < backup.ndjson`.
-For the in-cluster Postgres and MinIO, also snapshot the `data-postgres-0`
-and `data-minio-0` PersistentVolumeClaims. See [Operations](./operations#backups).
+For the in-cluster Postgres, also snapshot the `data-postgres-0`
+PersistentVolumeClaim. See [Operations](./operations#backups).
 
 ## iOS crashes
 
@@ -365,7 +290,6 @@ JavaScript need nothing extra.
 |---|---|
 | `crashcart` pod in `CrashLoopBackOff` for more than a minute | `kubectl -n crashcart logs deploy/crashcart` — usually `DATABASE_URL` is wrong or Postgres isn't reachable |
 | `/health` returns `503` | Postgres is down: `kubectl -n crashcart logs postgres-0` |
-| The log says `payload pack` errors | MinIO (or the bucket) is unreachable or the keys are wrong: `kubectl -n crashcart logs minio-0`. Nothing is lost: payloads wait in Postgres until the bucket is back |
 | The DSN shows the wrong host | Fix `PUBLIC_URL` in the ConfigMap and `rollout restart` |
 | Large crash reports fail with `413` | Raise the ingress body-size annotation |
-| `postgres-0` or `minio-0` stuck `Pending` | No default StorageClass; set `storageClassName` in the volume claim template |
+| `postgres-0` stuck `Pending` | No default StorageClass; set `storageClassName` in the volume claim template |

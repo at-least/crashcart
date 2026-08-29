@@ -28,7 +28,7 @@ type SettingsData struct {
 	EnvelopeURL string
 	Rules       []sqlc.AlertRule
 	Channels    []sqlc.AlertChannel
-	Symbols     []sqlc.SymbolFile
+	Symbols     []sqlc.ListSymbolFilesRow
 }
 
 func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {

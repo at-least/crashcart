@@ -53,8 +53,8 @@ A single bug can produce millions of identical events. Three settings under
 
 | Setting | Default | Effect |
 |---|---|---|
-| Keep first | 100 | The first 100 events of every issue are always stored |
-| Sample rate | 1.0 | After that, this fraction of the issue's events is stored |
+| Keep first | 100 | The first 100 events of every issue are always stored (500 for crashes) |
+| Sample rate | 0.01 | After that, this fraction of the issue's events is stored; events with nothing to group by use it from the start. `1` stores everything |
 | Daily quota | 100 000 | Events accepted per day for the whole project; `0` = unlimited |
 
 The issue's event count stays exact whether or not an event was stored,

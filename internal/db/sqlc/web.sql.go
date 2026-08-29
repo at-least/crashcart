@@ -46,7 +46,7 @@ func (q *Queries) IssuesIntroducedPerRelease(ctx context.Context, projectID int6
 }
 
 const latestIssueEvent = `-- name: LatestIssueEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, pack_id, pack_offset, pack_len FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at DESC LIMIT 1
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at DESC LIMIT 1
 `
 
 type LatestIssueEventParams struct {
@@ -79,9 +79,7 @@ func (q *Queries) LatestIssueEvent(ctx context.Context, arg LatestIssueEventPara
 		&i.Symbolicated,
 		&i.Tags,
 		&i.Symbols,
-		&i.PackID,
-		&i.PackOffset,
-		&i.PackLen,
+		&i.Payload,
 	)
 	return i, err
 }
@@ -190,7 +188,7 @@ func (q *Queries) ListIssuesPresentIn(ctx context.Context, arg ListIssuesPresent
 }
 
 const oldestIssueEvent = `-- name: OldestIssueEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, pack_id, pack_offset, pack_len FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at ASC LIMIT 1
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at ASC LIMIT 1
 `
 
 type OldestIssueEventParams struct {
@@ -223,9 +221,7 @@ func (q *Queries) OldestIssueEvent(ctx context.Context, arg OldestIssueEventPara
 		&i.Symbolicated,
 		&i.Tags,
 		&i.Symbols,
-		&i.PackID,
-		&i.PackOffset,
-		&i.PackLen,
+		&i.Payload,
 	)
 	return i, err
 }

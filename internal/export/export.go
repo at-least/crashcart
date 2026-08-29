@@ -18,12 +18,6 @@
 // columns are omitted. Aggregates, jobs and rate limits are not exported:
 // they recompute or expire.
 //
-// Event payloads and symbol file bytes come from the object store and are
-// embedded ("payload", "data"); a row whose object is missing is exported
-// without it. Import writes symbol files back to the object store as it
-// goes and payloads into a pack (closed and uploaded by PackAll when the
-// command ends).
-//
 // Import is idempotent: events and sessions are inserted with
 // ON CONFLICT DO NOTHING, everything else is upserted on its natural key
 // (issue counts are replaced, not added), alert channels are inserted only
@@ -43,7 +37,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -221,10 +214,10 @@ const (
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
 	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
 	os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
-	symbols, pack_id, pack_offset, pack_len FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
+	symbols, payload FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectReleases    = `SELECT project_id, release, platforms, first_seen FROM releases WHERE project_id = $1 ORDER BY release`
-	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
+	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at
 	FROM symbol_files WHERE project_id = $1 ORDER BY kind, release, filename`
 	selectAlertRules    = `SELECT project_id, type, enabled, cooldown_minutes, last_triggered FROM alert_rules WHERE project_id = $1 ORDER BY type`
 	selectAlertChannels = `SELECT id, project_id, kind, config, created_at FROM alert_channels WHERE project_id = $1 ORDER BY id`
@@ -300,13 +293,9 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	for _, p := range projects {
 		if err := stream(ctx, st, selectSymbolFiles, p.ID, func(r sqlc.SymbolFile) error {
-			data, err := object(ctx, st, blob.SymbolKey(r.ProjectID, r.ID))
-			if err != nil {
-				return err
-			}
 			return enc.Encode(symbolFileRow{
 				T: "symbol_files", Project: p.Slug, Kind: string(r.Kind), Release: strOr(r.Release), DebugID: r.DebugID,
-				Filename: r.Filename, Size: r.Size, Data: data, UploadedAt: at(r.UploadedAt),
+				Filename: r.Filename, Size: r.Size, Data: r.Data, UploadedAt: at(r.UploadedAt),
 			})
 		}); err != nil {
 			return fmt.Errorf("export symbol_files: %w", err)
@@ -332,19 +321,6 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		}
 	}
 	return bw.Flush()
-}
-
-// object reads one object; a missing one is nil (the row is exported
-// without it).
-func object(ctx context.Context, st *store.Store, key string) ([]byte, error) {
-	b, err := st.Blobs.Get(ctx, key)
-	if errors.Is(err, blob.ErrNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("object %s: %w", key, err)
-	}
-	return b, nil
 }
 
 func exportProjects(ctx context.Context, st *store.Store, opt Options) ([]sqlc.Project, error) {
@@ -410,11 +386,10 @@ const (
 	    first_seen = LEAST(releases.first_seen, EXCLUDED.first_seen)`
 	insertSession = `INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count) VALUES ($1,$2,$3,$4,$5,$6,$7)
 	ON CONFLICT (project_id, sid, started_at) DO NOTHING`
-	upsertSymbolFile = `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, uploaded_at)
-	VALUES ($1,$2,$3,$4,$5,$6,$7)
+	upsertSymbolFile = `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, uploaded_at)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 	ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET debug_id = EXCLUDED.debug_id, size = EXCLUDED.size,
-	    uploaded_at = EXCLUDED.uploaded_at
-	RETURNING id`
+	    data = EXCLUDED.data, uploaded_at = EXCLUDED.uploaded_at`
 	upsertAlertRule = `INSERT INTO alert_rules (project_id, type, enabled, cooldown_minutes, last_triggered) VALUES ($1,$2,$3,$4,$5)
 	ON CONFLICT (project_id, type) DO UPDATE SET enabled = EXCLUDED.enabled, cooldown_minutes = EXCLUDED.cooldown_minutes,
 	    last_triggered = EXCLUDED.last_triggered`
@@ -432,7 +407,6 @@ type importer struct {
 	q        *sqlc.Queries
 	projects map[string]int64 // slug → id
 	events   []store.EventInsert
-	payloads [][]byte                     // events[i]'s gzipped payload (nil: none), spooled with the batch
 	batch    *pgx.Batch                   // sessions / issues / alert rows
 	dirtyE   map[int64]map[time.Time]bool // project → hours of events written (stats rollup)
 	dirtyS   map[int64]map[time.Time]bool // project → hours of sessions written
@@ -570,16 +544,15 @@ func (im *importer) line(b []byte) error {
 		}
 		var gz []byte
 		if len(r.Payload) > 0 && string(r.Payload) != "null" {
-			gz = blob.Gzip([]byte(r.Payload))
+			gz = store.Gzip([]byte(r.Payload))
 		}
-		im.payloads = append(im.payloads, gz)
 		im.events = append(im.events, store.EventInsert{
 			OccurredAt: r.OccurredAt.Time, ProjectID: pid, EventID: eid, Level: r.Level, Message: r.Message, Platform: r.Platform,
 			Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID, DeviceModel: r.DeviceModel,
 			OSVersion: r.OSVersion, Screen: r.Screen, ErrorType: r.ErrorType, ErrorLocation: r.ErrorLocation,
 			Handled: r.Handled, SDKName: r.SDKName, UserID: r.UserID, Fingerprint: fp,
 			Symbolicated: r.Symbolicated, Tags: orJSON(r.Tags, "{}"),
-			Symbols: r.Symbols,
+			Symbols: r.Symbols, Payload: gz,
 		})
 		im.mark(im.dirtyE, pid, r.OccurredAt.Time)
 		if len(im.events) >= batchSize {
@@ -613,15 +586,7 @@ func (im *importer) line(b []byte) error {
 		if r.Size == 0 {
 			r.Size = int64(len(r.Data))
 		}
-		var id int64
-		if err := im.tx.QueryRow(im.ctx, upsertSymbolFile, pid, r.Kind, nilIfEmptyStr(r.Release), r.DebugID, r.Filename, r.Size, tsOrNow(r.UploadedAt)).Scan(&id); err != nil {
-			return err
-		}
-		if len(r.Data) > 0 {
-			if err := im.st.Blobs.Put(im.ctx, blob.SymbolKey(pid, id), r.Data); err != nil {
-				return err
-			}
-		}
+		im.batch.Queue(upsertSymbolFile, pid, r.Kind, nilIfEmptyStr(r.Release), r.DebugID, r.Filename, r.Size, r.Data, tsOrNow(r.UploadedAt))
 	case "alert_rules":
 		var r alertRuleRow
 		if err := json.Unmarshal(b, &r); err != nil {
@@ -716,23 +681,8 @@ func (im *importer) flushEvents() error {
 	if len(im.events) == 0 {
 		return nil
 	}
-	rows, payloads := im.events, im.payloads
-	im.events, im.payloads = nil, nil
-	var withPayload [][]byte
-	var idx []int
-	for i, gz := range payloads {
-		if gz != nil {
-			withPayload = append(withPayload, gz)
-			idx = append(idx, i)
-		}
-	}
-	places, err := store.SpoolPayloads(im.ctx, im.q, withPayload)
-	if err != nil {
-		return err
-	}
-	for j, i := range idx {
-		rows[i].Pack = &places[j]
-	}
+	rows := im.events
+	im.events = nil
 	return store.InsertEvents(im.ctx, im.tx, rows)
 }
 

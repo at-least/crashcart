@@ -1,7 +1,7 @@
 # CrashCart — Architecture
 
 Sentry-SDK-compatible crash tracking for self-hosters. One Go binary, any
-Postgres, one S3-compatible bucket; nothing else required.
+Postgres; nothing else required.
 
 ```
 Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres 14+ (no extensions)
@@ -9,7 +9,6 @@ Browser    ──GET  /p/{slug}/…  (htmx) ──▶    │        (events, ses
 Scripts    ──GET  /api/projects/… ──────▶    │         issues: stateful table
 sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   │         stats: rollup tables + dirty keys
                                              │         jobs: SKIP LOCKED queue)
-                                             ├──▶ S3 bucket (payload packs, symbol files, upload chunks)
                                              └──▶ symbolicate sidecar (dSYM only, optional)
 ```
 
@@ -38,33 +37,12 @@ resend still dedupes. Every per-project table references `projects` with
 `ON DELETE CASCADE`: deleting a project deletes its data. Events are addressed by `event_id` everywhere (URLs,
 API, jobs); list pagination is a keyset cursor `(occurred_at, event_id)`.
 
-**Ingest is one transaction, then the payloads.** Per envelope: quota bump →
+**Ingest is one transaction, no hot rows.** Per envelope: quota bump →
 `releases` upsert (a no-op unless a new release / platform appears) → fold
 events by fingerprint → one `issues` upsert per distinct fingerprint →
-sampling decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events →
-payloads → events → sessions → dirty-hour marks → jobs. The payloads
-(gzipped once, here) go into `payload_spool` in the same transaction —
-as durable as the event row, nothing is ever lost — at the place they
-will have in a *pack* object: the transaction claims the fullest open
-pack no other transaction is writing to (`packs`, `FOR UPDATE SKIP
-LOCKED`; none free → it opens one), advances the pack's byte counter by
-the envelope's total — the offsets — and closes the pack when that
-reaches 8 MB. So the event row's `pack_id` / `pack_offset` / `pack_len`
-are written with the row, once; a rollback returns the bytes, so packs have
-no gaps; concurrent envelopes take different packs and never wait on
-each other; no pack belongs to a process, so a process dying leaves
-nothing to recover. Every process looks for closed packs every 5 s
-(`retention.PackPayloads`): lock the pack row (`SKIP LOCKED`), lay the
-spool rows out by offset, PUT the object, delete the rows and the pack,
-commit — a failed PUT rolls back for the next run. Nothing but size
-closes a pack: a quiet server keeps its payloads in the spool until 8 MB
-have gathered (the sweep drops the ones whose events retention already
-took), so the object store sees one PUT per 8 MB whatever the events'
-size, and no upload is bigger — PUT requests are what an S3 bill is made
-of. A failed PUT rolls the batch
-back for the next run; reads come from the spool until then, so the
-object store being down is invisible except for a growing spool. No
-aggregate row is written at ingest.
+sampling decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events
+(payload gzipped) → sessions → dirty-hour marks → jobs. No aggregate row
+is written at ingest.
 
 **Statistics are rollups with dirty keys.** `event_stats_hourly_rolled`,
 `issue_stats_hourly_rolled` and `release_health_hourly_rolled` hold one
@@ -108,33 +86,27 @@ events count too); resolving copies it to `resolved_releases`, and a later
 event on a release outside that set is a regression — old builds still
 crashing are inside the set, the release that carries the fix is not.
 
-**Sampling is per issue, counts stay exact.** `projects.sample_keep_first`
-events of each issue are always stored; after that `sample_rate` of them;
-`fatal` always. Dropped events still increment `event_count`.
+**Sampling is per issue, counts stay exact — and it is what bounds the
+database.** The first `projects.sample_keep_first` events of each issue
+are always stored (`ingest.FatalKeepFactor` × that for crashes); after
+that `sample_rate` of them (default 1 %); ungrouped events (nothing to
+fingerprint) take the rate from the start. Dropped events still increment
+`event_count`, so the numbers stay exact. The point: what is stored grows
+with the number of *issues*, not the number of events — the ten-thousandth
+copy of the same NullPointerException adds nothing the issue row does not
+already say. That is why payloads can simply live in Postgres, and why a
+single machine covers a project of any event volume.
 
-**Bytes live in the bucket, rows in Postgres.** The event payload — the
-JSON exactly as the SDK sent it — is gzipped on its own and packed with
-its neighbours into `events/<pack id>` (`packs.id`, a plain sequence:
-nothing lists the bucket, so the key carries nothing else); the event
-row's `pack_id` / `pack_offset` / `pack_len` say where, and a read is one
-ranged GET (`store.Payload`
-tries the spool first — a primary-key lookup on a small table — which
-also means "not in the spool" implies "already uploaded": no window in
-which a payload is in neither place). Everything
-filterable is a column or a `tags` key, extracted at ingest, so nothing
-ever queries inside a payload and it is never rewritten. Symbol files are
-at `symbols/<project>/<symbol_files.id>`, sentry-cli's upload chunks at
-`chunks/<sha1>` until assembled — keys derived from the row. An object
-that outlives its rows (a quota-rejected envelope's bytes in a pack, a
-deleted symbol file) needs no garbage collection: the bucket's lifecycle
-rules expire each prefix on the retention schedule. A row is a few
-hundred bytes, so the database stays small whatever the payload volume;
-the only readers of a payload are the event page, the JSON event
-endpoint, the symbolication job and export. The S3 client is minio-go
-(put, ranged get, delete, bucket lifecycle), which knows the S3-compatible
-providers' quirks. Symbolicated frames go in `events.symbols`; `fingerprint` and
-`error_location` are computed on the resolved frames, so the issue is
-right from the first event.
+**The payload lives with the row.** `events.payload` is the event's JSON
+exactly as the SDK sent it, gzipped once at ingest (`STORAGE EXTERNAL`,
+so TOAST keeps it out of the main heap without compressing it again — a
+row stays a few hundred bytes for every scan that does not need it);
+everything filterable is a column or a `tags` key, extracted at ingest,
+so nothing ever queries inside it, and it is never rewritten. The readers
+are the event page, the JSON event endpoint, the symbolication job and
+export. Symbol files and sentry-cli's upload chunks are `BYTEA` rows too.
+Everything is in the one database: one backup, one retention mechanism,
+nothing to keep consistent with anything else.
 
 **Symbolicate at ingest.** ProGuard and source maps resolve in-process (mappings are loaded
 from the database on first use and cached); dSYM goes through the sidecar
@@ -148,19 +120,16 @@ them to a new issue.
 `symbol_files.release` is NULL for a mapping matched by debug id only
 (`UNIQUE NULLS NOT DISTINCT` keeps one row per project/kind/release/filename).
 
-**Retention is a DROP TABLE and a lifecycle rule.** `internal/retention`
-keeps weekly partitions (`events_pYYYYMMDD`, Monday-aligned) from one week
-before the retention window to two weeks ahead — at startup and on the
-hourly sweep — and drops a partition once it ends before
-`now − RETENTION_DAYS` (rows live up to a week longer; the default
-partition is swept row by row, it only ever holds clock outliers). A week
-that already has rows in the default partition when its partition is
-created gets them moved in the same transaction (standalone table → move →
-`ATTACH PARTITION`). The bucket's lifecycle rules, set at startup, expire
-`events/` after `RETENTION_DAYS + 7` days, `symbols/` after
-`2 × RETENTION_DAYS` (when `ExpireSymbolFiles` drops the rows), `chunks/`
-after a day; nothing lists or deletes objects one by one. The rollups keep
-400 days.
+**Retention is a DROP TABLE.** `internal/retention` keeps weekly
+partitions (`events_pYYYYMMDD`, Monday-aligned) from one week before the
+retention window to two weeks ahead — at startup and on the hourly sweep
+— and drops a partition once it ends before `now − RETENTION_DAYS` (rows
+live up to a week longer; the default partition is swept row by row, it
+only ever holds clock outliers). A week that already has rows in the
+default partition when its partition is created gets them moved in the
+same transaction (standalone table → move → `ATTACH PARTITION`). The
+payloads go with their rows. Symbol files expire after twice the
+retention, upload chunks after a day, the rollups keep 400 days.
 
 **Jobs live in Postgres.** `jobs` + `UPDATE … SKIP LOCKED RETURNING`: a
 worker leases a batch (`locked_until`, attempt counted) in one short
@@ -210,13 +179,12 @@ theme, and the SSE "new issues" banner.
 |---|---|---|---|
 | users / user_sessions / api_keys | table | id / token_hash / id | viewer accounts, session cookies (hashed), API keys (hashed) |
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
-| events | weekly partitions + default | (project_id, event_id, occurred_at) | columns + `pack_id` / `pack_offset` / `pack_len` into a pack in the bucket |
-| packs | table | id | packs being filled (`next_offset`) or waiting for upload (`closed`) |
-| payload_spool | table | (pack_id, offset) | payloads of those packs, at their offsets |
+| events | weekly partitions + default | (project_id, event_id, occurred_at) | columns + gzipped `payload` (TOASTed, uncompressed by TOAST) |
 | sessions | weekly partitions + default | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
 | releases | table | (project_id, release) | every release seen, platforms, first_seen |
 | issues | table | (project_id, fingerprint) | stateful |
-| symbol_files | table | (project_id, kind, release, filename) | metadata; the bytes are `symbols/<project>/<id>` in the bucket |
+| symbol_files | table | (project_id, kind, release, filename) | BYTEA in Postgres |
+| upload_chunks | table | sha1 | sentry-cli chunks until assembled (a day at most) |
 | project_usage | table | (project_id, day) | events received per UTC day; daily quota |
 | jobs | table | id | queue |
 | alert_rules / alert_channels | table | | per project |
@@ -224,18 +192,15 @@ theme, and the SSE "new issues" banner.
 | event_stats_hourly_rolled → event_stats_hourly | table → view | bucket, project, release, platform, level | events / crashes / errors; `crashcart_event_stats(…)` reads the view |
 | issue_stats_hourly_rolled → issue_stats_hourly | table → view | bucket, project, fingerprint | sparklines |
 | release_health_hourly_rolled → release_health_hourly | table → view | bucket, project, release | total / crashed / errored sessions |
-| *(bucket)* `events/<pack id>`, `symbols/`, `chunks/` | objects | derived from the row | expired by lifecycle rule |
 
 ## Write cost per event
 
-Non-exception event: 1 insert. Exception event: 1 insert + 1 issue upsert
-(+1 `stored_count` bump) + 0–1 job row; plus 1 spool insert per stored
-event (deleted when its pack is uploaded), one `packs` update and one
-dirty-hour upsert per hour an envelope touches; one object PUT per 8 MB
-of payloads.
-Symbolication via the worker adds one UPDATE of the small columns (the
-payload is never rewritten) and re-marks the hour. Rollup is per dirty
-hour, retention per partition.
+Non-exception event: 1 insert (row + TOASTed payload). Exception event: 1
+insert + 1 issue upsert (+1 `stored_count` bump) + 0–1 job row; one
+dirty-hour upsert per hour an envelope touches; a sampled-out event is
+the issue upsert alone. Symbolication via the worker adds one UPDATE of
+the small columns (the TOASTed payload is not rewritten) and re-marks the
+hour. Rollup is per dirty hour, retention per partition.
 
 ## Export / import
 
@@ -244,27 +209,25 @@ Spec: `docs/reference/export-format.md` (change it before the code).
 `crashcart export` streams NDJSON: `{"t":"<table>", ...columns}`. Rows refer
 to projects by `project` slug (never by id), timestamps are RFC3339 UTC,
 events / sessions carry their natural keys, JSON columns are embedded,
-bytes are base64; payloads and symbol files are read from the bucket and
-embedded (a row whose object is gone is exported without it).
-`crashcart import` upserts (events/sessions `ON CONFLICT DO NOTHING`,
-everything else on its key) inside one transaction and writes the objects
-as it goes, so importing twice or onto live data is safe and a failed
-import changes nothing in the database (objects it wrote expire by
-lifecycle). Rollups are not exported; the imported hours are marked dirty
-and recomputed.
+bytes (payloads decoded, symbol files) are base64. `crashcart import`
+upserts (events/sessions `ON CONFLICT DO NOTHING`, everything else on its
+key) inside one transaction, so importing twice or onto live data is safe
+and a failed import changes nothing. Rollups are not exported; the
+imported hours are marked dirty and recomputed.
 
-## Why plain Postgres and a bucket
+## Why plain Postgres, and only Postgres
 
 Postgres without extensions runs anywhere — a container, a package, RDS,
 Cloud SQL, Neon, Supabase — and `pg_dump` / `pg_upgrade` stay ordinary.
 What an extension would have added (compression, chunk-drop retention,
-continuous aggregates) is covered by keeping the bytes out of the database
-(the rows are small enough not to need compressing), weekly partitions
-(retention is a `DROP TABLE`) and the dirty-key rollups (exact for late
-data by construction — a policy that only refreshes a recent window is
-not). The bucket is the one dependency added: it is what makes the bytes
-cheap, expirable without code and shared between replicas, and every
-environment from a laptop (MinIO) to any cloud has one.
+continuous aggregates) is covered by gzipping payloads at ingest, weekly
+partitions (retention is a `DROP TABLE`) and the dirty-key rollups (exact
+for late data by construction — a policy that only refreshes a recent
+window is not). An object store was considered for the payloads and
+rejected: per-issue sampling already keeps the stored volume proportional
+to the number of issues, so the bytes fit in the database of any single
+machine, and a second store would have bought nothing but a second thing
+to run, back up and keep consistent.
 
 **No migrations.** `internal/db/schema.sql` is the whole schema; `db.Init`
 creates it on the first start against an empty database (under an advisory

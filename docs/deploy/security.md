@@ -4,10 +4,9 @@ What CrashCart stores, who can see it, and where it goes.
 
 ## Where the data lives
 
-In your Postgres (issues, event columns, sessions, users) and your S3
-bucket (the raw crash payloads and symbol files). CrashCart makes no
-other outbound connections: no telemetry, no update checks, no
-third-party services. The only outbound traffic is the alert channels you
+In your Postgres — all of it, raw crash payloads and symbol files
+included. CrashCart makes no outbound connections of its own: no
+telemetry, no update checks, no third-party services. The only outbound traffic is the alert channels you
 configure — a webhook URL or Telegram — and the dSYM sidecar if you run
 it, which is a container next to CrashCart, not a service.
 

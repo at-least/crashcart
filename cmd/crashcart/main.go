@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/alerts"
-	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
@@ -38,7 +37,7 @@ const usage = `usage: crashcart <command>
 
   serve            HTTP server + job worker + schedulers (default)
   init             create the schema and exit
-  retention        create partitions, set bucket lifecycle rules, run one sweep and roll the stats up
+  retention        create partitions, run one sweep and roll the stats up
   alerts           run one crash-spike check
   seed [slug]      write a week of demo data (default project "demo")
   export [slug]    stream NDJSON to stdout (all projects, or one)
@@ -75,10 +74,6 @@ func main() {
 	if cfg.DatabaseURL == "" {
 		fatal(log, errors.New("DATABASE_URL is required"))
 	}
-	blobs, err := blob.NewS3(cfg.S3)
-	if err != nil {
-		fatal(log, fmt.Errorf("object store: %w", err))
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -94,7 +89,7 @@ func main() {
 	if created {
 		log.Info("schema created")
 	}
-	st := store.New(pool, blobs)
+	st := store.New(pool)
 	syms := &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient(cfg.SymbolicateURL)}
 	in := &ingest.Ingester{Store: st, Cfg: cfg, Symbols: syms, Log: log}
 	notifier := &alerts.Notifier{Store: st, Cfg: cfg, Log: log, HTTP: &http.Client{Timeout: 15 * time.Second}}
@@ -113,9 +108,6 @@ func main() {
 		if err := retention.RollupAll(ctx, st); err != nil {
 			fatal(log, err)
 		}
-		if err := retention.PackAll(ctx, st); err != nil {
-			fatal(log, err)
-		}
 	case "alerts":
 		if err := notifier.CheckSpikes(ctx); err != nil {
 			fatal(log, err)
@@ -125,16 +117,13 @@ func main() {
 		if len(args) > 0 {
 			slug = args[0]
 		}
-		if err := retention.Reconcile(ctx, st, cfg, log); err != nil { // partitions and the bucket
+		if err := retention.Reconcile(ctx, st, cfg, log); err != nil { // partitions
 			fatal(log, err)
 		}
 		if err := seed.Run(ctx, in, slug); err != nil {
 			fatal(log, err)
 		}
 		if err := retention.RollupAll(ctx, st); err != nil {
-			fatal(log, err)
-		}
-		if err := retention.PackAll(ctx, st); err != nil {
 			fatal(log, err)
 		}
 	case "export":
@@ -146,7 +135,7 @@ func main() {
 			fatal(log, err)
 		}
 	case "import":
-		if err := retention.Reconcile(ctx, st, cfg, log); err != nil { // partitions and the bucket
+		if err := retention.Reconcile(ctx, st, cfg, log); err != nil { // partitions
 			fatal(log, err)
 		}
 		rep, err := export.Import(ctx, st, os.Stdin)
@@ -154,9 +143,6 @@ func main() {
 			fatal(log, err)
 		}
 		if err := retention.RollupAll(ctx, st); err != nil {
-			fatal(log, err)
-		}
-		if err := retention.PackAll(ctx, st); err != nil {
 			fatal(log, err)
 		}
 		json.NewEncoder(os.Stderr).Encode(rep)
@@ -215,13 +201,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	// stays as the fallback).
 	listener := &store.Listener{Pool: st.Pool, Log: log}
 	go listener.Run(ctx)
-	// Every process uploads the closed payload packs (SKIP LOCKED keeps
-	// them from repeating each other's work).
-	go every(ctx, retention.PackInterval, func() {
-		if _, err := retention.PackPayloads(ctx, st); err != nil {
-			log.Error("payload pack", "err", err)
-		}
-	})
 	handlers := map[string]jobs.Handler{
 		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
 			var a struct {

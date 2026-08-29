@@ -5,9 +5,9 @@
 -- is a range on it; their primary key includes it, as partitioning
 -- requires); internal/retention creates the partitions ahead of time and
 -- drops the expired ones. The statistics are rollup tables kept current by
--- a dirty-key job (the stats section at the end of this file). Event
--- payloads, symbol files and upload chunks are not here at all: they live
--- in the object store (internal/blob), addressed by the row's key.
+-- a dirty-key job (the stats section at the end of this file). Everything
+-- is here — event payloads (gzipped, bounded by per-issue sampling),
+-- symbol files, sentry-cli upload chunks; the database is the one store.
 
 -- The one definition of "crash": fatal, or an unhandled exception. Used by
 -- the rollups, the spike check and the event filters.
@@ -74,8 +74,8 @@ CREATE TABLE projects (
     name              TEXT NOT NULL,
     platform          TEXT,                                   -- ios | android | flutter | web | … (hint only)
     public_key        TEXT NOT NULL UNIQUE,                   -- DSN key: https://<public_key>@host/<id>
-    sample_keep_first INTEGER NOT NULL DEFAULT 100,           -- events stored per issue before sampling kicks in
-    sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,  -- kept fraction after that (fatal always kept)
+    sample_keep_first INTEGER NOT NULL DEFAULT 100,           -- events stored per issue before sampling kicks in (fatal: ingest.FatalKeepFactor times that)
+    sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 0.01, -- kept fraction after that; 1 stores everything
     daily_quota       INTEGER NOT NULL DEFAULT 100000,        -- events accepted per UTC day; 0 = unlimited
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -87,9 +87,12 @@ CREATE TABLE projects (
 -- DEFAULT partition catches what no weekly partition covers — a device with
 -- a wrong clock — so an insert never fails for want of a partition; the
 -- partition job moves such rows into a real partition when it creates one.
--- The payload (the event as the SDK sent it) sits in payload_spool until
--- its pack of many payloads is uploaded; pack_id / pack_offset / pack_len
--- say which pack and where, from the start.
+-- payload is the event as the SDK sent it, gzipped at ingest (STORAGE
+-- EXTERNAL: TOAST must not compress it again); the database never parses
+-- it — everything filterable is a column or a tags key, extracted at
+-- ingest — and it is never rewritten. What bounds its volume is per-issue
+-- sampling (projects.sample_keep_first / sample_rate): the stored events
+-- grow with the number of issues, not the number of events.
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (partition key)
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
@@ -112,11 +115,10 @@ CREATE TABLE events (
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     symbols        JSONB,                            -- symbolicated frames (written once)
-    pack_id        BIGINT,                          -- the pack object (events/<pack_id>) holding the raw event; NULL: never stored
-    pack_offset    INTEGER,                          -- … where in it
-    pack_len       INTEGER,                          -- … how many bytes (gzipped)
+    payload        BYTEA,                            -- the raw event, gzipped (NULL: imported without one)
     PRIMARY KEY (project_id, event_id, occurred_at)  -- a resent envelope lands on the same key
 ) PARTITION BY RANGE (occurred_at);
+ALTER TABLE events ALTER COLUMN payload SET STORAGE EXTERNAL;
 CREATE TABLE events_default PARTITION OF events DEFAULT;
 CREATE INDEX events_project_time ON events (project_id, occurred_at DESC, event_id DESC);
 CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, occurred_at DESC);
@@ -124,37 +126,6 @@ CREATE INDEX events_project_user ON events (project_id, user_id, occurred_at DES
 CREATE INDEX events_project_crash ON events (project_id, occurred_at DESC) WHERE crashcart_is_crash(level, handled);
 CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filters are `tags @> {k: v}`
 
-
--- ── payload packs and spool ────────────────────────────────────────────
--- The raw payload of a stored event, gzipped, is written in the ingest
--- transaction (so it is exactly as durable as the event row) at the place
--- it will have in its pack object. packs are the packs being filled: the
--- transaction claims the fullest open one nobody else is writing to
--- (FOR UPDATE SKIP LOCKED; none free → it opens one), advances
--- next_offset — its offset, the same value the event row carries, so
--- the event row is written once; a rollback returns the bytes, so there
--- are no gaps — and closes the pack when it reaches blob.PackBytes.
--- retention.PackPayloads (any process) uploads closed packs and deletes
--- their rows. No pack belongs to a process: nothing to recover when one
--- dies. The spool only ever holds the packs being filled — longer if
--- the object store is down, which is the point.
-
-CREATE TABLE packs (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, -- the pack object is events/<id>
-    next_offset BIGINT NOT NULL DEFAULT 0,           -- bytes reserved so far
-    closed      BOOLEAN NOT NULL DEFAULT false,      -- full: waiting for upload
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX packs_open ON packs (next_offset DESC) WHERE NOT closed;
-
-CREATE TABLE payload_spool (
-    pack_id    BIGINT NOT NULL REFERENCES packs ON DELETE CASCADE,
-    "offset"   INTEGER NOT NULL,                     -- where the payload sits in the pack
-    size       INTEGER NOT NULL,                     -- octet_length(data)
-    data       BYTEA NOT NULL,                       -- the payload, gzipped
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (pack_id, "offset")
-);
 
 -- ── sessions (release health) ──────────────────────────────────────────
 
@@ -215,9 +186,6 @@ CREATE INDEX issues_project_last_seen ON issues (project_id, last_seen DESC);
 CREATE INDEX issues_project_status ON issues (project_id, status, last_seen DESC);
 
 -- ── symbol files ───────────────────────────────────────────────────────
--- The bytes are in the object store at blob.SymbolKey(project_id, id);
--- sentry-cli's upload chunks go straight there too (blob.ChunkKey) and
--- expire by lifecycle rule.
 
 CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -227,10 +195,19 @@ CREATE TABLE symbol_files (
     debug_id    TEXT,                                -- dSYM UUID / proguard mapping uuid
     filename    TEXT NOT NULL,
     size        BIGINT NOT NULL,
+    data        BYTEA NOT NULL,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename)
 );
 CREATE INDEX symbol_files_debug_id ON symbol_files (project_id, debug_id) WHERE debug_id IS NOT NULL;
+
+-- ── upload chunks (sentry-cli chunked upload; assembled into symbol_files) ──
+
+CREATE TABLE upload_chunks (
+    sha1       TEXT PRIMARY KEY,
+    data       BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ── project usage (daily quota) ────────────────────────────────────────
 -- One row per project and UTC day, bumped in the ingest transaction; the
