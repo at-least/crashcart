@@ -50,3 +50,7 @@ SELECT platform, sum(events)::bigint AS events
 FROM event_stats_hourly
 WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
 GROUP BY platform ORDER BY events DESC;
+
+-- name: EventsSince :one
+-- Events received since a bucket (daily quota accounting; real-time aggregate).
+SELECT COALESCE(sum(events), 0)::bigint FROM event_stats_hourly WHERE project_id = $1 AND bucket >= $2;

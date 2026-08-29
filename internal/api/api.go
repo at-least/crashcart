@@ -43,6 +43,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		// projects
 		"GET /api/projects":                 h.listProjects,
 		"POST /api/projects":                h.createProject,
+		"POST /api/projects/{slug}/rotate-key": h.rotateKey,
 		"GET /api/projects/{slug}":          h.getProject,
 		"PATCH /api/projects/{slug}":        h.updateProject,
 		"DELETE /api/projects/{slug}":       h.deleteProject,

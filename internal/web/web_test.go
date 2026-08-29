@@ -171,6 +171,22 @@ func TestBulkAndMutations(t *testing.T) {
 	if got, _ := w.Store.GetProject(ctx, "shop"); got.SampleKeepFirst != 10 || got.SampleRate != 0.5 {
 		t.Errorf("sampling not saved: %+v", got)
 	}
+	if r := hx("PATCH", "/p/shop/settings/sampling", "keep_first=10&rate=0.5&daily_quota=2000"); r.Code != 303 {
+		t.Errorf("quota = %d %s", r.Code, r.Body)
+	}
+	if got, _ := w.Store.GetProject(ctx, "shop"); got.DailyQuota != 2000 {
+		t.Errorf("quota not saved: %d", got.DailyQuota)
+	}
+	oldKey := ""
+	if got, _ := w.Store.GetProject(ctx, "shop"); true {
+		oldKey = got.PublicKey
+	}
+	if r := hx("POST", "/p/shop/settings/rotate-key", ""); r.Code != 303 {
+		t.Errorf("rotate = %d %s", r.Code, r.Body)
+	}
+	if got, _ := w.Store.GetProject(ctx, "shop"); got.PublicKey == oldKey {
+		t.Errorf("key not rotated")
+	}
 	if r := hx("PATCH", "/p/shop/settings/platform", "platform=android"); r.Code != 303 {
 		t.Errorf("platform = %d %s", r.Code, r.Body)
 	}

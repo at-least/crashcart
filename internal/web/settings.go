@@ -131,11 +131,15 @@ func (w *Web) settingsSampling(rw http.ResponseWriter, r *http.Request) {
 	}
 	keep, err1 := strconv.Atoi(r.Form.Get("keep_first"))
 	rate, err2 := strconv.ParseFloat(r.Form.Get("rate"), 64)
-	if err1 != nil || err2 != nil || keep < 0 || rate < 0 || rate > 1 {
-		http.Error(rw, "keep_first >= 0 and 0 <= rate <= 1 required", http.StatusBadRequest)
+	quota, err3 := int(p.DailyQuota), error(nil)
+	if v := strings.TrimSpace(r.Form.Get("daily_quota")); v != "" {
+		quota, err3 = strconv.Atoi(v)
+	}
+	if err1 != nil || err2 != nil || err3 != nil || keep < 0 || rate < 0 || rate > 1 || quota < 0 {
+		http.Error(rw, "keep_first >= 0, 0 <= rate <= 1 and daily_quota >= 0 required", http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: int32(keep), SampleRate: rate}); err != nil {
+	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: int32(keep), SampleRate: rate, DailyQuota: int32(quota)}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -160,7 +164,24 @@ func (w *Web) settingsPlatform(rw http.ResponseWriter, r *http.Request) {
 	if platform != "" {
 		plat = &platform
 	}
-	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: plat, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate}); err != nil {
+	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: plat, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	redirect(rw, r, state(r).Href("/settings"))
+}
+
+func (w *Web) settingsRotateKey(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	key := make([]byte, 16)
+	if _, err := rand.Read(key); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	if _, err := w.Store.RotateProjectKey(r.Context(), sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: hex.EncodeToString(key)}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

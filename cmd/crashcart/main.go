@@ -40,6 +40,7 @@ const usage = `usage: crashcart <command>
   export [slug]    stream NDJSON to stdout (all projects, or one)
   import           load NDJSON from stdin (idempotent)
   project <slug> <name> [platform]   create a project and print its DSN
+  rotate-key <slug>                  issue a new DSN key (old one stops within seconds)
                                      (platform: ios android flutter react-native web backend other) key
 `
 
@@ -136,6 +137,18 @@ func main() {
 			fatal(log, err)
 		}
 		fmt.Printf("project %s (id %d)\nDSN: %s\n", p.Slug, p.ID, dsn(cfg, p))
+	case "rotate-key":
+		if len(args) < 1 {
+			fatal(log, errors.New("usage: crashcart rotate-key <slug>"))
+		}
+		p, err := st.GetProject(ctx, args[0])
+		if err != nil {
+			fatal(log, err)
+		}
+		if p, err = st.RotateProjectKey(ctx, sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: newKey()}); err != nil {
+			fatal(log, err)
+		}
+		fmt.Printf("project %s: new DSN %s\n", p.Slug, dsn(cfg, p))
 	case "serve":
 		serve(ctx, cfg, st, in, syms, notifier, log)
 	default:

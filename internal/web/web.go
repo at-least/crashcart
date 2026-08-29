@@ -63,6 +63,7 @@ func (w *Web) Register(mux *http.ServeMux) {
 	mux.Handle("GET /p/{slug}/settings", page(w.settings))
 	mux.Handle("PATCH /p/{slug}/settings/sampling", mutation(w.settingsSampling))
 	mux.Handle("PATCH /p/{slug}/settings/platform", mutation(w.settingsPlatform))
+	mux.Handle("POST /p/{slug}/settings/rotate-key", mutation(w.settingsRotateKey))
 	mux.Handle("PATCH /p/{slug}/settings/alerts/{type}", mutation(w.settingsAlert))
 	mux.Handle("POST /p/{slug}/settings/channels", mutation(w.settingsChannelAdd))
 	mux.Handle("DELETE /p/{slug}/settings/channels/{id}", mutation(w.settingsChannelDelete))

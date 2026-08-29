@@ -13,6 +13,7 @@ CREATE TABLE projects (
     public_key        TEXT NOT NULL UNIQUE,
     sample_keep_first INTEGER NOT NULL DEFAULT 100,
     sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    daily_quota       INTEGER NOT NULL DEFAULT 100000,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

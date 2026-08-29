@@ -27,6 +27,7 @@ CREATE TABLE projects (
     public_key        TEXT NOT NULL UNIQUE,                   -- DSN key: https://<public_key>@host/<id>
     sample_keep_first INTEGER NOT NULL DEFAULT 100,           -- events stored per issue before sampling kicks in
     sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,  -- kept fraction after that (fatal always kept)
+    daily_quota       INTEGER NOT NULL DEFAULT 100000,        -- events accepted per UTC day; 0 = unlimited
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

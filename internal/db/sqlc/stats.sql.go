@@ -44,6 +44,23 @@ func (q *Queries) CrashSpikeInputs(ctx context.Context, arg CrashSpikeInputsPara
 	return i, err
 }
 
+const eventsSince = `-- name: EventsSince :one
+SELECT COALESCE(sum(events), 0)::bigint FROM event_stats_hourly WHERE project_id = $1 AND bucket >= $2
+`
+
+type EventsSinceParams struct {
+	ProjectID int64 `json:"project_id"`
+	Bucket    int64 `json:"bucket"`
+}
+
+// Events received since a bucket (daily quota accounting; real-time aggregate).
+func (q *Queries) EventsSince(ctx context.Context, arg EventsSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, eventsSince, arg.ProjectID, arg.Bucket)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const levelTotals = `-- name: LevelTotals :many
 SELECT level, sum(events)::bigint AS events
 FROM event_stats_hourly

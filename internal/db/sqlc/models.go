@@ -108,6 +108,7 @@ type Project struct {
 	PublicKey       string    `json:"public_key"`
 	SampleKeepFirst int32     `json:"sample_keep_first"`
 	SampleRate      float64   `json:"sample_rate"`
+	DailyQuota      int32     `json:"daily_quota"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 

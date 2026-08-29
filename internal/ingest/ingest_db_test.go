@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -147,6 +148,17 @@ func TestIngestLifecycle(t *testing.T) {
 		t.Fatalf("android event into an ios project: %+v %v", res, err)
 	}
 	p.Platform = nil
+
+	// Daily quota: the envelope that would cross it is rejected whole.
+	p.DailyQuota = 4 // 4 stored + sampled-out events are already counted today
+	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 8)), now), now)
+	if !errors.Is(err, ErrQuota) || res.Stored != 0 {
+		t.Fatalf("quota: res=%+v err=%v", res, err)
+	}
+	p.DailyQuota = 0
+	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 9)), now), now); err != nil {
+		t.Fatalf("unlimited quota: %v", err)
+	}
 
 	// Hourly stats via the continuous aggregate (real-time).
 	var crashes int64

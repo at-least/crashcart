@@ -11,7 +11,7 @@ import (
 
 const createProject = `-- name: CreateProject :one
 INSERT INTO projects (slug, name, platform, public_key)
-VALUES ($1, $2, $3, $4) RETURNING id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at
+VALUES ($1, $2, $3, $4) RETURNING id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at
 `
 
 type CreateProjectParams struct {
@@ -37,6 +37,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.PublicKey,
 		&i.SampleKeepFirst,
 		&i.SampleRate,
+		&i.DailyQuota,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -52,7 +53,7 @@ func (q *Queries) DeleteProject(ctx context.Context, id int64) error {
 }
 
 const getProject = `-- name: GetProject :one
-SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at FROM projects WHERE slug = $1
+SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects WHERE slug = $1
 `
 
 func (q *Queries) GetProject(ctx context.Context, slug string) (Project, error) {
@@ -66,13 +67,14 @@ func (q *Queries) GetProject(ctx context.Context, slug string) (Project, error) 
 		&i.PublicKey,
 		&i.SampleKeepFirst,
 		&i.SampleRate,
+		&i.DailyQuota,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getProjectByID = `-- name: GetProjectByID :one
-SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at FROM projects WHERE id = $1
+SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects WHERE id = $1
 `
 
 func (q *Queries) GetProjectByID(ctx context.Context, id int64) (Project, error) {
@@ -86,13 +88,14 @@ func (q *Queries) GetProjectByID(ctx context.Context, id int64) (Project, error)
 		&i.PublicKey,
 		&i.SampleKeepFirst,
 		&i.SampleRate,
+		&i.DailyQuota,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getProjectByKey = `-- name: GetProjectByKey :one
-SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at FROM projects WHERE public_key = $1
+SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects WHERE public_key = $1
 `
 
 func (q *Queries) GetProjectByKey(ctx context.Context, publicKey string) (Project, error) {
@@ -106,13 +109,14 @@ func (q *Queries) GetProjectByKey(ctx context.Context, publicKey string) (Projec
 		&i.PublicKey,
 		&i.SampleKeepFirst,
 		&i.SampleRate,
+		&i.DailyQuota,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at FROM projects ORDER BY name
+SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects ORDER BY name
 `
 
 func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
@@ -132,6 +136,7 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 			&i.PublicKey,
 			&i.SampleKeepFirst,
 			&i.SampleRate,
+			&i.DailyQuota,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -144,9 +149,36 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 	return items, nil
 }
 
+const rotateProjectKey = `-- name: RotateProjectKey :one
+UPDATE projects SET public_key = $2 WHERE id = $1 RETURNING id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at
+`
+
+type RotateProjectKeyParams struct {
+	ID        int64  `json:"id"`
+	PublicKey string `json:"public_key"`
+}
+
+// A new DSN key: the old one stops authenticating within the ingest cache TTL.
+func (q *Queries) RotateProjectKey(ctx context.Context, arg RotateProjectKeyParams) (Project, error) {
+	row := q.db.QueryRow(ctx, rotateProjectKey, arg.ID, arg.PublicKey)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Name,
+		&i.Platform,
+		&i.PublicKey,
+		&i.SampleKeepFirst,
+		&i.SampleRate,
+		&i.DailyQuota,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const updateProject = `-- name: UpdateProject :one
-UPDATE projects SET name = $2, platform = $3, sample_keep_first = $4, sample_rate = $5
-WHERE id = $1 RETURNING id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at
+UPDATE projects SET name = $2, platform = $3, sample_keep_first = $4, sample_rate = $5, daily_quota = $6
+WHERE id = $1 RETURNING id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at
 `
 
 type UpdateProjectParams struct {
@@ -155,6 +187,7 @@ type UpdateProjectParams struct {
 	Platform        *string `json:"platform"`
 	SampleKeepFirst int32   `json:"sample_keep_first"`
 	SampleRate      float64 `json:"sample_rate"`
+	DailyQuota      int32   `json:"daily_quota"`
 }
 
 func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error) {
@@ -164,6 +197,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		arg.Platform,
 		arg.SampleKeepFirst,
 		arg.SampleRate,
+		arg.DailyQuota,
 	)
 	var i Project
 	err := row.Scan(
@@ -174,6 +208,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.PublicKey,
 		&i.SampleKeepFirst,
 		&i.SampleRate,
+		&i.DailyQuota,
 		&i.CreatedAt,
 	)
 	return i, err

@@ -25,6 +25,7 @@ type projectOut struct {
 	Name            string    `json:"name"`
 	Platform        *string   `json:"platform"`
 	SampleKeepFirst int32     `json:"sample_keep_first"`
+	DailyQuota      int32     `json:"daily_quota"`
 	SampleRate      float64   `json:"sample_rate"`
 	CreatedAt       time.Time `json:"created_at"`
 	DSN             string    `json:"dsn"`
@@ -33,7 +34,7 @@ type projectOut struct {
 func (h *Handler) projectOut(r *http.Request, p sqlc.Project) projectOut {
 	return projectOut{
 		ID: p.ID, Slug: p.Slug, Name: p.Name, Platform: p.Platform,
-		SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, CreatedAt: p.CreatedAt.UTC(),
+		SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota, CreatedAt: p.CreatedAt.UTC(),
 		DSN: DSN(h.Cfg, r, p),
 	}
 }
@@ -151,12 +152,13 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 		Platform        *string  `json:"platform"`
 		SampleKeepFirst *int32   `json:"sample_keep_first"`
 		SampleRate      *float64 `json:"sample_rate"`
+		DailyQuota      *int32   `json:"daily_quota"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		h.fail(w, err)
 		return
 	}
-	upd := sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate}
+	upd := sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}
 	if in.Name != nil {
 		if strings.TrimSpace(*in.Name) == "" {
 			writeErr(w, http.StatusBadRequest, "name must not be empty")
@@ -184,6 +186,13 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		upd.SampleRate = *in.SampleRate
+	}
+	if in.DailyQuota != nil {
+		if *in.DailyQuota < 0 {
+			writeErr(w, http.StatusBadRequest, "daily_quota must be >= 0 (0 = unlimited)")
+			return
+		}
+		upd.DailyQuota = *in.DailyQuota
 	}
 	np, err := h.Store.UpdateProject(r.Context(), upd)
 	if err != nil {
@@ -230,4 +239,19 @@ func isNumeric(s string) bool {
 		}
 	}
 	return true
+}
+
+// rotateKey issues a new DSN key. The old key stops authenticating within
+// the ingest cache TTL; ship the new DSN with the next app release.
+func (h *Handler) rotateKey(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	np, err := h.Store.RotateProjectKey(r.Context(), sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: NewKey()})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.projectOut(r, np))
 }

@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,7 @@ const (
 	MaxBody      = 20 << 20 // 20 MB envelope
 	MaxEvents    = 500
 	WriteTimeout = 30 * time.Second // the write outlives a client that hangs up
+	keyCacheTTL  = 10 * time.Second // a rotated DSN key stops working within this
 )
 
 // Symbolicator resolves frames inline when a mapping is already cached.
@@ -58,6 +60,64 @@ type Ingester struct {
 	mu     sync.Mutex
 	byKey  map[string]cachedProject
 	warned map[int64]time.Time // last platform-mismatch warning per project
+	quota  map[int64]*quotaCounter
+}
+
+// quotaCounter is a project's events-today count, seeded from the hourly
+// aggregate and refreshed from it every minute (so replicas converge),
+// incremented locally in between.
+type quotaCounter struct {
+	day       time.Time
+	count     int64
+	refreshed time.Time
+	warnedAt  time.Time
+}
+
+func nextUTCDay(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, time.UTC)
+}
+
+// checkQuota rejects the envelope when accepting n more events would exceed
+// the project's daily quota (0 = unlimited). Sessions ride along with
+// events, so a rejected envelope loses its sessions too — acceptable for a
+// project that is being flooded.
+func (in *Ingester) checkQuota(ctx context.Context, p sqlc.Project, n int, now time.Time) error {
+	if p.DailyQuota <= 0 || n == 0 {
+		return nil
+	}
+	day := now.UTC().Truncate(24 * time.Hour)
+	in.mu.Lock()
+	qc := in.quota[p.ID]
+	if qc == nil || !qc.day.Equal(day) {
+		qc = &quotaCounter{day: day}
+		if in.quota == nil {
+			in.quota = map[int64]*quotaCounter{}
+		}
+		in.quota[p.ID] = qc
+	}
+	stale := now.Sub(qc.refreshed) > time.Minute
+	in.mu.Unlock()
+	if stale {
+		total, err := in.Store.EventsSince(ctx, sqlc.EventsSinceParams{ProjectID: p.ID, Bucket: pk.Lower(day)})
+		if err != nil {
+			return err
+		}
+		in.mu.Lock()
+		qc.count, qc.refreshed = total, now
+		in.mu.Unlock()
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if qc.count+int64(n) > int64(p.DailyQuota) {
+		if now.Sub(qc.warnedAt) > time.Minute {
+			qc.warnedAt = now
+			in.Log.Warn("ingest: daily quota exceeded", "project", p.Slug, "quota", p.DailyQuota, "today", qc.count)
+		}
+		return ErrQuota
+	}
+	qc.count += int64(n)
+	return nil
 }
 
 type cachedProject struct {
@@ -108,7 +168,7 @@ func (in *Ingester) Project(r *http.Request) (sqlc.Project, error) {
 		if err != nil {
 			return sqlc.Project{}, err
 		}
-		c = cachedProject{p: p, exp: time.Now().Add(time.Minute)}
+		c = cachedProject{p: p, exp: time.Now().Add(keyCacheTTL)}
 		in.mu.Lock()
 		if in.byKey == nil {
 			in.byKey = map[string]cachedProject{}
@@ -123,6 +183,9 @@ func (in *Ingester) Project(r *http.Request) (sqlc.Project, error) {
 }
 
 var errUnauthorized = errors.New("unauthorized")
+
+// ErrQuota: the project's daily quota is used up; nothing was written.
+var ErrQuota = errors.New("daily quota exceeded")
 
 func (in *Ingester) serveEnvelope(w http.ResponseWriter, r *http.Request) {
 	p, err := in.Project(r)
@@ -239,6 +302,14 @@ func (in *Ingester) fail(w http.ResponseWriter, err error) {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
+	if errors.Is(err, ErrQuota) {
+		// Sentry's rate-limit header: SDKs stop sending until the next UTC day.
+		secs := int(time.Until(nextUTCDay(time.Now())).Seconds()) + 1
+		w.Header().Set("X-Sentry-Rate-Limits", strconv.Itoa(secs)+":error;transaction;session:project:quota")
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		http.Error(w, `{"error":"daily quota exceeded"}`, http.StatusTooManyRequests)
+		return
+	}
 	in.Log.Error("ingest", "err", err)
 	http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
 }
@@ -263,6 +334,9 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	}
 
 	res.Invalid = env.Invalid
+	if err := in.checkQuota(ctx, p, len(env.Events), now); err != nil {
+		return res, err
+	}
 	expected := ""
 	if p.Platform != nil {
 		expected = *p.Platform

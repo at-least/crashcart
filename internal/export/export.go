@@ -73,6 +73,7 @@ type projectRow struct {
 	PublicKey       string  `json:"public_key"`
 	SampleKeepFirst int32   `json:"sample_keep_first"`
 	SampleRate      float64 `json:"sample_rate"`
+	DailyQuota      *int32  `json:"daily_quota,omitempty"`
 	CreatedAt       int64   `json:"created_at"`
 }
 
@@ -196,7 +197,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := enc.Encode(projectRow{
 			T: "projects", Slug: p.Slug, Name: p.Name, Platform: p.Platform, PublicKey: p.PublicKey,
-			SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, CreatedAt: ms(p.CreatedAt),
+			SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: &p.DailyQuota, CreatedAt: ms(p.CreatedAt),
 		}); err != nil {
 			return err
 		}
@@ -276,7 +277,7 @@ func exportProjects(ctx context.Context, st *store.Store, opt Options) ([]sqlc.P
 		}
 		return []sqlc.Project{p}, err
 	}
-	r, err := st.Pool.Query(ctx, "SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at FROM projects ORDER BY slug")
+	r, err := st.Pool.Query(ctx, "SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects ORDER BY slug")
 	if err != nil {
 		return nil, err
 	}
@@ -315,10 +316,11 @@ type Report struct {
 }
 
 const (
-	upsertProject = `INSERT INTO projects (slug, name, platform, public_key, sample_keep_first, sample_rate, created_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7)
+	upsertProject = `INSERT INTO projects (slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, platform = EXCLUDED.platform,
-	    sample_keep_first = EXCLUDED.sample_keep_first, sample_rate = EXCLUDED.sample_rate, created_at = EXCLUDED.created_at
+	    sample_keep_first = EXCLUDED.sample_keep_first, sample_rate = EXCLUDED.sample_rate,
+	    daily_quota = EXCLUDED.daily_quota, created_at = EXCLUDED.created_at
 	RETURNING id`
 	upsertIssue = `INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform, status, event_count,
 	stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at)
@@ -407,7 +409,11 @@ func (im *importer) line(b []byte) error {
 			r.SampleRate = 1
 		}
 		var id int64
-		err := im.st.Pool.QueryRow(im.ctx, upsertProject, r.Slug, r.Name, r.Platform, r.PublicKey, r.SampleKeepFirst, r.SampleRate, tsOrNow(r.CreatedAt)).Scan(&id)
+		quota := int32(100000)
+		if r.DailyQuota != nil {
+			quota = *r.DailyQuota
+		}
+		err := im.st.Pool.QueryRow(im.ctx, upsertProject, r.Slug, r.Name, r.Platform, r.PublicKey, r.SampleKeepFirst, r.SampleRate, quota, tsOrNow(r.CreatedAt)).Scan(&id)
 		if err != nil {
 			return fmt.Errorf("upsert project %q: %w", r.Slug, err)
 		}
