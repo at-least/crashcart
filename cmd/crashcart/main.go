@@ -104,6 +104,9 @@ func main() {
 		if err := seed.Run(ctx, in, slug); err != nil {
 			fatal(log, err)
 		}
+		if err := retention.RefreshAggregates(ctx, st); err != nil {
+			fatal(log, err)
+		}
 	case "export":
 		var opt export.Options
 		if len(args) > 0 {
@@ -115,6 +118,9 @@ func main() {
 	case "import":
 		rep, err := export.Import(ctx, st, os.Stdin)
 		if err != nil {
+			fatal(log, err)
+		}
+		if err := retention.RefreshAggregates(ctx, st); err != nil {
 			fatal(log, err)
 		}
 		json.NewEncoder(os.Stderr).Encode(rep)

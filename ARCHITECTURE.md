@@ -124,13 +124,3 @@ when the extension is unavailable:
 Do this after the serverless rollup lands (its spec is the reference).
 Deployment recipe to document alongside: Cloud Run / Fly (scale to zero) +
 Neon; Timescale Cloud stays the full-featured managed option.
-
-## To do: refresh aggregates after import / seed
-
-The continuous-aggregate policies only materialize the last 3 h / 3 d, and
-real-time aggregation covers only the region after the watermark, so
-history loaded by `crashcart import` (or `seed`) is invisible in stats
-until `CALL refresh_continuous_aggregate(<agg>, NULL, NULL)` runs for the
-three aggregates. Found 2026-08-29 while cross-checking the serverless
-rollup: the fixture database showed 20 of 2400 events until refreshed.
-Fix: import and seed should refresh the aggregates over the range they wrote.

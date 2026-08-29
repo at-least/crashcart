@@ -139,3 +139,24 @@ func TestSweep(t *testing.T) {
 		t.Errorf("symbol files left = %+v", left)
 	}
 }
+
+func TestRefreshAggregates(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	// An event written directly (as import does) two days ago: outside the
+	// policy window, invisible until refreshed.
+	old := pk.Lower(time.Now().Add(-48 * time.Hour))
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO events (id, project_id, event_id, level, message, payload) VALUES ($1, 1, 'e1', 'fatal', 'm', '{}')`, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := RefreshAggregates(ctx, st); err != nil {
+		t.Fatal(err)
+	}
+	var crashes int64
+	if err := st.Pool.QueryRow(ctx, `SELECT coalesce(sum(crashes), 0) FROM event_stats_hourly WHERE project_id = 1`).Scan(&crashes); err != nil {
+		t.Fatal(err)
+	}
+	if crashes != 1 {
+		t.Fatalf("crashes after refresh = %d, want 1", crashes)
+	}
+}

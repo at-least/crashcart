@@ -4,9 +4,12 @@ package retention
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/pk"
@@ -93,4 +96,37 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	}
 	log.Info("retention: sweep", "issues", issues, "jobs", jobs, "rate_limits", limits, "symbol_files", symbols)
 	return nil
+}
+
+// RefreshAggregates materializes the continuous aggregates over their whole
+// range. The policies only refresh the recent window and real-time
+// aggregation covers only what lies past the watermark, so history written
+// in bulk — `crashcart import`, `crashcart seed` — is invisible in the stats
+// until this runs. Must not be called inside a transaction.
+func RefreshAggregates(ctx context.Context, st *store.Store) error {
+	for _, a := range aggregates {
+		if err := refreshAggregate(ctx, st, a); err != nil {
+			return fmt.Errorf("refresh %s: %w", a, err)
+		}
+	}
+	return nil
+}
+
+// refreshAggregate retries while the aggregate's own policy job holds the
+// refresh lock (SQLSTATE 55P03, "concurrent refresh").
+func refreshAggregate(ctx context.Context, st *store.Store, name string) error {
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		_, err = st.Pool.Exec(ctx, fmt.Sprintf("CALL refresh_continuous_aggregate('%s', NULL, NULL)", name))
+		var pg *pgconn.PgError
+		if err == nil || !errors.As(err, &pg) || pg.Code != "55P03" {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return err
 }
