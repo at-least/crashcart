@@ -224,7 +224,10 @@ Ruby, PHP, Elixir, React Native, Flutter.
   rolled up by the scheduler and retention deletes in batches — identical
   behaviour, and no measurable difference below a few million events a
   month; TimescaleDB starts paying off in storage (compression) and
-  retention churn at tens of millions.
+  retention churn at tens of millions. The variant is fixed when the
+  database is first migrated; to move between them, `crashcart export` into
+  a freshly migrated database and `crashcart import` (there is no in-place
+  conversion).
 - **Policies come from the environment.** At startup (and on `crashcart
   retention`) compression (`COMPRESS_AFTER`) and retention
   (`RETENTION_DAYS`) policies are reconciled against the live database;
