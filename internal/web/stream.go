@@ -3,20 +3,25 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // Poll cadence of the SSE endpoint (variables so tests can shorten them).
+// With a Listener the poll is only the fallback, so it is slower.
 var (
 	streamPoll      = 5 * time.Second
+	streamWakePoll  = 60 * time.Second
 	streamKeepAlive = 15 * time.Second
 )
 
-// stream is GET /p/{slug}/stream?since=<RFC3339>: every poll it counts issues
-// first seen after `since` plus current regressions and emits an `issues`
-// event when the pair changes. Comments keep the connection alive.
+// stream is GET /p/{slug}/stream?since=<RFC3339>: on every issue
+// notification for the project (and every poll) it counts issues first
+// seen after `since` plus current regressions and emits an `issues` event
+// when the pair changes. Comments keep the connection alive.
 func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
 	p, ok := w.project(rw, r)
 	if !ok {
@@ -41,7 +46,15 @@ func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	ctx := r.Context()
-	poll := time.NewTicker(streamPoll)
+	interval := streamPoll
+	var wake <-chan string
+	if w.Listener != nil {
+		var stop func()
+		wake, stop = w.Listener.Subscribe(store.ChannelIssues, strconv.FormatInt(p.ID, 10))
+		defer stop()
+		interval = streamWakePoll
+	}
+	poll := time.NewTicker(interval)
 	defer poll.Stop()
 	keep := time.NewTicker(streamKeepAlive)
 	defer keep.Stop()
@@ -53,22 +66,24 @@ func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
 		case <-keep.C:
 			fmt.Fprint(rw, ": ping\n\n")
 			flusher.Flush()
+			continue
+		case <-wake:
 		case <-poll.C:
-			n, err := w.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: p.ID, FirstSeen: since})
-			if err != nil {
-				return
-			}
-			m, err := w.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: p.ID})
-			if err != nil {
-				return
-			}
-			data := fmt.Sprintf(`{"new":%d,"regressions":%d}`, n, m)
-			if data == last {
-				continue
-			}
-			last = data
-			fmt.Fprintf(rw, "event: issues\ndata: %s\n\n", data)
-			flusher.Flush()
 		}
+		n, err := w.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: p.ID, FirstSeen: since})
+		if err != nil {
+			return
+		}
+		m, err := w.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: p.ID})
+		if err != nil {
+			return
+		}
+		data := fmt.Sprintf(`{"new":%d,"regressions":%d}`, n, m)
+		if data == last {
+			continue
+		}
+		last = data
+		fmt.Fprintf(rw, "event: issues\ndata: %s\n\n", data)
+		flusher.Flush()
 	}
 }

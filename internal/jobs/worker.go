@@ -1,5 +1,6 @@
 // Package jobs runs the Postgres-backed queue: claim a batch with
 // SKIP LOCKED, dispatch by kind, delete on success, retry with backoff.
+// Workers wake on the jobs NOTIFY (store.Listener) and poll as a fallback.
 package jobs
 
 import (
@@ -20,21 +21,23 @@ import (
 // Handler processes one job; returning an error schedules a retry.
 type Handler func(ctx context.Context, job sqlc.Job, args json.RawMessage) error
 
-// Worker polls the jobs table.
+// Worker claims jobs when woken (Wake) and on a timer.
 type Worker struct {
 	Store    *store.Store
 	Log      *slog.Logger
 	Handlers map[string]Handler
-	Poll     time.Duration // idle sleep (default 2 s)
+	Wake     <-chan string // store.Listener subscription on ChannelJobs; nil = poll only
+	Poll     time.Duration // idle sleep (default 2 s; 30 s when Wake is set — retries are due at most that late)
 	Batch    int32         // jobs per claim (default 25)
 }
 
 const (
-	defaultPoll   = 2 * time.Second
-	defaultBatch  = 25
-	baseBackoff   = 5 * time.Second
-	maxBackoff    = 10 * time.Minute
-	maxErrorChars = 500
+	defaultPoll     = 2 * time.Second
+	defaultWakePoll = 30 * time.Second
+	defaultBatch    = 25
+	baseBackoff     = 5 * time.Second
+	maxBackoff      = 10 * time.Minute
+	maxErrorChars   = 500
 )
 
 // Backoff is the delay before attempt n+1 after n failed attempts:
@@ -60,6 +63,9 @@ func (w *Worker) Run(ctx context.Context) {
 	poll := w.Poll
 	if poll <= 0 {
 		poll = defaultPoll
+		if w.Wake != nil {
+			poll = defaultWakePoll
+		}
 	}
 	for {
 		if ctx.Err() != nil {
@@ -75,6 +81,7 @@ func (w *Worker) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-w.Wake:
 		case <-time.After(poll):
 		}
 	}

@@ -183,7 +183,11 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	if err := retention.Reconcile(ctx, st, cfg, log); err != nil {
 		fatal(log, err)
 	}
-	worker := &jobs.Worker{Store: st, Log: log, Handlers: map[string]jobs.Handler{
+	// One LISTEN connection wakes the workers and the SSE streams (polling
+	// stays as the fallback).
+	listener := &store.Listener{Pool: st.Pool, Log: log}
+	go listener.Run(ctx)
+	handlers := map[string]jobs.Handler{
 		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
 			var a struct {
 				Event string `json:"event"`
@@ -212,9 +216,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 			}
 			return notifier.Issue(ctx, j.ProjectID, a.Type, a.Fingerprint)
 		},
-	}}
+	}
 	for i := 0; i < max(cfg.Workers, 1); i++ {
-		go worker.Run(ctx)
+		wake, _ := listener.Subscribe(store.ChannelJobs, "")
+		go (&jobs.Worker{Store: st, Log: log, Handlers: handlers, Wake: wake}).Run(ctx)
 	}
 	go every(ctx, cfg.AlertInterval, func() {
 		if err := notifier.CheckSpikes(ctx); err != nil {
@@ -238,7 +243,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           server.New(server.Deps{Store: st, Cfg: cfg, Log: log, Symbols: syms}),
+		Handler:           server.New(server.Deps{Store: st, Cfg: cfg, Log: log, Symbols: syms, Listener: listener}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      0, // SSE

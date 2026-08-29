@@ -156,3 +156,21 @@ CREATE TABLE alert_channels (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX alert_channels_project ON alert_channels (project_id);
+
+-- ── notifications (LISTEN/NOTIFY; internal/store.Listener) ─────────────
+-- Fired on commit: a job worker wakes as soon as a job is queued, and the
+-- viewer's SSE stream re-counts when a project gains an issue or a
+-- regression. Polling stays as the fallback on both sides.
+
+CREATE FUNCTION crashcart_notify_job() RETURNS TRIGGER
+    LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_notify('crashcart_jobs', ''); RETURN NULL; END $$;
+CREATE TRIGGER jobs_notify AFTER INSERT ON jobs
+    FOR EACH STATEMENT EXECUTE FUNCTION crashcart_notify_job();
+
+CREATE FUNCTION crashcart_notify_issue() RETURNS TRIGGER
+    LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_notify('crashcart_issues', NEW.project_id::text); RETURN NULL; END $$;
+CREATE TRIGGER issues_notify_insert AFTER INSERT ON issues
+    FOR EACH ROW EXECUTE FUNCTION crashcart_notify_issue();
+CREATE TRIGGER issues_notify_regression AFTER UPDATE OF status ON issues
+    FOR EACH ROW WHEN (NEW.status = 'regression' AND OLD.status IS DISTINCT FROM NEW.status)
+    EXECUTE FUNCTION crashcart_notify_issue();

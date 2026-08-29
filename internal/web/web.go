@@ -36,10 +36,11 @@ import (
 
 // Web holds the viewer's dependencies.
 type Web struct {
-	Store   *store.Store
-	Cfg     config.Config
-	Log     *slog.Logger
-	Symbols *symbolicate.Service
+	Store    *store.Store
+	Cfg      config.Config
+	Log      *slog.Logger
+	Symbols  *symbolicate.Service
+	Listener *store.Listener // wakes the SSE stream on issue notifications; nil = poll only
 }
 
 // Register mounts the HTML routes and /static on mux.

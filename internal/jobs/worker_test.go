@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
@@ -123,5 +124,37 @@ func TestWorkerPanicIsRetry(t *testing.T) {
 	}
 	if attempts != 1 || lastErr != "panic: nope" {
 		t.Errorf("attempts=%d last_error=%q", attempts, lastErr)
+	}
+}
+
+func TestWorkerWakesOnNotify(t *testing.T) {
+	st := testdb.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := &store.Listener{Pool: st.Pool}
+	wake, stop := l.Subscribe(store.ChannelJobs, "")
+	defer stop()
+	go l.Run(ctx)
+	done := make(chan struct{}, 10)
+	w := &Worker{Store: st, Poll: time.Minute, Wake: wake, Handlers: map[string]Handler{
+		"ping": func(context.Context, sqlc.Job, json.RawMessage) error { done <- struct{}{}; return nil },
+	}}
+	go w.Run(ctx)
+	// The worker is idle on a one-minute poll; a queued job must run within a
+	// second because the trigger's NOTIFY wakes it. (The first enqueue may
+	// race the LISTEN; retry until it lands.)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "ping", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-done:
+			return
+		case <-time.After(500 * time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatal("worker did not wake on NOTIFY")
+			}
+		}
 	}
 }
