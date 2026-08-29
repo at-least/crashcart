@@ -1,0 +1,105 @@
+# GoReleaser: binaries to GitHub Releases, images to GHCR.
+# Triggered by .github/workflows/release.yml on tags v*.
+version: 2
+
+project_name: crashcart
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: crashcart
+    main: ./cmd/crashcart
+    binary: crashcart
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: tarball
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README.md
+      - docker-compose.yml
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^ci:"
+      - "^test:"
+
+# One image per architecture, then a multi-arch manifest for each tag.
+dockers:
+  - id: amd64
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-amd64
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --label=org.opencontainers.image.title={{ .ProjectName }}
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.source=https://github.com/crashcartapp/crashcart
+      - --label=org.opencontainers.image.licenses=MIT
+  - id: arm64
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-arm64
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.title={{ .ProjectName }}
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.source=https://github.com/crashcartapp/crashcart
+      - --label=org.opencontainers.image.licenses=MIT
+
+docker_manifests:
+  - name_template: ghcr.io/crashcartapp/crashcart:{{ .Version }}
+    image_templates:
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-amd64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-arm64
+  - name_template: ghcr.io/crashcartapp/crashcart:{{ .Major }}.{{ .Minor }}
+    image_templates:
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-amd64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-arm64
+  - name_template: ghcr.io/crashcartapp/crashcart:latest
+    image_templates:
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-amd64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-arm64
+
+release:
+  github:
+    owner: crashcartapp
+    name: crashcart
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Docker
+
+    ```
+    docker pull ghcr.io/crashcartapp/crashcart:{{ .Version }}
+    ```

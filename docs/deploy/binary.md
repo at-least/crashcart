@@ -3,10 +3,24 @@
 Run CrashCart as a plain service on a Linux host, with Postgres installed
 on the same machine or provided by a managed service.
 
-## 1. Build the binary
+## 1. Get the binary
 
-Needs Go 1.24 or newer. There is nothing else to install — the web assets
-are embedded.
+Download the latest release for your platform — a single static binary
+with the web assets embedded, nothing else to install:
+
+```sh
+curl -fsSL https://github.com/crashcartapp/crashcart/releases/latest/download/crashcart_linux_amd64.tar.gz | tar xz crashcart
+sudo install -m 755 crashcart /usr/local/bin/crashcart
+crashcart version
+```
+
+Builds are published for `linux_amd64`, `linux_arm64`, `darwin_amd64` and
+`darwin_arm64`; see the
+[releases page](https://github.com/crashcartapp/crashcart/releases) for
+checksums.
+
+::: details Building from source instead
+Needs Go 1.24 or newer.
 
 ```sh
 git clone https://github.com/crashcartapp/crashcart
@@ -14,6 +28,7 @@ cd crashcart
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o crashcart ./cmd/crashcart
 sudo install -m 755 crashcart /usr/local/bin/crashcart
 ```
+:::
 
 ## 2. Set up Postgres
 
@@ -99,11 +114,10 @@ follow [Connect an SDK](/guide/sdks).
 
 ## Upgrading
 
-Rebuild, replace the binary, restart:
+Download the new release, replace the binary, restart:
 
 ```sh
-git pull
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o crashcart ./cmd/crashcart
+curl -fsSL https://github.com/crashcartapp/crashcart/releases/latest/download/crashcart_linux_amd64.tar.gz | tar xz crashcart
 sudo install -m 755 crashcart /usr/local/bin/crashcart
 sudo systemctl restart crashcart
 ```

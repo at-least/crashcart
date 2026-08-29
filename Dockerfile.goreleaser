@@ -1,0 +1,7 @@
+# Used by GoReleaser: the binary is already built, just wrap it.
+# The plain Dockerfile builds from source for local `docker compose build`.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY crashcart /crashcart
+EXPOSE 8080
+ENTRYPOINT ["/crashcart"]
+CMD ["serve"]

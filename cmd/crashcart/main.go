@@ -30,6 +30,9 @@ import (
 	"github.com/at-least/crashcart/internal/symbolicate"
 )
 
+// version is set by the release build (-ldflags "-X main.version=v1.2.3").
+var version = "dev"
+
 const usage = `usage: crashcart <command>
 
   serve            HTTP server + job worker + schedulers (default)
@@ -42,6 +45,7 @@ const usage = `usage: crashcart <command>
   project <slug> <name> [platform]   create a project and print its DSN
   rotate-key <slug>                  issue a new DSN key (old one stops within seconds)
                                      (platform: ios android flutter react-native web backend other) key
+  version          print the version and exit
 `
 
 func main() {
@@ -52,6 +56,10 @@ func main() {
 	}
 	if cmd == "help" || cmd == "-h" || cmd == "--help" {
 		fmt.Print(usage)
+		return
+	}
+	if cmd == "version" || cmd == "-v" || cmd == "--version" {
+		fmt.Println("crashcart", version)
 		return
 	}
 	cfg, err := config.Load()

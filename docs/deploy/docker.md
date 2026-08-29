@@ -10,7 +10,11 @@ cd crashcart
 docker compose up -d
 ```
 
-CrashCart is now on port 8080. Migrations run automatically.
+This pulls the `ghcr.io/crashcartapp/crashcart` image and a Postgres
+image. CrashCart is now on port 8080; migrations run automatically.
+
+Images are published for `amd64` and `arm64`. To build from source
+instead, swap `image:` for `build: .` in `docker-compose.yml`.
 
 ## Before exposing it
 
@@ -50,9 +54,13 @@ environment. Android and JavaScript symbolication need nothing extra.
 ## Upgrading
 
 ```sh
-docker compose pull      # or: docker compose build crashcart
+docker compose pull
 docker compose up -d
 ```
+
+`latest` follows the newest release. To pin a version, set
+`image: ghcr.io/crashcartapp/crashcart:1.2.3` (or `:1.2` for the newest
+patch release of that line).
 
 Migrations and any changed retention settings apply on start.
 

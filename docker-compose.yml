@@ -15,7 +15,9 @@ services:
     restart: unless-stopped
 
   crashcart:
-    build: .
+    image: ghcr.io/crashcartapp/crashcart:latest
+    # To build from source instead: comment out `image:` and uncomment this.
+    # build: .
     depends_on:
       db:
         condition: service_healthy
