@@ -80,9 +80,11 @@ connection per process — `store.Listener`) and poll every 30 s as the
 fallback; the SSE "new issues" stream wakes the same way on
 `crashcart_issues` (new issue / regression, payload = project id).
 
-**Rate limiting is in memory.** Fixed 60 s windows per credential, per
-process; with several replicas each enforces `RATE_LIMIT` on its own
-share.
+**Rate limiting is in memory, the daily quota is in Postgres.** Rate
+limits are fixed 60 s windows per credential, per process; with several
+replicas each enforces `RATE_LIMIT` on its own share. The daily quota is
+exact: the ingest transaction bumps `project_usage (project_id, day)` and
+rolls back when the total crosses `projects.daily_quota`.
 
 **Viewer is server-rendered.** templ + htmx; all state in the URL. Issue-
 centric: overview → issues → issue (stack, breakdown, events) → event;
@@ -99,6 +101,7 @@ theme, and the SSE "new issues" banner.
 | sessions | hypertable | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
 | issues | table | (project_id, fingerprint) | stateful |
 | symbol_files | table | (project_id, kind, release, filename) | BYTEA in Postgres |
+| project_usage | table | (project_id, day) | events received per UTC day; daily quota |
 | jobs | table | id | queue |
 | alert_rules / alert_channels | table | | per project |
 | event_stats_hourly | cagg | bucket, project, release, platform, level | events / crashes / errors |

@@ -146,7 +146,7 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 	var d OverviewData
 	d.Received, d.Mismatch = w.receivedPlatforms(ctx, p, win.From, win.To)
 	if p.DailyQuota > 0 {
-		d.Today, _ = w.Store.EventsSince(ctx, sqlc.EventsSinceParams{ProjectID: p.ID, Bucket: n.UTC().Truncate(day)})
+		d.Today, _ = w.Store.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: n.UTC().Truncate(day)})
 		d.QuotaReached = d.Today >= int64(p.DailyQuota)
 	}
 	d.LatestRelease, d.CrashFree = w.latestHealth(ctx, p.ID, n, win.Days)

@@ -63,20 +63,10 @@ type Ingester struct {
 	Symbols Symbolicator // may be nil
 	Log     *slog.Logger
 
-	mu     sync.Mutex
-	byKey  map[string]cachedProject
-	warned map[int64]time.Time // last platform-mismatch warning per project
-	quota  map[int64]*quotaCounter
-}
-
-// quotaCounter is a project's events-today count, seeded from the hourly
-// aggregate and refreshed from it every minute (so replicas converge),
-// incremented locally in between.
-type quotaCounter struct {
-	day       time.Time
-	count     int64
-	refreshed time.Time
-	warnedAt  time.Time
+	mu          sync.Mutex
+	byKey       map[string]cachedProject
+	warned      map[int64]time.Time // last platform-mismatch warning per project
+	quotaWarned map[int64]time.Time // last quota warning per project
 }
 
 func nextUTCDay(t time.Time) time.Time {
@@ -84,46 +74,36 @@ func nextUTCDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, time.UTC)
 }
 
-// checkQuota rejects the envelope when accepting n more events would exceed
-// the project's daily quota (0 = unlimited). Sessions ride along with
+// checkQuota, inside the ingest transaction, counts n events against the
+// project's UTC day and fails with ErrQuota (rolling everything back) when
+// that crosses the daily quota (0 = unlimited). The count lives in
+// project_usage, so it is exact across replicas. Sessions ride along with
 // events, so a rejected envelope loses its sessions too — acceptable for a
 // project that is being flooded.
-func (in *Ingester) checkQuota(ctx context.Context, p sqlc.Project, n int, now time.Time) error {
+func (in *Ingester) checkQuota(ctx context.Context, q *sqlc.Queries, p sqlc.Project, n int, now time.Time) error {
 	if p.DailyQuota <= 0 || n == 0 {
 		return nil
 	}
-	day := now.UTC().Truncate(24 * time.Hour)
-	in.mu.Lock()
-	qc := in.quota[p.ID]
-	if qc == nil || !qc.day.Equal(day) {
-		qc = &quotaCounter{day: day}
-		if in.quota == nil {
-			in.quota = map[int64]*quotaCounter{}
-		}
-		in.quota[p.ID] = qc
+	total, err := q.AddProjectUsage(ctx, sqlc.AddProjectUsageParams{ProjectID: p.ID, Day: now.UTC().Truncate(24 * time.Hour), Events: int64(n)})
+	if err != nil {
+		return fmt.Errorf("quota: %w", err)
 	}
-	stale := now.Sub(qc.refreshed) > time.Minute
+	if total <= int64(p.DailyQuota) {
+		return nil
+	}
+	in.mu.Lock()
+	warn := now.Sub(in.quotaWarned[p.ID]) > time.Minute
+	if warn {
+		if in.quotaWarned == nil {
+			in.quotaWarned = map[int64]time.Time{}
+		}
+		in.quotaWarned[p.ID] = now
+	}
 	in.mu.Unlock()
-	if stale {
-		total, err := in.Store.EventsSince(ctx, sqlc.EventsSinceParams{ProjectID: p.ID, Bucket: day})
-		if err != nil {
-			return err
-		}
-		in.mu.Lock()
-		qc.count, qc.refreshed = total, now
-		in.mu.Unlock()
+	if warn {
+		in.Log.Warn("ingest: daily quota exceeded", "project", p.Slug, "quota", p.DailyQuota, "today", total-int64(n))
 	}
-	in.mu.Lock()
-	defer in.mu.Unlock()
-	if qc.count+int64(n) > int64(p.DailyQuota) {
-		if now.Sub(qc.warnedAt) > time.Minute {
-			qc.warnedAt = now
-			in.Log.Warn("ingest: daily quota exceeded", "project", p.Slug, "quota", p.DailyQuota, "today", qc.count)
-		}
-		return ErrQuota
-	}
-	qc.count += int64(n)
-	return nil
+	return ErrQuota
 }
 
 type cachedProject struct {
@@ -340,9 +320,6 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	}
 
 	res.Invalid = env.Invalid
-	if err := in.checkQuota(ctx, p, len(env.Events), now); err != nil {
-		return res, err
-	}
 	expected := ""
 	if p.Platform != nil {
 		expected = *p.Platform
@@ -387,6 +364,9 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	//    decide sampling, write events, sessions, jobs.
 	var jobs []sqlc.EnqueueJobParams
 	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+		if err := in.checkQuota(ctx, q, p, len(env.Events), now); err != nil {
+			return err
+		}
 		// An envelope the SDK resends (after a timeout, or from its crash
 		// cache) carries event_ids already stored: those must not be
 		// counted twice.

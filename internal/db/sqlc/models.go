@@ -113,6 +113,12 @@ type Project struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+type ProjectUsage struct {
+	ProjectID int64     `json:"project_id"`
+	Day       time.Time `json:"day"`
+	Events    int64     `json:"events"`
+}
+
 type ReleaseHealthDaily struct {
 	Bucket    time.Time `json:"bucket"`
 	ProjectID int64     `json:"project_id"`

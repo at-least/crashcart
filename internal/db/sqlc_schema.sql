@@ -95,6 +95,13 @@ CREATE TABLE upload_chunks (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE project_usage (
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    day        TIMESTAMPTZ NOT NULL,
+    events     BIGINT NOT NULL,
+    PRIMARY KEY (project_id, day)
+);
+
 CREATE TABLE jobs (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     kind       TEXT NOT NULL,

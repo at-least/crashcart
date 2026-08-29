@@ -100,6 +100,9 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	if err != nil {
 		return fmt.Errorf("expire jobs: %w", err)
 	}
+	if _, err := st.ExpireProjectUsage(ctx, now.Add(-retention)); err != nil {
+		return fmt.Errorf("expire project usage: %w", err)
+	}
 	chunks, err := st.ExpireUploadChunks(ctx, now.Add(-24*time.Hour))
 	if err != nil {
 		return fmt.Errorf("expire upload chunks: %w", err)

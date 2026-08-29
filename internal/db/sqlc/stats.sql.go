@@ -10,6 +10,27 @@ import (
 	"time"
 )
 
+const addProjectUsage = `-- name: AddProjectUsage :one
+INSERT INTO project_usage (project_id, day, events) VALUES ($1, $2, $3)
+ON CONFLICT (project_id, day) DO UPDATE SET events = project_usage.events + EXCLUDED.events
+RETURNING events
+`
+
+type AddProjectUsageParams struct {
+	ProjectID int64     `json:"project_id"`
+	Day       time.Time `json:"day"`
+	Events    int64     `json:"events"`
+}
+
+// Counts n received events against the project's UTC day and returns the
+// day's total (the caller compares it with daily_quota and rolls back).
+func (q *Queries) AddProjectUsage(ctx context.Context, arg AddProjectUsageParams) (int64, error) {
+	row := q.db.QueryRow(ctx, addProjectUsage, arg.ProjectID, arg.Day, arg.Events)
+	var events int64
+	err := row.Scan(&events)
+	return events, err
+}
+
 const crashSpikeInputs = `-- name: CrashSpikeInputs :one
 SELECT (SELECT count(*) FROM events e
          WHERE e.project_id = $1::bigint AND e.occurred_at >= $2::timestamptz
@@ -45,21 +66,16 @@ func (q *Queries) CrashSpikeInputs(ctx context.Context, arg CrashSpikeInputsPara
 	return i, err
 }
 
-const eventsSince = `-- name: EventsSince :one
-SELECT COALESCE(sum(events), 0)::bigint FROM event_stats_hourly WHERE project_id = $1 AND bucket >= $2
+const expireProjectUsage = `-- name: ExpireProjectUsage :execrows
+DELETE FROM project_usage WHERE day < $1
 `
 
-type EventsSinceParams struct {
-	ProjectID int64     `json:"project_id"`
-	Bucket    time.Time `json:"bucket"`
-}
-
-// Events received since a bucket (daily quota accounting; real-time aggregate).
-func (q *Queries) EventsSince(ctx context.Context, arg EventsSinceParams) (int64, error) {
-	row := q.db.QueryRow(ctx, eventsSince, arg.ProjectID, arg.Bucket)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
+func (q *Queries) ExpireProjectUsage(ctx context.Context, day time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, expireProjectUsage, day)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const levelTotals = `-- name: LevelTotals :many
@@ -137,6 +153,22 @@ func (q *Queries) PlatformTotals(ctx context.Context, arg PlatformTotalsParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const projectUsage = `-- name: ProjectUsage :one
+SELECT COALESCE((SELECT events FROM project_usage WHERE project_id = $1 AND day = $2), 0)::bigint
+`
+
+type ProjectUsageParams struct {
+	ProjectID int64     `json:"project_id"`
+	Day       time.Time `json:"day"`
+}
+
+func (q *Queries) ProjectUsage(ctx context.Context, arg ProjectUsageParams) (int64, error) {
+	row := q.db.QueryRow(ctx, projectUsage, arg.ProjectID, arg.Day)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const releaseStats = `-- name: ReleaseStats :many

@@ -51,6 +51,15 @@ FROM event_stats_hourly
 WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
 GROUP BY platform ORDER BY events DESC;
 
--- name: EventsSince :one
--- Events received since a bucket (daily quota accounting; real-time aggregate).
-SELECT COALESCE(sum(events), 0)::bigint FROM event_stats_hourly WHERE project_id = $1 AND bucket >= $2;
+-- name: AddProjectUsage :one
+-- Counts n received events against the project's UTC day and returns the
+-- day's total (the caller compares it with daily_quota and rolls back).
+INSERT INTO project_usage (project_id, day, events) VALUES ($1, $2, $3)
+ON CONFLICT (project_id, day) DO UPDATE SET events = project_usage.events + EXCLUDED.events
+RETURNING events;
+
+-- name: ProjectUsage :one
+SELECT COALESCE((SELECT events FROM project_usage WHERE project_id = $1 AND day = $2), 0)::bigint;
+
+-- name: ExpireProjectUsage :execrows
+DELETE FROM project_usage WHERE day < $1;

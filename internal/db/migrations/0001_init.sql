@@ -123,6 +123,17 @@ CREATE TABLE upload_chunks (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ── project usage (daily quota) ────────────────────────────────────────
+-- One row per project and UTC day, bumped in the ingest transaction; the
+-- envelope that would push it past projects.daily_quota is rolled back.
+
+CREATE TABLE project_usage (
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    day        TIMESTAMPTZ NOT NULL,                 -- UTC midnight
+    events     BIGINT NOT NULL,                      -- events received (stored or sampled out)
+    PRIMARY KEY (project_id, day)
+);
+
 -- ── jobs (Postgres-backed queue: SKIP LOCKED) ──────────────────────────
 
 CREATE TABLE jobs (
