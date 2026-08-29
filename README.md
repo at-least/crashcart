@@ -6,10 +6,10 @@ messages and release-health sessions. CrashCart is *Sentry SDK compatible*;
 it does not imitate the Sentry product — the viewer, API and data model are
 its own (see [GLOSSARY.md](GLOSSARY.md) for the vocabulary).
 
-One Go binary, one Postgres with TimescaleDB, nothing else required.
+One Go binary, one Postgres (TimescaleDB optional), nothing else required.
 
 ```
-Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres + TimescaleDB
+Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres (+ TimescaleDB)
 Browser    ──GET  /p/{slug}/…  (htmx) ──▶    │
 Scripts    ──GET  /api/projects/… ──────▶    │
 sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   └──▶ symbolicate sidecar (dSYM only, optional)
@@ -51,7 +51,8 @@ All configuration is by environment variable (`internal/config/config.go`).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` | — (required) | Postgres URL; the database must allow the `timescaledb` extension |
+| `DATABASE_URL` | — (required) | Postgres URL; TimescaleDB is used when the `timescaledb` extension can be created |
+| `TIMESCALE` | `auto` | `auto` probes the extension; `on` requires it; `off` forces plain Postgres |
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `PUBLIC_URL` | derived from the request | Externally visible base URL, used when printing DSNs |
 | `API_KEYS` | empty (open) | Comma-separated Bearer tokens for `/api/*` |
@@ -216,9 +217,14 @@ Ruby, PHP, Elixir, React Native, Flutter.
 
 ## Operations
 
-- **TimescaleDB is required.** `events` and `sessions` are hypertables keyed
-  by the microsecond id; hourly/daily statistics are continuous aggregates,
-  so nothing is kept in sync by hand.
+- **TimescaleDB is optional.** With it, `events` and `sessions` are
+  hypertables keyed by the microsecond id, hourly/daily statistics are
+  continuous aggregates, retention drops whole chunks and old data is
+  compressed. Without it (any managed Postgres) the same statistics are
+  rolled up by the scheduler and retention deletes in batches — identical
+  behaviour, and no measurable difference below a few million events a
+  month; TimescaleDB starts paying off in storage (compression) and
+  retention churn at tens of millions.
 - **Policies come from the environment.** At startup (and on `crashcart
   retention`) compression (`COMPRESS_AFTER`) and retention
   (`RETENTION_DAYS`) policies are reconciled against the live database;

@@ -7,7 +7,7 @@ Platform — never "log entry", "error group", "app version", "OS").
 ## Stack
 
 Go 1.24+ (std `net/http` mux, pgx/v5, sqlc, templ), Postgres 16 +
-TimescaleDB (required), htmx + Tailwind v4 + shadless for the viewer.
+TimescaleDB (optional — used when available, plain Postgres otherwise), htmx + Tailwind v4 + shadless for the viewer.
 Optional: dSYM symbolication sidecar (`container/symbolicate`).
 
 ## Commands
