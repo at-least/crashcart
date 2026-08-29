@@ -46,6 +46,11 @@ rows. Issue breakdowns (release / OS / device / environment / `tags.<key>`)
 are one scan with a `LATERAL VALUES` unpivot and a window function. Tag
 filters are containment (`tags @> {k: v}`) on a GIN index.
 
+**Enumerations are Postgres types.** `event_level`, `session_status`,
+`issue_status`, `symbol_kind`, `job_kind`, `alert_type`, `channel_kind` are
+`CREATE TYPE … AS ENUM`; sqlc generates the Go constants, so the allowed
+values have one definition and a bad value is rejected by the database.
+
 **Issues are the one stateful table.** Status lifecycle (unresolved → triaged
 → resolved → regression / ignored), first/last release, exact `event_count`
 (counts sampled-out events) and `stored_count`. Regression = a resolved

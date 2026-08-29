@@ -135,8 +135,8 @@ type LevelTotalsParams struct {
 }
 
 type LevelTotalsRow struct {
-	Level  string `json:"level"`
-	Events int64  `json:"events"`
+	Level  EventLevel `json:"level"`
+	Events int64      `json:"events"`
 }
 
 func (q *Queries) LevelTotals(ctx context.Context, arg LevelTotalsParams) ([]LevelTotalsRow, error) {

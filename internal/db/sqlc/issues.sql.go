@@ -46,8 +46,8 @@ SELECT status, count(*) AS n FROM issues WHERE project_id = $1 GROUP BY status
 `
 
 type CountIssuesByStatusRow struct {
-	Status string `json:"status"`
-	N      int64  `json:"n"`
+	Status IssueStatus `json:"status"`
+	N      int64       `json:"n"`
 }
 
 func (q *Queries) CountIssuesByStatus(ctx context.Context, projectID int64) ([]CountIssuesByStatusRow, error) {
@@ -398,16 +398,16 @@ func (q *Queries) ListRegressions(ctx context.Context, arg ListRegressionsParams
 }
 
 const setIssueStatus = `-- name: SetIssueStatus :one
-UPDATE issues SET status = $3,
-    resolved_release = CASE WHEN $3 = 'resolved' THEN last_release ELSE resolved_release END,
+UPDATE issues SET status = $3::issue_status,
+    resolved_release = CASE WHEN $3::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
     updated_at = now()
 WHERE project_id = $1 AND fingerprint = $2 RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at
 `
 
 type SetIssueStatusParams struct {
-	ProjectID   int64  `json:"project_id"`
-	Fingerprint string `json:"fingerprint"`
-	Status      string `json:"status"`
+	ProjectID   int64       `json:"project_id"`
+	Fingerprint string      `json:"fingerprint"`
+	Status      IssueStatus `json:"status"`
 }
 
 func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) (Issue, error) {
@@ -436,16 +436,16 @@ func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) 
 }
 
 const setIssuesStatus = `-- name: SetIssuesStatus :execrows
-UPDATE issues SET status = $3,
-    resolved_release = CASE WHEN $3 = 'resolved' THEN last_release ELSE resolved_release END,
+UPDATE issues SET status = $3::issue_status,
+    resolved_release = CASE WHEN $3::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
     updated_at = now()
 WHERE project_id = $1 AND fingerprint = ANY($2::text[])
 `
 
 type SetIssuesStatusParams struct {
-	ProjectID int64    `json:"project_id"`
-	Column2   []string `json:"column_2"`
-	Status    string   `json:"status"`
+	ProjectID int64       `json:"project_id"`
+	Column2   []string    `json:"column_2"`
+	Status    IssueStatus `json:"status"`
 }
 
 func (q *Queries) SetIssuesStatus(ctx context.Context, arg SetIssuesStatusParams) (int64, error) {
@@ -475,39 +475,39 @@ RETURNING project_id, fingerprint, title, level, error_type, screen, platform, s
 `
 
 type UpsertIssueParams struct {
-	ProjectID    int64     `json:"project_id"`
-	Fingerprint  string    `json:"fingerprint"`
-	Title        string    `json:"title"`
-	Level        string    `json:"level"`
-	ErrorType    *string   `json:"error_type"`
-	Screen       *string   `json:"screen"`
-	Platform     *string   `json:"platform"`
-	EventCount   int64     `json:"event_count"`
-	StoredCount  int64     `json:"stored_count"`
-	FirstSeen    time.Time `json:"first_seen"`
-	LastSeen     time.Time `json:"last_seen"`
-	FirstRelease *string   `json:"first_release"`
+	ProjectID    int64      `json:"project_id"`
+	Fingerprint  string     `json:"fingerprint"`
+	Title        string     `json:"title"`
+	Level        EventLevel `json:"level"`
+	ErrorType    *string    `json:"error_type"`
+	Screen       *string    `json:"screen"`
+	Platform     *string    `json:"platform"`
+	EventCount   int64      `json:"event_count"`
+	StoredCount  int64      `json:"stored_count"`
+	FirstSeen    time.Time  `json:"first_seen"`
+	LastSeen     time.Time  `json:"last_seen"`
+	FirstRelease *string    `json:"first_release"`
 }
 
 type UpsertIssueRow struct {
-	ProjectID       int64     `json:"project_id"`
-	Fingerprint     string    `json:"fingerprint"`
-	Title           string    `json:"title"`
-	Level           string    `json:"level"`
-	ErrorType       *string   `json:"error_type"`
-	Screen          *string   `json:"screen"`
-	Platform        *string   `json:"platform"`
-	Status          string    `json:"status"`
-	EventCount      int64     `json:"event_count"`
-	StoredCount     int64     `json:"stored_count"`
-	FirstSeen       time.Time `json:"first_seen"`
-	LastSeen        time.Time `json:"last_seen"`
-	FirstRelease    *string   `json:"first_release"`
-	LastRelease     *string   `json:"last_release"`
-	ResolvedRelease *string   `json:"resolved_release"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	Created         bool      `json:"created"`
+	ProjectID       int64       `json:"project_id"`
+	Fingerprint     string      `json:"fingerprint"`
+	Title           string      `json:"title"`
+	Level           EventLevel  `json:"level"`
+	ErrorType       *string     `json:"error_type"`
+	Screen          *string     `json:"screen"`
+	Platform        *string     `json:"platform"`
+	Status          IssueStatus `json:"status"`
+	EventCount      int64       `json:"event_count"`
+	StoredCount     int64       `json:"stored_count"`
+	FirstSeen       time.Time   `json:"first_seen"`
+	LastSeen        time.Time   `json:"last_seen"`
+	FirstRelease    *string     `json:"first_release"`
+	LastRelease     *string     `json:"last_release"`
+	ResolvedRelease *string     `json:"resolved_release"`
+	CreatedAt       time.Time   `json:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at"`
+	Created         bool        `json:"created"`
 }
 
 // Called once per (project, fingerprint) per envelope with the folded count.

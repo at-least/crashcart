@@ -449,7 +449,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				stored = int64(len(g))
 			}
 			row, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
-				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: level,
+				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: sqlc.EventLevel(level),
 				ErrorType: nilIfEmpty(first.ev.ErrorType), Screen: nilIfEmpty(first.ev.Screen), Platform: nilIfEmpty(first.ev.Platform),
 				EventCount: int64(len(g)), StoredCount: stored, FirstSeen: minAt, LastSeen: maxAt, FirstRelease: lastRelease,
 			})
@@ -529,7 +529,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		if len(jobs) > 0 {
 			jp := sqlc.EnqueueJobsParams{}
 			for _, j := range jobs {
-				jp.Kinds = append(jp.Kinds, j.Kind)
+				jp.Kinds = append(jp.Kinds, string(j.Kind))
 				jp.ProjectIds = append(jp.ProjectIds, j.ProjectID)
 				jp.Args = append(jp.Args, j.Args)
 				jp.RunAfters = append(jp.RunAfters, j.RunAfter)

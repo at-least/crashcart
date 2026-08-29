@@ -50,12 +50,12 @@ func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {
 	// Show every type even before its row exists (defaults: on, 60 min).
 	have := map[string]sqlc.AlertRule{}
 	for _, ru := range rules {
-		have[ru.Type] = ru
+		have[string(ru.Type)] = ru
 	}
 	for _, t := range AlertTypes {
 		ru, ok := have[t]
 		if !ok {
-			ru = sqlc.AlertRule{ProjectID: p.ID, Type: t, Enabled: true, CooldownMinutes: 60}
+			ru = sqlc.AlertRule{ProjectID: p.ID, Type: sqlc.AlertType(t), Enabled: true, CooldownMinutes: 60}
 		}
 		d.Rules = append(d.Rules, ru)
 	}
@@ -111,7 +111,7 @@ func (w *Web) createProject(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, t := range AlertTypes {
-		if _, err := w.Store.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: t, Enabled: true, CooldownMinutes: 60}); err != nil {
+		if _, err := w.Store.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(t), Enabled: true, CooldownMinutes: 60}); err != nil {
 			w.fail(rw, r, err)
 			return
 		}
@@ -217,7 +217,7 @@ func (w *Web) settingsAlert(rw http.ResponseWriter, r *http.Request) {
 		}
 		cooldown = n
 	}
-	if _, err := w.Store.UpsertAlertRule(r.Context(), sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: typ, Enabled: enabled, CooldownMinutes: int32(cooldown)}); err != nil {
+	if _, err := w.Store.UpsertAlertRule(r.Context(), sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ), Enabled: enabled, CooldownMinutes: int32(cooldown)}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -253,7 +253,7 @@ func (w *Web) settingsChannelAdd(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "kind must be webhook or telegram", http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: r.PostForm.Get("kind"), Config: cfg}); err != nil {
+	if _, err := w.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: sqlc.ChannelKind(r.PostForm.Get("kind")), Config: cfg}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

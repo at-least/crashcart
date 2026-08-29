@@ -121,14 +121,14 @@ templ IssuesTable(pg Page, d IssuesData) {
 								<td class="cell-msg">
 									<a class="msg issue-title-link" href={ u(pg.S.Persist().Href("/issues/" + is.Fingerprint)) }>{ is.Title }</a>
 									<div class="sub">
-										if is.Status != pg.S.Status && pg.S.Status == "all" {
-											@StatusBadge(is.Status)
+										if string(is.Status) != pg.S.Status && pg.S.Status == "all" {
+											@StatusBadge(string(is.Status))
 										}
 										{ issueSub(is) }
 									</div>
 								</td>
 								<td>
-									@LevelBadge(is.Level)
+									@LevelBadge(string(is.Level))
 								</td>
 								<td class="cell-spark">
 									@templ.Raw(d.Sparks[is.Fingerprint])

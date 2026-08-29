@@ -45,14 +45,14 @@ FROM symbol_files WHERE project_id = $1 ORDER BY uploaded_at DESC
 `
 
 type ListSymbolFilesRow struct {
-	ID         int64     `json:"id"`
-	ProjectID  int64     `json:"project_id"`
-	Kind       string    `json:"kind"`
-	Release    string    `json:"release"`
-	DebugID    *string   `json:"debug_id"`
-	Filename   string    `json:"filename"`
-	Size       int64     `json:"size"`
-	UploadedAt time.Time `json:"uploaded_at"`
+	ID         int64      `json:"id"`
+	ProjectID  int64      `json:"project_id"`
+	Kind       SymbolKind `json:"kind"`
+	Release    string     `json:"release"`
+	DebugID    *string    `json:"debug_id"`
+	Filename   string     `json:"filename"`
+	Size       int64      `json:"size"`
+	UploadedAt time.Time  `json:"uploaded_at"`
 }
 
 func (q *Queries) ListSymbolFiles(ctx context.Context, projectID int64) ([]ListSymbolFilesRow, error) {
@@ -144,10 +144,10 @@ SELECT EXISTS (SELECT 1 FROM symbol_files WHERE project_id = $1 AND kind = $2 AN
 `
 
 type SymbolFileExistsParams struct {
-	ProjectID int64    `json:"project_id"`
-	Kind      string   `json:"kind"`
-	Release   string   `json:"release"`
-	Column4   []string `json:"column_4"`
+	ProjectID int64      `json:"project_id"`
+	Kind      SymbolKind `json:"kind"`
+	Release   string     `json:"release"`
+	Column4   []string   `json:"column_4"`
 }
 
 func (q *Queries) SymbolFileExists(ctx context.Context, arg SymbolFileExistsParams) (bool, error) {
@@ -167,9 +167,9 @@ SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_a
 `
 
 type SymbolFilesForReleaseParams struct {
-	ProjectID int64  `json:"project_id"`
-	Release   string `json:"release"`
-	Kind      string `json:"kind"`
+	ProjectID int64      `json:"project_id"`
+	Release   string     `json:"release"`
+	Kind      SymbolKind `json:"kind"`
 }
 
 func (q *Queries) SymbolFilesForRelease(ctx context.Context, arg SymbolFilesForReleaseParams) ([]SymbolFile, error) {
@@ -211,24 +211,24 @@ RETURNING id, project_id, kind, release, debug_id, filename, size, uploaded_at
 `
 
 type UpsertSymbolFileParams struct {
-	ProjectID int64   `json:"project_id"`
-	Kind      string  `json:"kind"`
-	Release   string  `json:"release"`
-	DebugID   *string `json:"debug_id"`
-	Filename  string  `json:"filename"`
-	Size      int64   `json:"size"`
-	Data      []byte  `json:"data"`
+	ProjectID int64      `json:"project_id"`
+	Kind      SymbolKind `json:"kind"`
+	Release   string     `json:"release"`
+	DebugID   *string    `json:"debug_id"`
+	Filename  string     `json:"filename"`
+	Size      int64      `json:"size"`
+	Data      []byte     `json:"data"`
 }
 
 type UpsertSymbolFileRow struct {
-	ID         int64     `json:"id"`
-	ProjectID  int64     `json:"project_id"`
-	Kind       string    `json:"kind"`
-	Release    string    `json:"release"`
-	DebugID    *string   `json:"debug_id"`
-	Filename   string    `json:"filename"`
-	Size       int64     `json:"size"`
-	UploadedAt time.Time `json:"uploaded_at"`
+	ID         int64      `json:"id"`
+	ProjectID  int64      `json:"project_id"`
+	Kind       SymbolKind `json:"kind"`
+	Release    string     `json:"release"`
+	DebugID    *string    `json:"debug_id"`
+	Filename   string     `json:"filename"`
+	Size       int64      `json:"size"`
+	UploadedAt time.Time  `json:"uploaded_at"`
 }
 
 func (q *Queries) UpsertSymbolFile(ctx context.Context, arg UpsertSymbolFileParams) (UpsertSymbolFileRow, error) {

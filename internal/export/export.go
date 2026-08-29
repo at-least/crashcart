@@ -238,8 +238,8 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := stream(ctx, st, selectIssues, p.ID, func(r sqlc.Issue) error {
 			return enc.Encode(issueRow{
-				T: "issues", Project: p.Slug, Fingerprint: r.Fingerprint, Title: r.Title, Level: r.Level,
-				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: r.Status,
+				T: "issues", Project: p.Slug, Fingerprint: r.Fingerprint, Title: r.Title, Level: string(r.Level),
+				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: string(r.Status),
 				EventCount: r.EventCount, StoredCount: r.StoredCount, FirstSeen: at(r.FirstSeen), LastSeen: at(r.LastSeen),
 				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, ResolvedRelease: r.ResolvedRelease,
 				CreatedAt: at(r.CreatedAt), UpdatedAt: at(r.UpdatedAt),
@@ -251,7 +251,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := stream(ctx, st, selectEvents, p.ID, func(r sqlc.Event) error {
 			return enc.Encode(eventRow{
-				T: "events", Project: p.Slug, OccurredAt: at(r.OccurredAt), EventID: r.EventID, Level: r.Level, Message: r.Message,
+				T: "events", Project: p.Slug, OccurredAt: at(r.OccurredAt), EventID: r.EventID, Level: string(r.Level), Message: r.Message,
 				Platform: r.Platform, Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID,
 				DeviceModel: r.DeviceModel, OSVersion: r.OsVersion, Screen: r.Screen, ErrorType: r.ErrorType,
 				ErrorLocation: r.ErrorLocation, Handled: r.Handled, SDKName: r.SdkName, UserID: r.UserID,
@@ -264,7 +264,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	for _, p := range projects {
 		if err := stream(ctx, st, selectSessions, p.ID, func(r sqlc.Session) error {
-			return enc.Encode(sessionRow{T: "sessions", Project: p.Slug, StartedAt: at(r.StartedAt), SID: r.Sid, Release: r.Release, Environment: r.Environment, Status: r.Status, Count: r.Count})
+			return enc.Encode(sessionRow{T: "sessions", Project: p.Slug, StartedAt: at(r.StartedAt), SID: r.Sid, Release: r.Release, Environment: r.Environment, Status: string(r.Status), Count: r.Count})
 		}); err != nil {
 			return fmt.Errorf("export sessions: %w", err)
 		}
@@ -272,7 +272,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := stream(ctx, st, selectSymbolFiles, p.ID, func(r sqlc.SymbolFile) error {
 			return enc.Encode(symbolFileRow{
-				T: "symbol_files", Project: p.Slug, Kind: r.Kind, Release: r.Release, DebugID: r.DebugID,
+				T: "symbol_files", Project: p.Slug, Kind: string(r.Kind), Release: r.Release, DebugID: r.DebugID,
 				Filename: r.Filename, Size: r.Size, Data: r.Data, UploadedAt: at(r.UploadedAt),
 			})
 		}); err != nil {
@@ -286,14 +286,14 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 				v := at(*r.LastTriggered)
 				lt = &v
 			}
-			return enc.Encode(alertRuleRow{T: "alert_rules", Project: p.Slug, Type: r.Type, Enabled: r.Enabled, CooldownMinutes: r.CooldownMinutes, LastTriggered: lt})
+			return enc.Encode(alertRuleRow{T: "alert_rules", Project: p.Slug, Type: string(r.Type), Enabled: r.Enabled, CooldownMinutes: r.CooldownMinutes, LastTriggered: lt})
 		}); err != nil {
 			return fmt.Errorf("export alert_rules: %w", err)
 		}
 	}
 	for _, p := range projects {
 		if err := stream(ctx, st, selectAlertChannels, p.ID, func(r sqlc.AlertChannel) error {
-			return enc.Encode(alertChannelRow{T: "alert_channels", Project: p.Slug, Kind: r.Kind, Config: r.Config, CreatedAt: at(r.CreatedAt)})
+			return enc.Encode(alertChannelRow{T: "alert_channels", Project: p.Slug, Kind: string(r.Kind), Config: r.Config, CreatedAt: at(r.CreatedAt)})
 		}); err != nil {
 			return fmt.Errorf("export alert_channels: %w", err)
 		}

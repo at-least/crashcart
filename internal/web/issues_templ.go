@@ -570,8 +570,8 @@ func IssuesTable(pg Page, d IssuesData) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				if is.Status != pg.S.Status && pg.S.Status == "all" {
-					templ_7745c5c3_Err = StatusBadge(is.Status).Render(ctx, templ_7745c5c3_Buffer)
+				if string(is.Status) != pg.S.Status && pg.S.Status == "all" {
+					templ_7745c5c3_Err = StatusBadge(string(is.Status)).Render(ctx, templ_7745c5c3_Buffer)
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -589,7 +589,7 @@ func IssuesTable(pg Page, d IssuesData) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = LevelBadge(is.Level).Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = LevelBadge(string(is.Level)).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

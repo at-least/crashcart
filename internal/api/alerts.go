@@ -48,7 +48,7 @@ func (h *Handler) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur := sqlc.AlertRule{Enabled: true, CooldownMinutes: 60}
-	if rule, err := h.Store.GetAlertRule(r.Context(), sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: typ}); err == nil {
+	if rule, err := h.Store.GetAlertRule(r.Context(), sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ)}); err == nil {
 		cur = rule
 	}
 	if in.Enabled != nil {
@@ -61,7 +61,7 @@ func (h *Handler) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		}
 		cur.CooldownMinutes = *in.CooldownMinutes
 	}
-	rule, err := h.Store.UpsertAlertRule(r.Context(), sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: typ, Enabled: cur.Enabled, CooldownMinutes: cur.CooldownMinutes})
+	rule, err := h.Store.UpsertAlertRule(r.Context(), sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ), Enabled: cur.Enabled, CooldownMinutes: cur.CooldownMinutes})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -117,7 +117,7 @@ func (h *Handler) createAlertChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "kind must be webhook or telegram")
 		return
 	}
-	ch, err := h.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: in.Kind, Config: in.Config})
+	ch, err := h.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: sqlc.ChannelKind(in.Kind), Config: in.Config})
 	if err != nil {
 		h.fail(w, err)
 		return

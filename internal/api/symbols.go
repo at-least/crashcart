@@ -91,8 +91,8 @@ func sentryDebugFileFrom(f sqlc.ListSymbolFilesRow, sha string) sentryDebugFile 
 	// symbolType is the file format; data.features what the file provides.
 	// data.type (symbolic's object class) is optional for sentry-cli and its
 	// accepted spellings vary between versions, so it is left out.
-	typ := map[string]string{"proguard": "proguard", "sourcemap": "sourcebundle", "dsym": "macho"}[f.Kind]
-	features := map[string][]string{"proguard": {"mapping"}, "sourcemap": {"sources"}, "dsym": {"debug", "symtab"}}[f.Kind]
+	typ := map[string]string{"proguard": "proguard", "sourcemap": "sourcebundle", "dsym": "macho"}[string(f.Kind)]
+	features := map[string][]string{"proguard": {"mapping"}, "sourcemap": {"sources"}, "dsym": {"debug", "symtab"}}[string(f.Kind)]
 	data := map[string]any{"features": features}
 	return sentryDebugFile{
 		ID: strconv.FormatInt(f.ID, 10), UUID: deref(f.DebugID), DebugID: deref(f.DebugID), Name: f.Filename,

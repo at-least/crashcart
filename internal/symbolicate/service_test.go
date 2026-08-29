@@ -46,7 +46,7 @@ func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (stri
 	at := ev.Timestamp.UTC()
 	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		if _, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
-			ProjectID: p.ID, Fingerprint: fp, Title: ev.IssueTitle(), Level: ev.Level, EventCount: 1, StoredCount: 1,
+			ProjectID: p.ID, Fingerprint: fp, Title: ev.IssueTitle(), Level: sqlc.EventLevel(ev.Level), EventCount: 1, StoredCount: 1,
 			FirstSeen: at, LastSeen: at, FirstRelease: nilIfEmpty(ev.Release), Platform: nilIfEmpty(ev.Platform),
 		}); err != nil {
 			return err
@@ -78,7 +78,7 @@ func upload(t *testing.T, st *store.Store, p sqlc.Project, kind, release, debugI
 		did = &debugID
 	}
 	_, err := st.UpsertSymbolFile(context.Background(), sqlc.UpsertSymbolFileParams{
-		ProjectID: p.ID, Kind: kind, Release: release, DebugID: did, Filename: filename, Size: int64(len(data)), Data: data,
+		ProjectID: p.ID, Kind: sqlc.SymbolKind(kind), Release: release, DebugID: did, Filename: filename, Size: int64(len(data)), Data: data,
 	})
 	if err != nil {
 		t.Fatal(err)

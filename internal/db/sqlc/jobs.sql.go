@@ -83,7 +83,7 @@ INSERT INTO jobs (kind, project_id, args, run_after) VALUES ($1, $2, $3, $4)
 `
 
 type EnqueueJobParams struct {
-	Kind      string          `json:"kind"`
+	Kind      JobKind         `json:"kind"`
 	ProjectID int64           `json:"project_id"`
 	Args      json.RawMessage `json:"args"`
 	RunAfter  time.Time       `json:"run_after"`
@@ -101,7 +101,7 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) error {
 
 const enqueueJobs = `-- name: EnqueueJobs :exec
 INSERT INTO jobs (kind, project_id, args, run_after)
-SELECT unnest($1::text[]), unnest($2::bigint[]), unnest($3::jsonb[]), unnest($4::timestamptz[])
+SELECT unnest($1::text[])::job_kind, unnest($2::bigint[]), unnest($3::jsonb[]), unnest($4::timestamptz[])
 `
 
 type EnqueueJobsParams struct {

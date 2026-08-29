@@ -88,7 +88,7 @@ func TestSweep(t *testing.T) {
 		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 1, Fingerprint: fp, Title: fp, Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: seen, LastSeen: seen}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 1, Fingerprint: fp, Status: status}); err != nil {
+		if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 1, Fingerprint: fp, Status: sqlc.IssueStatus(status)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -101,7 +101,7 @@ func TestSweep(t *testing.T) {
 		attempts int
 		age      string
 	}{{8, "1 hour"}, {0, "8 days"}, {0, "1 hour"}} {
-		if _, err := st.Pool.Exec(ctx, `INSERT INTO jobs (kind, project_id, attempts, created_at) VALUES ('x', 1, $1, now() - $2::interval)`, j.attempts, j.age); err != nil {
+		if _, err := st.Pool.Exec(ctx, `INSERT INTO jobs (kind, project_id, attempts, created_at) VALUES ('alert', 1, $1, now() - $2::interval)`, j.attempts, j.age); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -39,8 +39,8 @@ type issueOut struct {
 
 func toIssueOut(i sqlc.Issue) issueOut {
 	return issueOut{
-		Fingerprint: i.Fingerprint, Title: i.Title, Level: i.Level, ErrorType: i.ErrorType, Screen: i.Screen,
-		Platform: i.Platform, Status: i.Status, EventCount: i.EventCount, StoredCount: i.StoredCount,
+		Fingerprint: i.Fingerprint, Title: i.Title, Level: string(i.Level), ErrorType: i.ErrorType, Screen: i.Screen,
+		Platform: i.Platform, Status: string(i.Status), EventCount: i.EventCount, StoredCount: i.StoredCount,
 		FirstSeen: i.FirstSeen.UTC(), LastSeen: i.LastSeen.UTC(),
 		FirstRelease: i.FirstRelease, LastRelease: i.LastRelease, ResolvedRelease: i.ResolvedRelease,
 		CreatedAt: i.CreatedAt.UTC(), UpdatedAt: i.UpdatedAt.UTC(),
@@ -206,7 +206,7 @@ func (h *Handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, triaged, resolved, ignored, regression")
 		return
 	}
-	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: r.PathValue("fingerprint"), Status: in.Status})
+	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: r.PathValue("fingerprint"), Status: sqlc.IssueStatus(in.Status)})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -235,7 +235,7 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "fingerprints must not be empty")
 		return
 	}
-	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: in.Fingerprints, Status: in.Status})
+	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: in.Fingerprints, Status: sqlc.IssueStatus(in.Status)})
 	if err != nil {
 		h.fail(w, err)
 		return

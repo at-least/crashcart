@@ -23,14 +23,14 @@ RETURNING *, (xmax = 0) AS created;
 SELECT * FROM issues WHERE project_id = $1 AND fingerprint = $2;
 
 -- name: SetIssueStatus :one
-UPDATE issues SET status = $3,
-    resolved_release = CASE WHEN $3 = 'resolved' THEN last_release ELSE resolved_release END,
+UPDATE issues SET status = sqlc.arg(status)::issue_status,
+    resolved_release = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
     updated_at = now()
 WHERE project_id = $1 AND fingerprint = $2 RETURNING *;
 
 -- name: SetIssuesStatus :execrows
-UPDATE issues SET status = $3,
-    resolved_release = CASE WHEN $3 = 'resolved' THEN last_release ELSE resolved_release END,
+UPDATE issues SET status = sqlc.arg(status)::issue_status,
+    resolved_release = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
     updated_at = now()
 WHERE project_id = $1 AND fingerprint = ANY($2::text[]);
 

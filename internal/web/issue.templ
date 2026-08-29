@@ -20,8 +20,8 @@ templ IssuePage(pg Page, d IssueData) {
 	<div id="issue-head" class="issue-head">
 		<div class="min-w-0">
 			<div class="flex flex-wrap items-center gap-1.5">
-				@LevelBadge(d.Issue.Level)
-				@StatusBadge(d.Issue.Status)
+				@LevelBadge(string(d.Issue.Level))
+				@StatusBadge(string(d.Issue.Status))
 				if d.Issue.Platform != nil {
 					<span data-slot="badge" data-variant="outline" class="font-mono">{ *d.Issue.Platform }</span>
 				}
@@ -52,7 +52,7 @@ templ IssuePage(pg Page, d IssueData) {
 					hx-push-url="false"
 				>
 					for _, st := range []string{"unresolved", "triaged", "resolved", "ignored"} {
-						<option value={ st } selected?={ st == d.Issue.Status }>{ statusLabels[st] }</option>
+						<option value={ st } selected?={ st == string(d.Issue.Status) }>{ statusLabels[st] }</option>
 					}
 					if d.Issue.Status == "regression" {
 						<option value="regression" selected>Regression</option>

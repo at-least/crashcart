@@ -69,14 +69,14 @@ type Payload struct {
 // 60 min cooldown) when they do not exist yet. Existing rows are kept.
 func EnsureRules(ctx context.Context, st *store.Store, projectID int64) error {
 	for _, typ := range []string{TypeNewIssue, TypeRegression, TypeCrashSpike} {
-		_, err := st.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: projectID, Type: typ})
+		_, err := st.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: projectID, Type: sqlc.AlertType(typ)})
 		if err == nil {
 			continue
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: projectID, Type: typ, Enabled: true, CooldownMinutes: defaultCooldown}); err != nil {
+		if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: projectID, Type: sqlc.AlertType(typ), Enabled: true, CooldownMinutes: defaultCooldown}); err != nil {
 			return err
 		}
 	}
@@ -90,7 +90,7 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 	if typ != TypeNewIssue && typ != TypeRegression {
 		return fmt.Errorf("alert: unknown type %q", typ)
 	}
-	claimed, err := n.Store.TouchAlertRule(ctx, sqlc.TouchAlertRuleParams{ProjectID: projectID, Type: typ})
+	claimed, err := n.Store.TouchAlertRule(ctx, sqlc.TouchAlertRuleParams{ProjectID: projectID, Type: sqlc.AlertType(typ)})
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 	}
 	payload := Payload{
 		Type: typ, Project: p.Name, ProjectSlug: p.Slug, Title: issue.Title, Fingerprint: issue.Fingerprint,
-		Level: issue.Level, EventCount: issue.EventCount, FirstRelease: issue.FirstRelease, LastRelease: issue.LastRelease,
+		Level: string(issue.Level), EventCount: issue.EventCount, FirstRelease: issue.FirstRelease, LastRelease: issue.LastRelease,
 		URL: n.link(p.Slug, "/issues/"+url.PathEscape(fingerprint)),
 	}
 	n.notify(ctx, projectID, payload)

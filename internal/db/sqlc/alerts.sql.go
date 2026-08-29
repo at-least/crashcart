@@ -16,7 +16,7 @@ INSERT INTO alert_channels (project_id, kind, config) VALUES ($1, $2, $3) RETURN
 
 type CreateAlertChannelParams struct {
 	ProjectID int64           `json:"project_id"`
-	Kind      string          `json:"kind"`
+	Kind      ChannelKind     `json:"kind"`
 	Config    json.RawMessage `json:"config"`
 }
 
@@ -55,8 +55,8 @@ SELECT project_id, type, enabled, cooldown_minutes, last_triggered FROM alert_ru
 `
 
 type GetAlertRuleParams struct {
-	ProjectID int64  `json:"project_id"`
-	Type      string `json:"type"`
+	ProjectID int64     `json:"project_id"`
+	Type      AlertType `json:"type"`
 }
 
 func (q *Queries) GetAlertRule(ctx context.Context, arg GetAlertRuleParams) (AlertRule, error) {
@@ -139,8 +139,8 @@ WHERE project_id = $1 AND type = $2 AND enabled
 `
 
 type TouchAlertRuleParams struct {
-	ProjectID int64  `json:"project_id"`
-	Type      string `json:"type"`
+	ProjectID int64     `json:"project_id"`
+	Type      AlertType `json:"type"`
 }
 
 // Claims the cooldown atomically: succeeds only if it is not still cooling down.
@@ -159,10 +159,10 @@ RETURNING project_id, type, enabled, cooldown_minutes, last_triggered
 `
 
 type UpsertAlertRuleParams struct {
-	ProjectID       int64  `json:"project_id"`
-	Type            string `json:"type"`
-	Enabled         bool   `json:"enabled"`
-	CooldownMinutes int32  `json:"cooldown_minutes"`
+	ProjectID       int64     `json:"project_id"`
+	Type            AlertType `json:"type"`
+	Enabled         bool      `json:"enabled"`
+	CooldownMinutes int32     `json:"cooldown_minutes"`
 }
 
 func (q *Queries) UpsertAlertRule(ctx context.Context, arg UpsertAlertRuleParams) (AlertRule, error) {

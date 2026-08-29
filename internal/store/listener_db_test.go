@@ -26,7 +26,7 @@ func TestListenerNotifications(t *testing.T) {
 	// LISTEN is asynchronous: retry the first enqueue until the wake-up arrives.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "x", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 		select {

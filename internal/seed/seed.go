@@ -173,7 +173,7 @@ func Run(ctx context.Context, in *ingest.Ingester, slug string) error {
 		return fmt.Errorf("seed: project: %w", err)
 	}
 	for _, typ := range []string{"new_issue", "regression", "crash_spike"} {
-		if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: typ, Enabled: true, CooldownMinutes: 60}); err != nil {
+		if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ), Enabled: true, CooldownMinutes: 60}); err != nil {
 			return fmt.Errorf("seed: alert rule %s: %w", typ, err)
 		}
 	}

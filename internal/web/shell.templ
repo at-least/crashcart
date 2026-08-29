@@ -184,7 +184,7 @@ templ Empty(title, desc string) {
 templ IssueLink(pg Page, is sqlcIssue) {
 	<li class="issue-item">
 		<a class="issue-item-link" href={ u(pg.S.Persist().Href("/issues/" + is.Fingerprint)) }>
-			@LevelBadge(is.Level)
+			@LevelBadge(string(is.Level))
 			<span class="issue-item-title">{ is.Title }</span>
 			<span class="issue-item-meta">{ compact(is.EventCount) } events · { ago(is.LastSeen) }</span>
 		</a>

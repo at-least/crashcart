@@ -47,7 +47,7 @@ func TestUpload(t *testing.T) {
 	}
 	kinds := map[string]string{}
 	for _, r := range rows {
-		kinds[r.Filename] = r.Kind
+		kinds[r.Filename] = string(r.Kind)
 		if r.Kind == KindProGuard && (r.DebugID == nil || *r.DebugID != "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b") {
 			t.Fatalf("proguard debug id: %+v", r)
 		}

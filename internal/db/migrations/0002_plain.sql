@@ -23,7 +23,7 @@ CREATE TABLE event_stats_hourly_rolled (
     project_id BIGINT NOT NULL,
     release    TEXT   NOT NULL DEFAULT '',
     platform   TEXT   NOT NULL DEFAULT '',
-    level      TEXT   NOT NULL,
+    level      event_level NOT NULL,
     events     BIGINT NOT NULL,
     crashes    BIGINT NOT NULL,
     errors     BIGINT NOT NULL,

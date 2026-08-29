@@ -512,7 +512,7 @@ func TestSymbols(t *testing.T) {
 	json.Unmarshal(body, &zr)
 	kinds := map[string]string{}
 	for _, s := range zr.Symbols {
-		kinds[s.Filename] = s.Kind
+		kinds[s.Filename] = string(s.Kind)
 	}
 	if len(zr.Symbols) != 2 || kinds["App.dSYM/Contents/Resources/DWARF/App"] != "dsym" || kinds["mapping.txt"] != "proguard" {
 		t.Errorf("zip entries = %v", kinds)

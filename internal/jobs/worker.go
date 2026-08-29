@@ -124,7 +124,7 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 // held open while the handler runs).
 func (w *Worker) dispatch(ctx context.Context, j sqlc.Job, lease time.Duration) error {
 	bg := context.WithoutCancel(ctx)
-	h, ok := w.Handlers[j.Kind]
+	h, ok := w.Handlers[string(j.Kind)]
 	if !ok {
 		w.log().Warn("jobs: unknown kind, dropping", "id", j.ID, "kind", j.Kind, "project", j.ProjectID)
 		return w.Store.DeleteJob(bg, j.ID)

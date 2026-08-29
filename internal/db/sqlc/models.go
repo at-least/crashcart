@@ -5,21 +5,329 @@
 package sqlc
 
 import (
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"time"
 )
+
+type AlertType string
+
+const (
+	AlertTypeNewIssue   AlertType = "new_issue"
+	AlertTypeRegression AlertType = "regression"
+	AlertTypeCrashSpike AlertType = "crash_spike"
+)
+
+func (e *AlertType) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = AlertType(s)
+	case string:
+		*e = AlertType(s)
+	default:
+		return fmt.Errorf("unsupported scan type for AlertType: %T", src)
+	}
+	return nil
+}
+
+type NullAlertType struct {
+	AlertType AlertType `json:"alert_type"`
+	Valid     bool      `json:"valid"` // Valid is true if AlertType is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullAlertType) Scan(value interface{}) error {
+	if value == nil {
+		ns.AlertType, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.AlertType.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullAlertType) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.AlertType), nil
+}
+
+type ChannelKind string
+
+const (
+	ChannelKindWebhook  ChannelKind = "webhook"
+	ChannelKindTelegram ChannelKind = "telegram"
+)
+
+func (e *ChannelKind) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ChannelKind(s)
+	case string:
+		*e = ChannelKind(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ChannelKind: %T", src)
+	}
+	return nil
+}
+
+type NullChannelKind struct {
+	ChannelKind ChannelKind `json:"channel_kind"`
+	Valid       bool        `json:"valid"` // Valid is true if ChannelKind is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullChannelKind) Scan(value interface{}) error {
+	if value == nil {
+		ns.ChannelKind, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ChannelKind.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullChannelKind) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ChannelKind), nil
+}
+
+type EventLevel string
+
+const (
+	EventLevelFatal   EventLevel = "fatal"
+	EventLevelError   EventLevel = "error"
+	EventLevelWarning EventLevel = "warning"
+	EventLevelInfo    EventLevel = "info"
+	EventLevelDebug   EventLevel = "debug"
+)
+
+func (e *EventLevel) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = EventLevel(s)
+	case string:
+		*e = EventLevel(s)
+	default:
+		return fmt.Errorf("unsupported scan type for EventLevel: %T", src)
+	}
+	return nil
+}
+
+type NullEventLevel struct {
+	EventLevel EventLevel `json:"event_level"`
+	Valid      bool       `json:"valid"` // Valid is true if EventLevel is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullEventLevel) Scan(value interface{}) error {
+	if value == nil {
+		ns.EventLevel, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.EventLevel.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullEventLevel) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.EventLevel), nil
+}
+
+type IssueStatus string
+
+const (
+	IssueStatusUnresolved IssueStatus = "unresolved"
+	IssueStatusTriaged    IssueStatus = "triaged"
+	IssueStatusResolved   IssueStatus = "resolved"
+	IssueStatusIgnored    IssueStatus = "ignored"
+	IssueStatusRegression IssueStatus = "regression"
+)
+
+func (e *IssueStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = IssueStatus(s)
+	case string:
+		*e = IssueStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for IssueStatus: %T", src)
+	}
+	return nil
+}
+
+type NullIssueStatus struct {
+	IssueStatus IssueStatus `json:"issue_status"`
+	Valid       bool        `json:"valid"` // Valid is true if IssueStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullIssueStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.IssueStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.IssueStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullIssueStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.IssueStatus), nil
+}
+
+type JobKind string
+
+const (
+	JobKindSymbolicate   JobKind = "symbolicate"
+	JobKindResymbolicate JobKind = "resymbolicate"
+	JobKindAlert         JobKind = "alert"
+)
+
+func (e *JobKind) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = JobKind(s)
+	case string:
+		*e = JobKind(s)
+	default:
+		return fmt.Errorf("unsupported scan type for JobKind: %T", src)
+	}
+	return nil
+}
+
+type NullJobKind struct {
+	JobKind JobKind `json:"job_kind"`
+	Valid   bool    `json:"valid"` // Valid is true if JobKind is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullJobKind) Scan(value interface{}) error {
+	if value == nil {
+		ns.JobKind, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.JobKind.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullJobKind) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.JobKind), nil
+}
+
+type SessionStatus string
+
+const (
+	SessionStatusOk       SessionStatus = "ok"
+	SessionStatusExited   SessionStatus = "exited"
+	SessionStatusCrashed  SessionStatus = "crashed"
+	SessionStatusErrored  SessionStatus = "errored"
+	SessionStatusAbnormal SessionStatus = "abnormal"
+)
+
+func (e *SessionStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = SessionStatus(s)
+	case string:
+		*e = SessionStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for SessionStatus: %T", src)
+	}
+	return nil
+}
+
+type NullSessionStatus struct {
+	SessionStatus SessionStatus `json:"session_status"`
+	Valid         bool          `json:"valid"` // Valid is true if SessionStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullSessionStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.SessionStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.SessionStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullSessionStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.SessionStatus), nil
+}
+
+type SymbolKind string
+
+const (
+	SymbolKindProguard  SymbolKind = "proguard"
+	SymbolKindSourcemap SymbolKind = "sourcemap"
+	SymbolKindDsym      SymbolKind = "dsym"
+)
+
+func (e *SymbolKind) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = SymbolKind(s)
+	case string:
+		*e = SymbolKind(s)
+	default:
+		return fmt.Errorf("unsupported scan type for SymbolKind: %T", src)
+	}
+	return nil
+}
+
+type NullSymbolKind struct {
+	SymbolKind SymbolKind `json:"symbol_kind"`
+	Valid      bool       `json:"valid"` // Valid is true if SymbolKind is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullSymbolKind) Scan(value interface{}) error {
+	if value == nil {
+		ns.SymbolKind, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.SymbolKind.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullSymbolKind) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.SymbolKind), nil
+}
 
 type AlertChannel struct {
 	ID        int64           `json:"id"`
 	ProjectID int64           `json:"project_id"`
-	Kind      string          `json:"kind"`
+	Kind      ChannelKind     `json:"kind"`
 	Config    json.RawMessage `json:"config"`
 	CreatedAt time.Time       `json:"created_at"`
 }
 
 type AlertRule struct {
 	ProjectID       int64      `json:"project_id"`
-	Type            string     `json:"type"`
+	Type            AlertType  `json:"type"`
 	Enabled         bool       `json:"enabled"`
 	CooldownMinutes int32      `json:"cooldown_minutes"`
 	LastTriggered   *time.Time `json:"last_triggered"`
@@ -29,7 +337,7 @@ type Event struct {
 	OccurredAt    time.Time       `json:"occurred_at"`
 	ProjectID     int64           `json:"project_id"`
 	EventID       string          `json:"event_id"`
-	Level         string          `json:"level"`
+	Level         EventLevel      `json:"level"`
 	Message       string          `json:"message"`
 	Platform      *string         `json:"platform"`
 	Environment   *string         `json:"environment"`
@@ -52,34 +360,34 @@ type Event struct {
 }
 
 type EventStatsHourly struct {
-	Bucket    time.Time `json:"bucket"`
-	ProjectID int64     `json:"project_id"`
-	Release   string    `json:"release"`
-	Platform  string    `json:"platform"`
-	Level     string    `json:"level"`
-	Events    int64     `json:"events"`
-	Crashes   int64     `json:"crashes"`
-	Errors    int64     `json:"errors"`
+	Bucket    time.Time  `json:"bucket"`
+	ProjectID int64      `json:"project_id"`
+	Release   string     `json:"release"`
+	Platform  string     `json:"platform"`
+	Level     EventLevel `json:"level"`
+	Events    int64      `json:"events"`
+	Crashes   int64      `json:"crashes"`
+	Errors    int64      `json:"errors"`
 }
 
 type Issue struct {
-	ProjectID       int64     `json:"project_id"`
-	Fingerprint     string    `json:"fingerprint"`
-	Title           string    `json:"title"`
-	Level           string    `json:"level"`
-	ErrorType       *string   `json:"error_type"`
-	Screen          *string   `json:"screen"`
-	Platform        *string   `json:"platform"`
-	Status          string    `json:"status"`
-	EventCount      int64     `json:"event_count"`
-	StoredCount     int64     `json:"stored_count"`
-	FirstSeen       time.Time `json:"first_seen"`
-	LastSeen        time.Time `json:"last_seen"`
-	FirstRelease    *string   `json:"first_release"`
-	LastRelease     *string   `json:"last_release"`
-	ResolvedRelease *string   `json:"resolved_release"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ProjectID       int64       `json:"project_id"`
+	Fingerprint     string      `json:"fingerprint"`
+	Title           string      `json:"title"`
+	Level           EventLevel  `json:"level"`
+	ErrorType       *string     `json:"error_type"`
+	Screen          *string     `json:"screen"`
+	Platform        *string     `json:"platform"`
+	Status          IssueStatus `json:"status"`
+	EventCount      int64       `json:"event_count"`
+	StoredCount     int64       `json:"stored_count"`
+	FirstSeen       time.Time   `json:"first_seen"`
+	LastSeen        time.Time   `json:"last_seen"`
+	FirstRelease    *string     `json:"first_release"`
+	LastRelease     *string     `json:"last_release"`
+	ResolvedRelease *string     `json:"resolved_release"`
+	CreatedAt       time.Time   `json:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at"`
 }
 
 type IssueStatsHourly struct {
@@ -91,7 +399,7 @@ type IssueStatsHourly struct {
 
 type Job struct {
 	ID          int64           `json:"id"`
-	Kind        string          `json:"kind"`
+	Kind        JobKind         `json:"kind"`
 	ProjectID   int64           `json:"project_id"`
 	Args        json.RawMessage `json:"args"`
 	RunAfter    time.Time       `json:"run_after"`
@@ -129,25 +437,25 @@ type ReleaseHealthDaily struct {
 }
 
 type Session struct {
-	StartedAt   time.Time `json:"started_at"`
-	ProjectID   int64     `json:"project_id"`
-	Sid         string    `json:"sid"`
-	Release     string    `json:"release"`
-	Environment *string   `json:"environment"`
-	Status      string    `json:"status"`
-	Count       int32     `json:"count"`
+	StartedAt   time.Time     `json:"started_at"`
+	ProjectID   int64         `json:"project_id"`
+	Sid         string        `json:"sid"`
+	Release     string        `json:"release"`
+	Environment *string       `json:"environment"`
+	Status      SessionStatus `json:"status"`
+	Count       int32         `json:"count"`
 }
 
 type SymbolFile struct {
-	ID         int64     `json:"id"`
-	ProjectID  int64     `json:"project_id"`
-	Kind       string    `json:"kind"`
-	Release    string    `json:"release"`
-	DebugID    *string   `json:"debug_id"`
-	Filename   string    `json:"filename"`
-	Size       int64     `json:"size"`
-	Data       []byte    `json:"data"`
-	UploadedAt time.Time `json:"uploaded_at"`
+	ID         int64      `json:"id"`
+	ProjectID  int64      `json:"project_id"`
+	Kind       SymbolKind `json:"kind"`
+	Release    string     `json:"release"`
+	DebugID    *string    `json:"debug_id"`
+	Filename   string     `json:"filename"`
+	Size       int64      `json:"size"`
+	Data       []byte     `json:"data"`
+	UploadedAt time.Time  `json:"uploaded_at"`
 }
 
 type UploadChunk struct {

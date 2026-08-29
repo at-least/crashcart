@@ -30,17 +30,17 @@ func TestWorkerRetryThenSucceed(t *testing.T) {
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
 	args, _ := json.Marshal(map[string]any{"event": 42})
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "flaky", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
+	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "nobody-handles-this", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 
 	var calls int
 	var secondAttempts int32 = -1
 	w := &Worker{Store: st, Poll: 10 * time.Millisecond, Handlers: map[string]Handler{
-		"flaky": func(ctx context.Context, j sqlc.Job, a json.RawMessage) error {
+		"symbolicate": func(ctx context.Context, j sqlc.Job, a json.RawMessage) error {
 			calls++
 			var got struct {
 				Event int64 `json:"event"`
@@ -56,7 +56,7 @@ func TestWorkerRetryThenSucceed(t *testing.T) {
 		},
 	}}
 
-	// First pass: the flaky job fails and is rescheduled; the unknown kind is dropped.
+	// First pass: the symbolicate job fails and is rescheduled; the alert job has no handler registered and is dropped.
 	n, err := w.RunOnce(ctx)
 	if err != nil || n != 2 {
 		t.Fatalf("RunOnce = %d %v", n, err)
@@ -68,7 +68,7 @@ func TestWorkerRetryThenSucceed(t *testing.T) {
 	if err := st.Pool.QueryRow(ctx, "SELECT kind, attempts, last_error, run_after FROM jobs").Scan(&kind, &attempts, &lastErr, &runAfter); err != nil {
 		t.Fatalf("expected exactly one job left: %v", err)
 	}
-	if kind != "flaky" || attempts != 1 || len(lastErr) != 500 || runAfter.Before(time.Now().Add(4*time.Second)) {
+	if kind != "symbolicate" || attempts != 1 || len(lastErr) != 500 || runAfter.Before(time.Now().Add(4*time.Second)) {
 		t.Fatalf("after failure: kind=%s attempts=%d err_len=%d run_after=%v", kind, attempts, len(lastErr), runAfter)
 	}
 
@@ -110,11 +110,11 @@ func TestWorkerPanicIsRetry(t *testing.T) {
 	st := testdb.New(t)
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "boom", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	w := &Worker{Store: st, Handlers: map[string]Handler{
-		"boom": func(context.Context, sqlc.Job, json.RawMessage) error { panic("nope") },
+		"symbolicate": func(context.Context, sqlc.Job, json.RawMessage) error { panic("nope") },
 	}}
 	if _, err := w.RunOnce(ctx); err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestWorkerWakesOnNotify(t *testing.T) {
 	go l.Run(ctx)
 	done := make(chan struct{}, 10)
 	w := &Worker{Store: st, Poll: time.Minute, Wake: wake, Handlers: map[string]Handler{
-		"ping": func(context.Context, sqlc.Job, json.RawMessage) error { done <- struct{}{}; return nil },
+		"symbolicate": func(context.Context, sqlc.Job, json.RawMessage) error { done <- struct{}{}; return nil },
 	}}
 	go w.Run(ctx)
 	// The worker is idle on a one-minute poll; a queued job must run within a
@@ -148,7 +148,7 @@ func TestWorkerWakesOnNotify(t *testing.T) {
 	// race the LISTEN; retry until it lands.)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "ping", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 		select {
@@ -166,7 +166,7 @@ func TestWorkerLeaseExpires(t *testing.T) {
 	st := testdb.New(t)
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "slow", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	// A worker that died mid-job: the lease is taken but no outcome is recorded.

@@ -304,7 +304,7 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 		return d, err
 	}
 	for _, c := range counts {
-		d.Counts[c.Status] = c.N
+		d.Counts[string(c.Status)] = c.N
 		d.Counts["all"] += c.N
 	}
 	fps := make([]string, 0, len(issues))
@@ -367,7 +367,7 @@ func (w *Web) issuesBulk(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "status and fp[] required", http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: status}); err != nil {
+	if _, err := w.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(status)}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -495,7 +495,7 @@ func (w *Web) issueStatus(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fp := r.PathValue("fingerprint")
-	if _, err := w.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: status}); err != nil {
+	if _, err := w.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(status)}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(rw, r)
 			return

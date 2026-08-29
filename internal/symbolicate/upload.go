@@ -147,7 +147,7 @@ func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, na
 		debugID = DebugIDFor(kind, name, data)
 	}
 	return s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
-		ProjectID: projectID, Kind: kind, Release: release, DebugID: debugID,
+		ProjectID: projectID, Kind: sqlc.SymbolKind(kind), Release: release, DebugID: debugID,
 		Filename: name, Size: int64(len(data)), Data: data,
 	})
 }

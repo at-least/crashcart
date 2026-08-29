@@ -73,7 +73,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, l := range levels {
-		out.Levels[l.Level] = l.Events
+		out.Levels[string(l.Level)] = l.Events
 	}
 	if out.NewIssues, err = h.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: p.ID, FirstSeen: lo}); err != nil {
 		h.fail(w, err)

@@ -22,7 +22,7 @@ func isCrash(e sqlcEvent) bool { return e.Level == "fatal" || (e.Handled != nil 
 templ EventBody(pg Page, d EventData) {
 	<div id="event-body" class="event">
 		<div class="flex flex-wrap items-center gap-1.5">
-			@LevelBadge(d.E.Level)
+			@LevelBadge(string(d.E.Level))
 			if isCrash(d.E) {
 				<span class="crash-badge">
 					@CrashIcon()

@@ -9,7 +9,16 @@
 
 -- The one definition of "crash": fatal, or an unhandled exception. Used by
 -- the continuous aggregates, the spike check and the event filters.
-CREATE FUNCTION crashcart_is_crash(level TEXT, handled BOOLEAN) RETURNS BOOLEAN
+-- Enumerations: one definition, sqlc generates the Go constants.
+CREATE TYPE event_level    AS ENUM ('fatal', 'error', 'warning', 'info', 'debug');
+CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnormal');
+CREATE TYPE issue_status   AS ENUM ('unresolved', 'triaged', 'resolved', 'ignored', 'regression');
+CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
+CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
+CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'crash_spike');
+CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
+
+CREATE FUNCTION crashcart_is_crash(level event_level, handled BOOLEAN) RETURNS BOOLEAN
     LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
 
 -- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
@@ -19,7 +28,7 @@ CREATE FUNCTION crashcart_is_crash(level TEXT, handled BOOLEAN) RETURNS BOOLEAN
 CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPTZ
     LANGUAGE SQL IMMUTABLE AS $$ SELECT to_timestamp(floor(extract(epoch FROM t) / width) * width) $$;
 CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT) RETURNS SETOF TIMESTAMPTZ
-    LANGUAGE SQL IMMUTABLE AS $$ SELECT generate_series(from_at, to_at - make_interval(secs => width), make_interval(secs => width)) $$;
+    LANGUAGE SQL IMMUTABLE AS $$ SELECT b FROM generate_series(from_at, to_at, make_interval(secs => width)) AS b WHERE b < to_at $$;
 
 -- ── projects ───────────────────────────────────────────────────────────
 
@@ -41,7 +50,7 @@ CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (time dimension)
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     event_id       TEXT NOT NULL,                    -- Sentry event_id (or a derived one); the dedupe key
-    level          TEXT NOT NULL,                    -- fatal | error | warning | info | debug
+    level          event_level NOT NULL,                    -- fatal | error | warning | info | debug
     message        TEXT NOT NULL,
     platform       TEXT,
     environment    TEXT,
@@ -77,7 +86,7 @@ CREATE TABLE sessions (
     sid         TEXT NOT NULL,                       -- SDK session id; aggregate rows get a random one
     release     TEXT NOT NULL,
     environment TEXT,
-    status      TEXT NOT NULL,                       -- ok | exited | crashed | errored | abnormal
+    status      session_status NOT NULL,                       -- ok | exited | crashed | errored | abnormal
     count       INTEGER NOT NULL DEFAULT 1,          -- aggregate session items carry counts
     PRIMARY KEY (project_id, sid, started_at)        -- updates of one session hit the same row
 );
@@ -89,12 +98,11 @@ CREATE TABLE issues (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     fingerprint      TEXT NOT NULL,
     title            TEXT NOT NULL,
-    level            TEXT NOT NULL,
+    level            event_level NOT NULL,
     error_type       TEXT,
     screen           TEXT,
     platform         TEXT,
-    status           TEXT NOT NULL DEFAULT 'unresolved'
-                     CHECK (status IN ('unresolved', 'triaged', 'resolved', 'ignored', 'regression')),
+    status           issue_status NOT NULL DEFAULT 'unresolved',
     event_count      BIGINT NOT NULL DEFAULT 0,       -- exact: counts sampled-out events too
     stored_count     BIGINT NOT NULL DEFAULT 0,       -- events actually stored
     first_seen       TIMESTAMPTZ NOT NULL,
@@ -114,7 +122,7 @@ CREATE INDEX issues_project_status ON issues (project_id, status, last_seen DESC
 CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    kind        TEXT NOT NULL CHECK (kind IN ('proguard', 'sourcemap', 'dsym')),
+    kind        symbol_kind NOT NULL,
     release     TEXT NOT NULL,                       -- '' when matched by debug_id only
     debug_id    TEXT,                                -- dSYM UUID / proguard mapping uuid
     filename    TEXT NOT NULL,
@@ -148,7 +156,7 @@ CREATE TABLE project_usage (
 
 CREATE TABLE jobs (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    kind       TEXT NOT NULL,                        -- symbolicate | resymbolicate | alert
+    kind       job_kind NOT NULL,                        -- symbolicate | resymbolicate | alert
     project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     args       JSONB NOT NULL DEFAULT '{}'::jsonb,
     run_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -163,7 +171,7 @@ CREATE INDEX jobs_run_after ON jobs (run_after, id);
 
 CREATE TABLE alert_rules (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    type             TEXT NOT NULL CHECK (type IN ('new_issue', 'regression', 'crash_spike')),
+    type             alert_type NOT NULL,
     enabled          BOOLEAN NOT NULL DEFAULT true,
     cooldown_minutes INTEGER NOT NULL DEFAULT 60,
     last_triggered   TIMESTAMPTZ,
@@ -173,7 +181,7 @@ CREATE TABLE alert_rules (
 CREATE TABLE alert_channels (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    kind       TEXT NOT NULL CHECK (kind IN ('webhook', 'telegram')),
+    kind       channel_kind NOT NULL,
     config     JSONB NOT NULL,                       -- webhook: {"url"}; telegram: {"chat_id"}
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

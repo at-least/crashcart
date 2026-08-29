@@ -1,4 +1,13 @@
-CREATE FUNCTION crashcart_is_crash(level TEXT, handled BOOLEAN) RETURNS BOOLEAN
+-- Enumerations: one definition, sqlc generates the Go constants.
+CREATE TYPE event_level    AS ENUM ('fatal', 'error', 'warning', 'info', 'debug');
+CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnormal');
+CREATE TYPE issue_status   AS ENUM ('unresolved', 'triaged', 'resolved', 'ignored', 'regression');
+CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
+CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
+CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'crash_spike');
+CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
+
+CREATE FUNCTION crashcart_is_crash(level event_level, handled BOOLEAN) RETURNS BOOLEAN
     LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
 
 -- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
@@ -8,7 +17,7 @@ CREATE FUNCTION crashcart_is_crash(level TEXT, handled BOOLEAN) RETURNS BOOLEAN
 CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPTZ
     LANGUAGE SQL IMMUTABLE AS $$ SELECT to_timestamp(floor(extract(epoch FROM t) / width) * width) $$;
 CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT) RETURNS SETOF TIMESTAMPTZ
-    LANGUAGE SQL IMMUTABLE AS $$ SELECT generate_series(from_at, to_at - make_interval(secs => width), make_interval(secs => width)) $$;
+    LANGUAGE SQL IMMUTABLE AS $$ SELECT b FROM generate_series(from_at, to_at, make_interval(secs => width)) AS b WHERE b < to_at $$;
 
 -- sqlc-only mirror of internal/db/migrations (no TimescaleDB DDL).
 -- Continuous aggregates appear here as plain tables so queries type-check.
@@ -30,7 +39,7 @@ CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     event_id       TEXT NOT NULL,
-    level          TEXT NOT NULL,
+    level          event_level NOT NULL,
     message        TEXT NOT NULL,
     platform       TEXT,
     environment    TEXT,
@@ -59,7 +68,7 @@ CREATE TABLE sessions (
     sid         TEXT NOT NULL,
     release     TEXT NOT NULL,
     environment TEXT,
-    status      TEXT NOT NULL,
+    status      session_status NOT NULL,
     count       INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (project_id, sid, started_at)
 );
@@ -68,11 +77,11 @@ CREATE TABLE issues (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     fingerprint      TEXT NOT NULL,
     title            TEXT NOT NULL,
-    level            TEXT NOT NULL,
+    level            event_level NOT NULL,
     error_type       TEXT,
     screen           TEXT,
     platform         TEXT,
-    status           TEXT NOT NULL DEFAULT 'unresolved',
+    status           issue_status NOT NULL DEFAULT 'unresolved',
     event_count      BIGINT NOT NULL DEFAULT 0,
     stored_count     BIGINT NOT NULL DEFAULT 0,
     first_seen       TIMESTAMPTZ NOT NULL,
@@ -88,7 +97,7 @@ CREATE TABLE issues (
 CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    kind        TEXT NOT NULL,
+    kind        symbol_kind NOT NULL,
     release     TEXT NOT NULL,
     debug_id    TEXT,
     filename    TEXT NOT NULL,
@@ -113,7 +122,7 @@ CREATE TABLE project_usage (
 
 CREATE TABLE jobs (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    kind       TEXT NOT NULL,
+    kind       job_kind NOT NULL,
     project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     args       JSONB NOT NULL DEFAULT '{}'::jsonb,
     run_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -125,7 +134,7 @@ CREATE TABLE jobs (
 
 CREATE TABLE alert_rules (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    type             TEXT NOT NULL,
+    type             alert_type NOT NULL,
     enabled          BOOLEAN NOT NULL DEFAULT true,
     cooldown_minutes INTEGER NOT NULL DEFAULT 60,
     last_triggered   TIMESTAMPTZ,
@@ -135,7 +144,7 @@ CREATE TABLE alert_rules (
 CREATE TABLE alert_channels (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    kind       TEXT NOT NULL,
+    kind       channel_kind NOT NULL,
     config     JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -147,7 +156,7 @@ CREATE TABLE event_stats_hourly (
     project_id BIGINT NOT NULL,
     release    TEXT NOT NULL,
     platform   TEXT NOT NULL,
-    level      TEXT NOT NULL,
+    level      event_level NOT NULL,
     events     BIGINT NOT NULL,
     crashes    BIGINT NOT NULL,
     errors     BIGINT NOT NULL

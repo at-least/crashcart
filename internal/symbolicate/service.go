@@ -212,7 +212,7 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 	if strings.HasPrefix(k.key, debugPrefix) {
 		id := strings.TrimPrefix(k.key, debugPrefix)
 		f, err := s.Store.SymbolFileByDebugID(ctx, sqlc.SymbolFileByDebugIDParams{ProjectID: k.projectID, DebugID: &id})
-		if errors.Is(err, pgx.ErrNoRows) || (err == nil && f.Kind != k.kind) {
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && string(f.Kind) != k.kind) {
 			return nil, nil
 		}
 		if err != nil {
@@ -221,7 +221,7 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 		files = []sqlc.SymbolFile{f}
 	} else {
 		var err error
-		files, err = s.Store.SymbolFilesForRelease(ctx, sqlc.SymbolFilesForReleaseParams{ProjectID: k.projectID, Release: k.key, Kind: k.kind})
+		files, err = s.Store.SymbolFilesForRelease(ctx, sqlc.SymbolFilesForReleaseParams{ProjectID: k.projectID, Release: k.key, Kind: sqlc.SymbolKind(k.kind)})
 		if err != nil {
 			return nil, err
 		}

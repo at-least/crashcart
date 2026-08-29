@@ -88,3 +88,20 @@ func TestTagsFilterAndBreakdowns(t *testing.T) {
 		t.Error("disallowed column accepted")
 	}
 }
+
+func TestBucketHelpers(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	// Every bucket start in [from, to): the last, partial bucket included.
+	var n int
+	if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM crashcart_buckets('2026-01-01 00:00Z', '2026-01-01 02:30Z', 3600)").Scan(&n); err != nil || n != 3 {
+		t.Errorf("buckets = %d %v, want 3", n, err)
+	}
+	if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM crashcart_buckets('2026-01-01 00:00Z', '2026-01-01 00:00Z', 3600)").Scan(&n); err != nil || n != 0 {
+		t.Errorf("empty window = %d %v", n, err)
+	}
+	var b time.Time
+	if err := st.Pool.QueryRow(ctx, "SELECT crashcart_bucket('2026-01-01 13:47Z', 4*3600)").Scan(&b); err != nil || !b.Equal(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)) {
+		t.Errorf("bucket = %v %v", b, err)
+	}
+}

@@ -122,24 +122,24 @@ templ Settings(pg Page, d SettingsData) {
 			<p class="section-desc">Each rule notifies every channel below, at most once per cooldown.</p>
 			<div class="mt-3 grid gap-2">
 				for _, ru := range d.Rules {
-					<form data-slot="card" data-size="sm" class="settings-row flex-row" hx-patch={ pg.S.Href("/settings/alerts/" + ru.Type) } hx-trigger="change" hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">
+					<form data-slot="card" data-size="sm" class="settings-row flex-row" hx-patch={ pg.S.Href("/settings/alerts/" + string(ru.Type)) } hx-trigger="change" hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">
 						<div class="min-w-0">
 							<div class="flex items-center gap-2">
-								<p class="settings-title">{ labelFor(ru.Type).Title }</p>
+								<p class="settings-title">{ labelFor(string(ru.Type)).Title }</p>
 								if ru.Enabled {
 									<span data-slot="badge" data-variant="secondary">on</span>
 								} else {
 									<span data-slot="badge" data-variant="outline">off</span>
 								}
 							</div>
-							<p class="settings-desc">{ labelFor(ru.Type).Desc }</p>
+							<p class="settings-desc">{ labelFor(string(ru.Type)).Desc }</p>
 							if ru.LastTriggered != nil {
 								<p class="settings-meta">Last triggered { formatDateTime(*ru.LastTriggered) }</p>
 							}
 						</div>
 						<div class="flex items-center gap-3">
 							<label class="toolbar-check">cooldown <input data-slot="input" class="h-7 w-20 text-xs" name="cooldown" type="number" min="0" step="1" value={ strconv.Itoa(int(ru.CooldownMinutes)) } aria-label="Cooldown minutes"/> min</label>
-							<label class="toolbar-check"><input type="checkbox" class="cb" name="enabled" checked?={ ru.Enabled } aria-label={ "Enable " + labelFor(ru.Type).Title }/> enabled</label>
+							<label class="toolbar-check"><input type="checkbox" class="cb" name="enabled" checked?={ ru.Enabled } aria-label={ "Enable " + labelFor(string(ru.Type)).Title }/> enabled</label>
 						</div>
 					</form>
 				}
