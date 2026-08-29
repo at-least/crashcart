@@ -102,25 +102,25 @@ upserts (events/sessions `ON CONFLICT DO NOTHING`, everything else on its key),
 so importing twice or onto live data is safe. Aggregates are not exported;
 they recompute.
 
-## To do: plain-Postgres mode (Neon / Supabase)
+## Plain-Postgres mode (Neon, Supabase, RDS, …)
 
-Managed Postgres cannot run the Community (TSL) half of TimescaleDB: Neon ships
-the Apache-2 edition only (hypertables, but no continuous aggregates,
-compression or retention policies); Supabase has removed the extension on
-PG17. Supporting them means a mode without Timescale, chosen by the migrator
-when the extension is unavailable:
+Managed Postgres cannot run the Community (TSL) half of TimescaleDB (Neon ships
+the Apache-2 edition only; Supabase removed the extension on PG17), so the
+schema has two variants chosen by the migrator (`internal/db`): `0001_init.sql`
+is common, then exactly one of `0002_timescale.sql` (hypertables, compression,
+continuous aggregates) or `0002_plain.sql`. `TIMESCALE=auto` (default) probes
+`CREATE EXTENSION`; `on` / `off` force a variant. A database keeps the variant
+it was created with.
 
-- `events` / `sessions` as plain tables (pg_partman optional later); the
-  `(project_id, id)` indexes carry the time-range queries.
-- `event_stats_hourly` / `issue_stats_hourly` / `release_health_daily` as
-  plain tables, refreshed by the scheduler once per hour for the previous
-  bucket (idempotent: delete bucket + insert … select); queries union the
-  current hour live from the raw tables. Same design as the serverless
-  implementation's rollup cron — port its bucket semantics verbatim so both
-  implementations' stats tables stay column-identical.
-- Retention: batched `DELETE … WHERE id < cutoff` instead of drop_chunks.
-- No compression: budget 5–10× the storage.
+On plain Postgres the stats live in `*_rolled` tables and the names the
+queries use (`event_stats_hourly`, `issue_stats_hourly`,
+`release_health_daily`) are views: the rolled rows `UNION ALL` the current
+hour computed live from `events` / `sessions` — so every query, sqlc model and
+the API work unchanged. `retention.RollupRecent` (scheduler, every 10 minutes)
+re-rolls the last 3 complete hours; `RollupAll` rebuilds from the oldest row
+after `import` / `seed`; the sweep deletes `events` / `sessions` by id range
+in 5000-row batches. Same bucket semantics as the serverless implementation.
+Trade-offs: no compression (budget 5–10× the storage), no chunk exclusion
+(the `(project_id, id)` indexes carry the range scans).
 
-Do this after the serverless rollup lands (its spec is the reference).
-Deployment recipe to document alongside: Cloud Run / Fly (scale to zero) +
-Neon; Timescale Cloud stays the full-featured managed option.
+`TEST_PLAIN=1` runs the whole test suite on the plain variant.

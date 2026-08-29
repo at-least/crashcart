@@ -31,7 +31,7 @@ internal/
   config/             env → Config
   pk/                 µs primary key ↔ time; bucket arithmetic
   sentry/             envelope parser, Frame, Fingerprint, ErrorLocation
-  db/                 migrations/*.sql (Timescale DDL), sqlc_schema.sql (plain mirror for sqlc),
+  db/                 migrations/*.sql (0001 common; 0002_timescale / 0002_plain variants), sqlc_schema.sql (mirror for sqlc),
                       queries/*.sql → sqlc/ (generated), migrate.go
   store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL)
   auth/               Bearer, Basic, CORS, RateLimit, SentryKey
@@ -52,7 +52,8 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
 ## Conventions
 
 - Regenerate after editing: `sqlc generate` (queries or `sqlc_schema.sql`),
-  `templ generate` (`.templ`). Keep `internal/db/sqlc_schema.sql` in sync with
+  `templ generate` (`.templ`). `TEST_PLAIN=1 make test-db` runs the suite on plain Postgres (no
+  TimescaleDB; `TIMESCALE=off`). Keep `internal/db/sqlc_schema.sql` in sync with
   the migrations (it is the plain-SQL mirror sqlc parses; caggs appear as tables).
 - Hand-written SQL only in: migrations, `internal/store` (dynamic filters),
   `internal/export`, `internal/retention` (policy calls).

@@ -19,6 +19,7 @@ import (
 	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/ingest"
+	"github.com/at-least/crashcart/internal/retention"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
@@ -130,6 +131,10 @@ func (e *env) seed(p sqlc.Project) {
 	}
 	if res.Stored != 4 || res.Sessions != 3 || len(res.NewIssues) != 2 {
 		e.t.Fatalf("seed: %+v", res)
+	}
+	// Past hours only reach the stats after a rollup on plain Postgres.
+	if err := retention.RefreshAggregates(context.Background(), e.in.Store); err != nil {
+		e.t.Fatal(err)
 	}
 }
 

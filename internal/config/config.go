@@ -28,6 +28,7 @@ type Config struct {
 	TelegramBotToken string
 	PIIRedact        bool
 	CustomTags       []string // tag keys the viewer shows as filters
+	Timescale        string   // "auto" (default) | "on" | "off" — see internal/db.ParseMode
 }
 
 // Load reads the environment. It fails only on unparseable values; missing
@@ -44,6 +45,7 @@ func Load() (Config, error) {
 		TelegramBotToken: get("TELEGRAM_BOT_TOKEN", ""),
 		PIIRedact:        get("PII_REDACT", "false") == "true",
 		CustomTags:       SplitCSV(get("CUSTOM_TAGS", "")),
+		Timescale:        get("TIMESCALE", "auto"),
 	}
 	var err error
 	if c.RateLimit, err = intEnv("RATE_LIMIT", 600); err != nil {

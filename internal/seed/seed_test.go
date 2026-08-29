@@ -7,6 +7,7 @@ import (
 
 	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/ingest"
+	"github.com/at-least/crashcart/internal/retention"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -15,6 +16,9 @@ func TestRun(t *testing.T) {
 	ctx := context.Background()
 	in := &ingest.Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
 	if err := Run(ctx, in, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := retention.RefreshAggregates(ctx, st); err != nil {
 		t.Fatal(err)
 	}
 	p, err := st.GetProject(ctx, "demo")
@@ -55,6 +59,9 @@ func TestRun(t *testing.T) {
 	}
 	// Re-running seeds more data but must not fail (project exists).
 	if err := Run(ctx, in, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := retention.RefreshAggregates(ctx, st); err != nil {
 		t.Fatal(err)
 	}
 }

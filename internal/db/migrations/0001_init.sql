@@ -1,14 +1,12 @@
--- CrashCart schema. Requires the timescaledb extension (the migrator
--- creates it; the role needs CREATE on the database, or the extension must
--- be pre-installed by a superuser).
+-- CrashCart schema: the tables every deployment has. The migrator then
+-- applies exactly one of 0002_timescale.sql (hypertables, compression,
+-- continuous aggregates) or 0002_plain.sql (plain Postgres: rolled-up
+-- stats tables behind views with a live current hour) — see internal/db.
 --
--- Time-series tables use the microsecond primary key from internal/pk as
--- the TimescaleDB time dimension: id = unix_ms × 1000 + random(0..999).
+-- Time-series tables use the microsecond primary key from internal/pk:
+-- id = unix_ms × 1000 + random(0..999); a time range is an id range.
 
-CREATE EXTENSION IF NOT EXISTS timescaledb;
-
--- "now" in id units, so retention / compression / refresh policies can
--- reason about the integer dimension.
+-- "now" in id units (TimescaleDB policies reason about the integer dimension).
 CREATE OR REPLACE FUNCTION crashcart_now() RETURNS BIGINT
     LANGUAGE SQL STABLE AS $$ SELECT (extract(epoch FROM now()) * 1000000)::bigint $$;
 
@@ -31,7 +29,7 @@ CREATE TABLE projects (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ── events (hypertable) ────────────────────────────────────────────────
+-- ── events ─────────────────────────────────────────────────────────────
 
 CREATE TABLE events (
     id             BIGINT PRIMARY KEY,                -- occurred_at µs (pk package)
@@ -58,19 +56,12 @@ CREATE TABLE events (
     payload        JSONB NOT NULL,                   -- the untouched Sentry event; never rewritten
     symbols        JSONB                             -- symbolicated frames (written once by the worker)
 );
-SELECT create_hypertable('events', 'id', chunk_time_interval => 86400000000);
-SELECT set_integer_now_func('events', 'crashcart_now');
 CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, id DESC);
 CREATE INDEX events_project_user ON events (project_id, user_id, id DESC) WHERE user_id IS NOT NULL;
 CREATE INDEX events_project_id ON events (project_id, id DESC);
 CREATE INDEX events_project_crash ON events (project_id, id DESC) WHERE crashcart_is_crash(level, handled);
-ALTER TABLE events SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'project_id, fingerprint',
-    timescaledb.compress_orderby = 'id DESC'
-);
 
--- ── sessions (hypertable, release health) ──────────────────────────────
+-- ── sessions (release health) ──────────────────────────────────────────
 
 CREATE TABLE sessions (
     id          BIGINT PRIMARY KEY,                  -- started_at µs
@@ -80,14 +71,7 @@ CREATE TABLE sessions (
     status      TEXT NOT NULL,                       -- ok | exited | crashed | errored | abnormal
     count       INTEGER NOT NULL DEFAULT 1           -- aggregate session items carry counts
 );
-SELECT create_hypertable('sessions', 'id', chunk_time_interval => 86400000000);
-SELECT set_integer_now_func('sessions', 'crashcart_now');
 CREATE INDEX sessions_project_release ON sessions (project_id, release, id DESC);
-ALTER TABLE sessions SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'project_id, release',
-    timescaledb.compress_orderby = 'id DESC'
-);
 
 -- ── issues (stateful; the only non-hypertable ingest upserts) ──────────
 
@@ -181,58 +165,3 @@ CREATE TABLE rate_limits (
     count        INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (rl_key, window_start)
 );
-
--- ── continuous aggregates ──────────────────────────────────────────────
--- All buckets are in id units (µs). Real-time aggregation is on so the
--- newest bucket includes rows not yet materialized.
-
-CREATE MATERIALIZED VIEW event_stats_hourly
-WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-SELECT time_bucket(3600000000::bigint, id) AS bucket,
-       project_id,
-       COALESCE(release, '')  AS release,
-       COALESCE(platform, '') AS platform,
-       level,
-       count(*)                                                        AS events,
-       count(*) FILTER (WHERE crashcart_is_crash(level, handled))        AS crashes,
-       count(*) FILTER (WHERE level = 'error' AND handled IS NOT false) AS errors
-FROM events
-GROUP BY 1, 2, 3, 4, 5
-WITH NO DATA;
-
-CREATE MATERIALIZED VIEW issue_stats_hourly
-WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-SELECT time_bucket(3600000000::bigint, id) AS bucket,
-       project_id,
-       fingerprint,
-       count(*) AS events
-FROM events
-WHERE fingerprint IS NOT NULL
-GROUP BY 1, 2, 3
-WITH NO DATA;
-
-CREATE MATERIALIZED VIEW release_health_daily
-WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-SELECT time_bucket(86400000000::bigint, id) AS bucket,
-       project_id,
-       release,
-       sum(count)                                                    AS total,
-       sum(count) FILTER (WHERE status = 'crashed')                  AS crashed,
-       sum(count) FILTER (WHERE status IN ('errored', 'abnormal'))   AS errored
-FROM sessions
-GROUP BY 1, 2, 3
-WITH NO DATA;
-
--- Refresh: every 5 minutes, re-materialize the last 3 hours / 3 days.
-SELECT add_continuous_aggregate_policy('event_stats_hourly',
-    start_offset => 10800000000::bigint, end_offset => 60000000::bigint,
-    schedule_interval => INTERVAL '5 minutes');
-SELECT add_continuous_aggregate_policy('issue_stats_hourly',
-    start_offset => 10800000000::bigint, end_offset => 60000000::bigint,
-    schedule_interval => INTERVAL '5 minutes');
-SELECT add_continuous_aggregate_policy('release_health_daily',
-    start_offset => 259200000000::bigint, end_offset => 60000000::bigint,
-    schedule_interval => INTERVAL '5 minutes');
-
--- Retention and compression policies are reconciled at startup from
--- RETENTION_DAYS (see internal/retention), not fixed here.

@@ -80,6 +80,17 @@ crashcart import                 load NDJSON from stdin (idempotent)
 crashcart project <slug> <name> [platform]   create a project and print its DSN
 ```
 
+## Managed Postgres (no TimescaleDB)
+
+CrashCart runs on plain Postgres too — Neon, Supabase, RDS, or any host without
+the TimescaleDB Community extension. The migrator picks the variant
+automatically (`TIMESCALE=auto`; `off` forces plain): stats are rolled up by
+the scheduler instead of continuous aggregates, retention deletes in batches,
+and there is no compression, so plan for 5–10× the storage. A zero-ops
+deployment is the Docker image on Cloud Run / Fly (scale to zero) with
+`DATABASE_URL` pointing at Neon; Timescale Cloud remains the full-featured
+managed option.
+
 ## Export / import
 
 Full specification: [docs/export-format.md](docs/export-format.md) (the

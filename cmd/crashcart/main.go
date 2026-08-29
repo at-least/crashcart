@@ -69,7 +69,11 @@ func main() {
 		fatal(log, err)
 	}
 	defer pool.Close()
-	ran, err := db.Migrate(ctx, pool)
+	mode, err := db.ParseMode(cfg.Timescale)
+	if err != nil {
+		fatal(log, err)
+	}
+	ran, plain, err := db.MigrateMode(ctx, pool, mode)
 	if err != nil {
 		fatal(log, err)
 	}
@@ -77,6 +81,10 @@ func main() {
 		log.Info("migration applied", "name", m)
 	}
 	st := store.New(pool)
+	st.Plain = plain
+	if plain {
+		log.Info("plain Postgres mode: no TimescaleDB, stats rolled up by the scheduler")
+	}
 	syms := &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient(cfg.SymbolicateURL)}
 	in := &ingest.Ingester{Store: st, Cfg: cfg, Symbols: syms, Log: log}
 	notifier := &alerts.Notifier{Store: st, Cfg: cfg, Log: log, HTTP: &http.Client{Timeout: 15 * time.Second}}
@@ -210,6 +218,15 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 			log.Error("retention sweep", "err", err)
 		}
 	})
+	if st.Plain {
+		// Plain Postgres: no continuous aggregates — re-roll the last few
+		// hours of stats every 10 minutes (the current hour is live).
+		go every(ctx, 10*time.Minute, func() {
+			if err := retention.RollupRecent(ctx, st, time.Now()); err != nil {
+				log.Error("stats rollup", "err", err)
+			}
+		})
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

@@ -16,6 +16,9 @@ import (
 type Store struct {
 	Pool *pgxpool.Pool
 	*sqlc.Queries
+	// Plain is true on plain Postgres (no TimescaleDB): stats come from the
+	// rollup tables (internal/retention) instead of continuous aggregates.
+	Plain bool
 }
 
 // New builds a Store on an open pool.
