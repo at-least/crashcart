@@ -31,15 +31,35 @@ func (q *Queries) ExpireUploadChunks(ctx context.Context, createdAt time.Time) (
 	return result.RowsAffected(), nil
 }
 
-const getUploadChunk = `-- name: GetUploadChunk :one
-SELECT data FROM upload_chunks WHERE sha1 = $1
+const getUploadChunks = `-- name: GetUploadChunks :many
+SELECT c.sha1, c.data FROM unnest($1::text[]) WITH ORDINALITY AS w(sha1, n)
+JOIN upload_chunks c ON c.sha1 = w.sha1 ORDER BY w.n
 `
 
-func (q *Queries) GetUploadChunk(ctx context.Context, sha1 string) ([]byte, error) {
-	row := q.db.QueryRow(ctx, getUploadChunk, sha1)
-	var data []byte
-	err := row.Scan(&data)
-	return data, err
+type GetUploadChunksRow struct {
+	Sha1 string `json:"sha1"`
+	Data []byte `json:"data"`
+}
+
+// The chunks of one file, in the order the assemble request lists them.
+func (q *Queries) GetUploadChunks(ctx context.Context, sha1s []string) ([]GetUploadChunksRow, error) {
+	rows, err := q.db.Query(ctx, getUploadChunks, sha1s)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetUploadChunksRow{}
+	for rows.Next() {
+		var i GetUploadChunksRow
+		if err := rows.Scan(&i.Sha1, &i.Data); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const putUploadChunk = `-- name: PutUploadChunk :exec

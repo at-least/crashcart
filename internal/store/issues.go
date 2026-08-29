@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
@@ -85,18 +84,32 @@ func (s *Store) ListIssues(ctx context.Context, f IssueFilter) (issues []sqlc.Is
 	}
 	offset := max(f.Offset, 0)
 	where, args := f.where()
-	if err := s.Pool.QueryRow(ctx, "SELECT count(*) FROM issues WHERE "+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	sql := "SELECT " + issueColumns + " FROM issues WHERE " + where + " ORDER BY " + order +
+	// The page and the total in one round trip: count(*) OVER () is the
+	// unpaged match count on every row. An empty page (offset past the
+	// end) carries no rows, so the total is re-counted only then.
+	sql := "SELECT " + issueColumns + ", count(*) OVER () FROM issues WHERE " + where + " ORDER BY " + order +
 		" LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
 	r, err := s.Pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, 0, err
 	}
-	issues, err = pgx.CollectRows(r, pgx.RowToStructByPos[sqlc.Issue])
-	if err != nil {
+	defer r.Close()
+	for r.Next() {
+		var is sqlc.Issue
+		if err := r.Scan(&is.ProjectID, &is.Fingerprint, &is.Title, &is.Level, &is.ErrorType, &is.Screen, &is.Platform, &is.Status,
+			&is.EventCount, &is.StoredCount, &is.FirstSeen, &is.LastSeen, &is.FirstRelease, &is.LastRelease, &is.ResolvedRelease,
+			&is.CreatedAt, &is.UpdatedAt, &total); err != nil {
+			return nil, 0, err
+		}
+		issues = append(issues, is)
+	}
+	if err := r.Err(); err != nil {
 		return nil, 0, err
+	}
+	if len(issues) == 0 && offset > 0 {
+		if err := s.Pool.QueryRow(ctx, "SELECT count(*) FROM issues WHERE "+where, args...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
 	}
 	return issues, total, nil
 }
