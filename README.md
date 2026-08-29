@@ -82,6 +82,9 @@ crashcart project <slug> <name> [platform]   create a project and print its DSN
 
 ## Export / import
 
+Full specification: [docs/export-format.md](docs/export-format.md) (the
+contract shared with other CrashCart implementations).
+
 `crashcart export > backup.ndjson` streams every table as newline-delimited
 JSON, one object per row, `"t"` naming the table. The first line is
 `{"t":"_meta","format":1,"exported_at":<unix ms>,"app":"crashcart"}`; then

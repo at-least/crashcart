@@ -93,6 +93,8 @@ refresh is per bucket, compression per chunk.
 
 ## Export / import
 
+Spec: `docs/export-format.md` (shared contract; change it before the code).
+
 `crashcart export` streams NDJSON: `{"t":"<table>", ...columns}`. Rows refer
 to projects by `project` slug (never by id), timestamps are unix ms, ids are
 integers, JSON columns are embedded, bytes are base64. `crashcart import`

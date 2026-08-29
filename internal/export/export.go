@@ -1,5 +1,8 @@
 // Package export streams every table as NDJSON and loads it back.
 //
+// The format is specified in docs/export-format.md — that file is the
+// contract shared with other CrashCart implementations; change it first.
+//
 // Format (one JSON object per line):
 //
 //	{"t":"_meta","format":1,"exported_at":<unix ms>,"app":"crashcart"}

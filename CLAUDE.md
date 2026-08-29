@@ -42,7 +42,7 @@ internal/
   retention/          Timescale policy reconcile + sweeps (issues, jobs, rate_limits, symbol files)
   api/                /api/projects/… JSON handlers, /api/0/… sentry-cli compat
   web/                templ views, handlers, state.go (URL ↔ ViewState), svg charts, assets/, styles/
-  export/             NDJSON export / import
+  export/             NDJSON export / import (format contract: docs/export-format.md)
   seed/               demo data
   server/             mux wiring
   testdb/             TEST_DATABASE_URL helper: fresh schema per test
