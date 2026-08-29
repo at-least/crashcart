@@ -4,8 +4,9 @@ The viewer is the web UI at `/`. Every view is a URL you can share, and
 it is issue-centric: you move from an overview to a list of issues, into
 one issue, then into individual events.
 
-Protect it with [`VIEWER_PASSWORD`](/deploy/configuration) (HTTP basic
-auth, any username) before exposing it.
+It needs an account: the first one is created on `/setup` when the
+viewer is opened for the first time; more users and the API keys live on
+**Account** (top right). See [Security](/deploy/security).
 
 ## Home
 

@@ -45,6 +45,11 @@ const usage = `usage: crashcart <command>
   project <slug> <name> [platform]   create a project and print its DSN
   rotate-key <slug>                  issue a new DSN key (old one stops within seconds)
                                      (platform: ios android flutter react-native web backend other) key
+  user add <email> [name]            create a viewer account (password from CRASHCART_PASSWORD, else prompted)
+  user passwd <email>                set a viewer account's password (same source)
+  apikey create <name>               create an API key and print its secret (shown once)
+  apikey list                        list API keys
+  apikey revoke <id>                 revoke an API key
   version          print the version and exit
 `
 
@@ -151,6 +156,14 @@ func main() {
 			fatal(log, err)
 		}
 		fmt.Printf("project %s (id %d)\nDSN: %s\n", p.Slug, p.ID, dsn(cfg, p))
+	case "user":
+		if err := userCmd(ctx, st, args); err != nil {
+			fatal(log, err)
+		}
+	case "apikey":
+		if err := apikeyCmd(ctx, st, args); err != nil {
+			fatal(log, err)
+		}
 	case "rotate-key":
 		if len(args) < 1 {
 			fatal(log, errors.New("usage: crashcart rotate-key <slug>"))

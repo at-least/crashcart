@@ -9,6 +9,7 @@
 //	GET  /p/{slug}/releases[/{v}]   release health
 //	GET  /p/{slug}/settings         DSN, sampling, alerts, channels, symbols
 //	GET  /p/{slug}/stream           SSE: new issues / regressions counter
+//	GET  /login, /setup, /account   sign in, first user, users + API keys (account.go)
 //	GET  /static/{file}             embedded assets
 //
 // All state lives in the URL (state.go). Mutations are htmx-only: they
@@ -41,14 +42,29 @@ type Web struct {
 	Log      *slog.Logger
 	Symbols  *symbolicate.Service
 	Listener *store.Listener // wakes the SSE stream on issue notifications; nil = poll only
+
+	access *auth.Access
 }
 
 // Register mounts the HTML routes and /static on mux.
 func (w *Web) Register(mux *http.ServeMux) {
-	page := func(h http.HandlerFunc) http.Handler {
-		return auth.Chain(h, auth.Basic(w.Cfg.ViewerPassword), auth.RateLimit(w.Cfg.RateLimit, auth.IPCredential))
-	}
+	w.access = &auth.Access{Store: w.Store}
+	limit := auth.RateLimit(w.Cfg.RateLimit, auth.IPCredential)
+	// Signed-in pages; the sign-in pages themselves are public (rate limited).
+	page := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, w.access.Session, limit) }
+	public := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, limit) }
 	mutation := func(h http.HandlerFunc) http.Handler { return page(requireHX(h)) }
+
+	mux.Handle("GET /login", public(w.loginPage))
+	mux.Handle("POST /login", public(w.login))
+	mux.Handle("POST /logout", page(w.logout))
+	mux.Handle("GET /setup", public(w.setupPage))
+	mux.Handle("POST /setup", public(w.setup))
+	mux.Handle("GET /account", page(w.account))
+	mux.Handle("POST /account/users", mutation(w.accountUserAdd))
+	mux.Handle("DELETE /account/users/{id}", mutation(w.accountUserDelete))
+	mux.Handle("POST /account/keys", mutation(w.accountKeyCreate))
+	mux.Handle("DELETE /account/keys/{id}", mutation(w.accountKeyRevoke))
 
 	mux.Handle("GET /{$}", page(w.portal))
 	mux.Handle("POST /projects", mutation(w.createProject))
@@ -133,6 +149,7 @@ type Page struct {
 	Regressions int64         // current regression count (baseline for the banner)
 	Tags        []string      // custom tag keys shown as filters
 	Path        string        // current path below the project base (window links)
+	User        string        // signed-in user's email
 }
 
 // page completes pg (custom tags, current path) and renders body(pg)
@@ -140,6 +157,7 @@ type Page struct {
 // completed page, not the handler's bare copy.
 func (w *Web) page(rw http.ResponseWriter, r *http.Request, pg Page, body func(Page) templ.Component) {
 	pg.Tags = w.Cfg.CustomTags
+	pg.User = auth.ActorFrom(r.Context()).Name
 	if pg.Project != nil {
 		pg.Path = strings.TrimPrefix(r.URL.Path, pg.S.Base())
 	}

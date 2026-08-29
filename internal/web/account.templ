@@ -1,0 +1,158 @@
+package web
+
+import "time"
+
+// AuthCard: the centered card the sign-in and setup pages share.
+templ AuthCard(title, desc string) {
+	<div class="min-h-dvh bg-background text-foreground">
+		<main class="page flex min-h-dvh items-center justify-center py-10">
+			<div data-slot="card" class="w-full max-w-sm">
+				<header data-slot="card-header" class="items-center">
+					@BrandMark()
+					<h1 data-slot="card-title" class="mt-2">{ title }</h1>
+					<p data-slot="card-description">{ desc }</p>
+				</header>
+				<section data-slot="card-content" class="grid gap-3">
+					{ children... }
+				</section>
+			</div>
+		</main>
+	</div>
+}
+
+templ Login(next, errMsg string) {
+	@AuthCard("Sign in", "CrashCart") {
+		<form method="post" action="/login" class="grid gap-3">
+			<input type="hidden" name="next" value={ next }/>
+			if errMsg != "" {
+				<p data-slot="alert" data-variant="destructive" role="alert" class="text-sm">{ errMsg }</p>
+			}
+			<div class="grid gap-1">
+				<label data-slot="label" for="email">Email</label>
+				<input data-slot="input" id="email" name="email" type="email" autocomplete="username" required autofocus/>
+			</div>
+			<div class="grid gap-1">
+				<label data-slot="label" for="password">Password</label>
+				<input data-slot="input" id="password" name="password" type="password" autocomplete="current-password" required/>
+			</div>
+			<button type="submit" data-slot="button">Sign in</button>
+		</form>
+	}
+}
+
+templ Setup(errMsg string) {
+	@AuthCard("Create the first account", "This CrashCart has no users yet. The account you create here signs in to the viewer and manages users and API keys.") {
+		<form method="post" action="/setup" class="grid gap-3">
+			if errMsg != "" {
+				<p data-slot="alert" data-variant="destructive" role="alert" class="text-sm">{ errMsg }</p>
+			}
+			<div class="grid gap-1">
+				<label data-slot="label" for="name">Name</label>
+				<input data-slot="input" id="name" name="name" autocomplete="name"/>
+			</div>
+			<div class="grid gap-1">
+				<label data-slot="label" for="email">Email</label>
+				<input data-slot="input" id="email" name="email" type="email" autocomplete="username" required autofocus/>
+			</div>
+			<div class="grid gap-1">
+				<label data-slot="label" for="password">Password <span class="settings-meta">(10+ characters)</span></label>
+				<input data-slot="input" id="password" name="password" type="password" autocomplete="new-password" minlength="10" required/>
+			</div>
+			<button type="submit" data-slot="button">Create account</button>
+		</form>
+	}
+}
+
+func keyUsed(t *time.Time) string {
+	if t == nil {
+		return "never used"
+	}
+	return "used " + ago(*t)
+}
+
+// Account: users and API keys for this CrashCart (not per project).
+templ Account(pg Page, d AccountData) {
+	<div id="account" class="grid gap-8">
+		<div>
+			<h1 class="page-title">Account &amp; access</h1>
+			<p class="page-desc">Who can sign in to this CrashCart, and the API keys scripts and sentry-cli use.</p>
+		</div>
+		if d.Error != "" {
+			<p data-slot="alert" data-variant="destructive" role="alert">{ d.Error }</p>
+		}
+		<section class="settings-section">
+			<h2 class="section-title">API keys</h2>
+			<p class="settings-desc mt-1">Sent as <code>Authorization: Bearer &lt;key&gt;</code> to <code>/api/…</code> and by <code>sentry-cli</code>. A key's secret is shown once, when it is created.</p>
+			if d.NewSecret != "" {
+				<div data-slot="alert" role="status" class="mt-3">
+					<div data-slot="alert-title">New API key — copy it now, it will not be shown again</div>
+					<div data-slot="alert-description"><code class="select-all break-all" id="new-secret">{ d.NewSecret }</code></div>
+				</div>
+			}
+			<div class="mt-3 grid gap-2">
+				if len(d.Keys) == 0 {
+					<p class="card-empty">No API keys — the JSON API and sentry-cli uploads are unreachable until you create one.</p>
+				}
+				for _, k := range d.Keys {
+					<div data-slot="card" data-size="sm" class="settings-row flex-row">
+						<div class="min-w-0">
+							<p class="settings-title">{ k.Name } <span class="font-mono text-xs font-normal">{ k.Prefix + "…" }</span></p>
+							<p class="settings-meta">
+								if k.RevokedAt != nil {
+									{ "revoked " + ago(*k.RevokedAt) }
+								} else {
+									{ "created " + ago(k.CreatedAt) + " · " + keyUsed(k.LastUsedAt) }
+								}
+							</p>
+						</div>
+						if k.RevokedAt == nil {
+							<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-delete={ "/account/keys/" + i64(k.ID) } hx-confirm="Revoke this key? Anything using it stops working." hx-target="#account" hx-select="#account" hx-swap="outerHTML" hx-push-url="false">Revoke</button>
+						}
+					</div>
+				}
+				<form data-slot="card" data-size="sm" class="mt-1" hx-post="/account/keys" hx-target="#account" hx-select="#account" hx-swap="outerHTML" hx-push-url="false">
+					<section class="flex flex-wrap items-end gap-3 px-4 py-3">
+						<div class="grid gap-1">
+							<label data-slot="label" for="key-name">Name</label>
+							<input data-slot="input" class="h-8 w-64 text-xs" id="key-name" name="name" placeholder="ci-uploads" required/>
+						</div>
+						<button type="submit" data-slot="button" data-size="sm">Create key</button>
+					</section>
+				</form>
+			</div>
+		</section>
+		<section class="settings-section">
+			<h2 class="section-title">Users</h2>
+			<div class="mt-3 grid gap-2">
+				for _, u := range d.Users {
+					<div data-slot="card" data-size="sm" class="settings-row flex-row">
+						<div class="min-w-0">
+							<p class="settings-title">{ u.Email }</p>
+							<p class="settings-meta">{ orDash(u.Name) } · { "joined " + ago(u.CreatedAt) }</p>
+						</div>
+						if u.Email != pg.User {
+							<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-delete={ "/account/users/" + i64(u.ID) } hx-confirm="Remove this user? Their sessions end immediately." hx-target="#account" hx-select="#account" hx-swap="outerHTML" hx-push-url="false">Remove</button>
+						}
+					</div>
+				}
+				<form data-slot="card" data-size="sm" class="mt-1" hx-post="/account/users" hx-target="#account" hx-select="#account" hx-swap="outerHTML" hx-push-url="false">
+					<section class="flex flex-wrap items-end gap-3 px-4 py-3">
+						<div class="grid gap-1">
+							<label data-slot="label" for="u-name">Name</label>
+							<input data-slot="input" class="h-8 w-40 text-xs" id="u-name" name="name"/>
+						</div>
+						<div class="grid gap-1">
+							<label data-slot="label" for="u-email">Email</label>
+							<input data-slot="input" class="h-8 w-56 text-xs" id="u-email" name="email" type="email" required/>
+						</div>
+						<div class="grid gap-1">
+							<label data-slot="label" for="u-password">Password</label>
+							<input data-slot="input" class="h-8 w-48 text-xs" id="u-password" name="password" type="password" minlength="10" autocomplete="new-password" required/>
+						</div>
+						<button type="submit" data-slot="button" data-size="sm">Add user</button>
+					</section>
+				</form>
+			</div>
+		</section>
+	</div>
+}

@@ -47,11 +47,9 @@ and set these:
 ```sh
 POSTGRES_PASSWORD=<long random string>
 PUBLIC_URL=https://crashcart.example.com
-API_KEYS=<long random string>
-VIEWER_PASSWORD=<another long random string>
 ```
 
-Generate the strings with `openssl rand -hex 32`. Everything else in the
+Generate the string with `openssl rand -hex 32`. Everything else in the
 file is optional and explained inline.
 
 ## 4. Add Caddy
@@ -113,9 +111,10 @@ docker compose exec crashcart /crashcart project shop-ios "Shop app (iOS)" ios
 # DSN: https://<key>@crashcart.example.com/1
 ```
 
-Open `https://crashcart.example.com` (any username, your
-`VIEWER_PASSWORD`), then paste the DSN into the SDK —
-[Connect an SDK](/guide/sdks).
+Open `https://crashcart.example.com` and create the first account (the
+`/setup` page appears while there is none), then paste the DSN into the
+SDK — [Connect an SDK](/guide/sdks). API keys for `sentry-cli` and
+scripts are created on **Account**.
 
 Go through [Before going live](./checklist) once.
 

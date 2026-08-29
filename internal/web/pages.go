@@ -372,7 +372,7 @@ func (w *Web) issuesBulk(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "status and fp[] required", http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(status)}); err != nil {
+	if _, err := w.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(status), StatusBy: actorName(r)}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -508,7 +508,7 @@ func (w *Web) issueStatus(rw http.ResponseWriter, r *http.Request) {
 		http.NotFound(rw, r)
 		return
 	}
-	if _, err := w.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(status)}); err != nil {
+	if _, err := w.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(status), StatusBy: actorName(r)}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(rw, r)
 			return

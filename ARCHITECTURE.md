@@ -110,6 +110,16 @@ sweep tick in every process, but each tick
 takes a Postgres advisory lock (`store.RunAsLeader`) and skips when another
 replica holds it.
 
+**Access is users and API keys, in Postgres.** The viewer needs a signed-in
+user: `users` (email, bcrypt hash) and `user_sessions` (the cookie token
+stored as sha256, 30-day expiry, swept by retention). The JSON API and
+sentry-cli need an API key: `api_keys` holds the secret's sha256, a display
+prefix, `last_used_at` (written at most once a minute) and `revoked_at`.
+The first user is created on `/setup` (only while there are none) or by
+`crashcart user add`; users and keys are managed on `/account` or the
+CLI. No roles. `auth.ActorFrom` names who acts; issue status changes
+record it in `issues.status_by`.
+
 **Rate limiting is in memory, the daily quota is in Postgres.** Rate
 limits are fixed 60 s windows per credential, per process; with several
 replicas each enforces `RATE_LIMIT` on its own share. The daily quota is
@@ -126,6 +136,7 @@ theme, and the SSE "new issues" banner.
 
 | table | kind | key | notes |
 |---|---|---|---|
+| users / user_sessions / api_keys | table | id / token_hash / id | viewer accounts, session cookies (hashed), API keys (hashed) |
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
 | events | hypertable (1 day chunks) | (project_id, event_id, occurred_at) | compressed after 48 h |
 | sessions | hypertable | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |

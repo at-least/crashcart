@@ -40,8 +40,6 @@ stringData:
   # Replace every value. Generate keys with: openssl rand -hex 32
   POSTGRES_PASSWORD: change-me
   DATABASE_URL: postgres://crashcart:change-me@postgres:5432/crashcart?sslmode=disable
-  API_KEYS: change-me
-  VIEWER_PASSWORD: change-me
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -254,8 +252,8 @@ kubectl -n crashcart exec deploy/crashcart -- /crashcart project shop-ios "Shop 
 # DSN: https://<key>@crashcart.example.com/1
 ```
 
-Open `https://crashcart.example.com` (any username, your
-`VIEWER_PASSWORD`), paste the DSN into the SDK —
+Open `https://crashcart.example.com`, create the first account on the
+`/setup` page, paste the DSN into the SDK —
 [Connect an SDK](/guide/sdks) — and go through
 [Before going live](./checklist) once.
 

@@ -4,8 +4,9 @@ Base URL is wherever CrashCart listens (`PUBLIC_URL`). Conventions:
 
 - JSON bodies and responses, `snake_case` keys
 - Times are RFC 3339 in UTC; ids are integers (< 2⁵³)
-- `Authorization: Bearer <key>` with one of `API_KEYS` on every route below
-  except ingest and `/health`. When `API_KEYS` is empty the API is open
+- `Authorization: Bearer <key>` with an API key on every route below except
+  ingest and `/health`. Keys are created on the viewer's **Account** page or
+  with `crashcart apikey create`; the secret (`cc_…`) is shown once
 - Errors are `{"error": "message"}` with a 4xx/5xx status
 - `RATE_LIMIT` requests per minute per key; `429` when exceeded
 

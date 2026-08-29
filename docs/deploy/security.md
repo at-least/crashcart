@@ -34,8 +34,8 @@ replays are discarded on arrival.
 | | Protected by | Notes |
 |---|---|---|
 | Ingest (`/api/<id>/envelope/`) | The DSN key | Must be reachable by your apps, so usually public. The key is fine inside an app binary; anyone holding it can send events to that project, nothing more. Rotate it from **Settings** |
-| Viewer (`/`) | `VIEWER_PASSWORD` — one shared password, HTTP basic auth | No user accounts or roles. Keep it on a private network if a shared password isn't enough |
-| API (`/api/…`) and `sentry-cli` uploads | `API_KEYS` — bearer tokens | Open to anyone when unset; set it before going live |
+| Viewer (`/`) | User accounts: email + password (bcrypt), a session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` behind HTTPS) that lasts 30 days | The first account is created on `/setup` (only while there are none) or with `crashcart user add`. Users are managed on **Account** in the viewer. No roles: every user can do everything |
+| API (`/api/…`) and `sentry-cli` uploads | API keys: `Authorization: Bearer cc_…` | Created on **Account** or with `crashcart apikey create`; the secret is shown once and stored hashed. Revoke any time; `last_used_at` shows what is still in use. Without a key the API is closed |
 | `/health` | none | Returns only status |
 
 CrashCart does not terminate TLS. Put Caddy, nginx or a load balancer in

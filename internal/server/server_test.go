@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"io"
 	"log/slog"
 	"net/http"
@@ -38,11 +39,26 @@ func crashItem(release string, n int) string {
 func TestEndToEnd(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	cfg := config.Config{APIKeys: []string{"apikey"}, CORSOrigin: "*", APICORSOrigin: "*", RetentionDays: 30}
+	cfg := config.Config{CORSOrigin: "*", APICORSOrigin: "*", RetentionDays: 30}
 	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "shop", Name: "Shop", PublicKey: "dsnkey"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	access := &auth.Access{Store: st}
+	_, apiKey, err := access.CreateAPIKey(ctx, "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := auth.HashPassword("correct horse battery")
+	user, err := st.CreateUser(ctx, sqlc.CreateUserParams{Email: "dev@example.com", PasswordHash: hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionCookie, err := access.Login(ctx, httptest.NewRequest("GET", "/", nil), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signedIn := map[string]string{"Cookie": sessionCookie.String()}
 	h := New(Deps{Store: st, Cfg: cfg, Log: slog.Default(), Symbols: &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient("")}})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
@@ -83,7 +99,7 @@ func TestEndToEnd(t *testing.T) {
 	if res, _ := do("GET", "/api/projects/shop/issues", nil, nil); res.StatusCode != 401 {
 		t.Fatalf("api without bearer: %d", res.StatusCode)
 	}
-	auth := map[string]string{"Authorization": "Bearer apikey"}
+	auth := map[string]string{"Authorization": "Bearer " + apiKey}
 	res, body = do("GET", "/api/projects/shop/issues", nil, auth)
 	if res.StatusCode != 200 || !strings.Contains(body, "NullPointerException") || !strings.Contains(body, `"event_count":3`) {
 		t.Fatalf("issues: %d %s", res.StatusCode, body)
@@ -127,23 +143,31 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("regression: %s", body)
 	}
 
-	// Viewer: every page renders, mutations need HX-Request.
-	for _, path := range []string{"/", "/p/shop", "/p/shop/issues", "/p/shop/issues/" + fp, "/p/shop/events", "/p/shop/releases", "/p/shop/releases/2.4.0", "/p/shop/settings", "/static/app.css", "/static/htmx.min.js"} {
-		res, body := do("GET", path, nil, nil)
+	// Viewer: signed out → the login page; signed in, every page renders,
+	// mutations need HX-Request.
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if res, err := noRedirect.Get(srv.URL + "/p/shop"); err != nil || res.StatusCode != 303 || res.Header.Get("Location") != "/login?next=%2Fp%2Fshop" {
+		t.Errorf("signed out: %v %v", err, res)
+	}
+	if res, _ := do("POST", "/login", strings.NewReader("email=dev%40example.com&password=wrong"), map[string]string{"Content-Type": "application/x-www-form-urlencoded"}); res.StatusCode != 401 {
+		t.Errorf("wrong password: %d", res.StatusCode)
+	}
+	for _, path := range []string{"/", "/p/shop", "/p/shop/issues", "/p/shop/issues/" + fp, "/p/shop/events", "/p/shop/releases", "/p/shop/releases/2.4.0", "/p/shop/settings", "/account", "/static/app.css", "/static/htmx.min.js"} {
+		res, body := do("GET", path, nil, signedIn)
 		if res.StatusCode != 200 {
 			t.Errorf("GET %s → %d: %.200s", path, res.StatusCode, body)
 		}
 	}
-	res, body = do("GET", "/p/shop/issues/"+fp, nil, nil)
+	res, body = do("GET", "/p/shop/issues/"+fp, nil, signedIn)
 	if !strings.Contains(body, "CartFragment.java") || !strings.Contains(body, "Pixel 8") {
 		t.Errorf("issue page lacks stack/breakdown: %.300s", body)
 	}
 	form := strings.NewReader("fp=" + fp + "&status=ignored")
-	if res, _ := do("POST", "/p/shop/issues/bulk", form, map[string]string{"Content-Type": "application/x-www-form-urlencoded"}); res.StatusCode != 403 {
+	if res, _ := do("POST", "/p/shop/issues/bulk", form, map[string]string{"Cookie": sessionCookie.String(), "Content-Type": "application/x-www-form-urlencoded"}); res.StatusCode != 403 {
 		t.Errorf("bulk without HX-Request → %d", res.StatusCode)
 	}
 	form = strings.NewReader("fp=" + fp + "&status=ignored")
-	if res, body := do("POST", "/p/shop/issues/bulk", form, map[string]string{"Content-Type": "application/x-www-form-urlencoded", "HX-Request": "true"}); res.StatusCode != 200 {
+	if res, body := do("POST", "/p/shop/issues/bulk", form, map[string]string{"Cookie": sessionCookie.String(), "Content-Type": "application/x-www-form-urlencoded", "HX-Request": "true"}); res.StatusCode != 200 {
 		t.Errorf("bulk → %d %.200s", res.StatusCode, body)
 	}
 	iss, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)})

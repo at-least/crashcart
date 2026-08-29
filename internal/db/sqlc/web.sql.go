@@ -85,7 +85,7 @@ func (q *Queries) LatestIssueEvent(ctx context.Context, arg LatestIssueEventPara
 }
 
 const listIssuesIntroducedIn = `-- name: ListIssuesIntroducedIn :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND first_release = $2
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND first_release = $2
 ORDER BY event_count DESC LIMIT $3
 `
 
@@ -113,6 +113,7 @@ func (q *Queries) ListIssuesIntroducedIn(ctx context.Context, arg ListIssuesIntr
 			&i.Screen,
 			&i.Platform,
 			&i.Status,
+			&i.StatusBy,
 			&i.EventCount,
 			&i.StoredCount,
 			&i.FirstSeen,
@@ -134,7 +135,7 @@ func (q *Queries) ListIssuesIntroducedIn(ctx context.Context, arg ListIssuesIntr
 }
 
 const listIssuesPresentIn = `-- name: ListIssuesPresentIn :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND last_release = $2 AND status NOT IN ('resolved', 'ignored')
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND last_release = $2 AND status NOT IN ('resolved', 'ignored')
 ORDER BY event_count DESC LIMIT $3
 `
 
@@ -163,6 +164,7 @@ func (q *Queries) ListIssuesPresentIn(ctx context.Context, arg ListIssuesPresent
 			&i.Screen,
 			&i.Platform,
 			&i.Status,
+			&i.StatusBy,
 			&i.EventCount,
 			&i.StoredCount,
 			&i.FirstSeen,

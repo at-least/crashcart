@@ -64,7 +64,7 @@ func (f IssueFilter) where() (string, []any) {
 	return strings.Join(w, " AND "), args
 }
 
-const issueColumns = `project_id, fingerprint, title, level, error_type, screen, platform, status, event_count,
+const issueColumns = `project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count,
 	stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at`
 
 // ListIssues returns one page of issues matching f plus the total count.
@@ -95,7 +95,7 @@ func (s *Store) ListIssues(ctx context.Context, f IssueFilter) (issues []sqlc.Is
 	defer r.Close()
 	for r.Next() {
 		var is sqlc.Issue
-		if err := r.Scan(&is.ProjectID, &is.Fingerprint, &is.Title, &is.Level, &is.ErrorType, &is.Screen, &is.Platform, &is.Status,
+		if err := r.Scan(&is.ProjectID, &is.Fingerprint, &is.Title, &is.Level, &is.ErrorType, &is.Screen, &is.Platform, &is.Status, &is.StatusBy,
 			&is.EventCount, &is.StoredCount, &is.FirstSeen, &is.LastSeen, &is.FirstRelease, &is.LastRelease, &is.ResolvedRelease,
 			&is.CreatedAt, &is.UpdatedAt, &total); err != nil {
 			return nil, 0, err

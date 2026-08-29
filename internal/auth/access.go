@@ -1,0 +1,177 @@
+package auth
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/store"
+)
+
+// Actor is who is making a request: a signed-in user (viewer) or an API
+// key (/api/*). Name is what gets recorded (issues.status_by).
+type Actor struct {
+	UserID int64  // 0 for an API key
+	KeyID  int64  // 0 for a user
+	Name   string // user email, or the key's name
+}
+
+type actorKey struct{}
+
+// ActorFrom returns the request's actor (zero when unauthenticated).
+func ActorFrom(ctx context.Context) Actor {
+	a, _ := ctx.Value(actorKey{}).(Actor)
+	return a
+}
+
+// WithActor is for tests and internal callers.
+func WithActor(ctx context.Context, a Actor) context.Context {
+	return context.WithValue(ctx, actorKey{}, a)
+}
+
+// SessionCookie is the viewer's session cookie name.
+const SessionCookie = "crashcart_session"
+
+// SessionTTL is how long a login lasts.
+const SessionTTL = 30 * 24 * time.Hour
+
+// KeyPrefix starts every API key secret, so one is recognizable in logs and
+// config files.
+const KeyPrefix = "cc_"
+
+// Access checks credentials against the database.
+type Access struct {
+	Store *store.Store
+}
+
+// NewToken is a fresh random secret (hex).
+func NewToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// HashToken is how session tokens and API key secrets are stored.
+func HashToken(tok string) []byte {
+	sum := sha256.Sum256([]byte(tok))
+	return sum[:]
+}
+
+// HashPassword is bcrypt at the default cost.
+func HashPassword(pw string) (string, error) {
+	h, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	return string(h), err
+}
+
+// CheckPassword reports whether pw matches the stored hash.
+func CheckPassword(hash, pw string) bool {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
+}
+
+// ── API keys ──
+
+// CreateAPIKey makes a key and returns its row and the secret (shown once).
+func (a *Access) CreateAPIKey(ctx context.Context, name string, createdBy *int64) (sqlc.CreateAPIKeyRow, string, error) {
+	secret := KeyPrefix + NewToken()
+	row, err := a.Store.CreateAPIKey(ctx, sqlc.CreateAPIKeyParams{Name: name, KeyHash: HashToken(secret), Prefix: secret[:len(KeyPrefix)+8], CreatedBy: createdBy})
+	return row, secret, err
+}
+
+// APIKey requires `Authorization: Bearer <key>` naming a live api_keys row
+// and puts the key on the context as the actor.
+func (a *Access) APIKey(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+		if tok == "" {
+			unauthorized(w)
+			return
+		}
+		k, err := a.Store.GetAPIKeyByHash(r.Context(), HashToken(tok))
+		if errors.Is(err, pgx.ErrNoRows) {
+			unauthorized(w)
+			return
+		}
+		if err != nil {
+			http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
+			return
+		}
+		a.Store.TouchAPIKey(r.Context(), k.ID)
+		next.ServeHTTP(w, r.WithContext(WithActor(r.Context(), Actor{KeyID: k.ID, Name: k.Name})))
+	})
+}
+
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="crashcart"`)
+	http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+}
+
+// ── viewer sessions ──
+
+// Login creates a session for the user and returns the cookie to set.
+func (a *Access) Login(ctx context.Context, r *http.Request, userID int64) (*http.Cookie, error) {
+	tok := NewToken()
+	if err := a.Store.CreateUserSession(ctx, sqlc.CreateUserSessionParams{TokenHash: HashToken(tok), UserID: userID, ExpiresAt: time.Now().Add(SessionTTL)}); err != nil {
+		return nil, err
+	}
+	return a.cookie(r, tok, int(SessionTTL/time.Second)), nil
+}
+
+// Logout deletes the request's session and returns the clearing cookie.
+func (a *Access) Logout(ctx context.Context, r *http.Request) *http.Cookie {
+	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
+		a.Store.DeleteUserSession(ctx, HashToken(c.Value))
+	}
+	return a.cookie(r, "", -1)
+}
+
+func (a *Access) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name: SessionCookie, Value: value, Path: "/", MaxAge: maxAge,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isHTTPS(r),
+	}
+}
+
+func isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https")
+}
+
+// Session requires a live session cookie and puts the user on the context.
+// Without one, a browser is sent to /login (or /setup while no user exists);
+// an htmx request gets 401 with HX-Redirect so the page navigates.
+func (a *Access) Session(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
+			u, err := a.Store.GetUserSession(r.Context(), HashToken(c.Value))
+			if err == nil {
+				next.ServeHTTP(w, r.WithContext(WithActor(r.Context(), Actor{UserID: u.ID, Name: u.Email})))
+				return
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+		}
+		to := "/login"
+		if n, err := a.Store.CountUsers(r.Context()); err == nil && n == 0 {
+			to = "/setup"
+		} else if r.Method == http.MethodGet && r.URL.Path != "/" {
+			to += "?next=" + url.QueryEscape(r.URL.RequestURI())
+		}
+		if r.Header.Get("HX-Request") == "true" {
+			w.Header().Set("HX-Redirect", to)
+			http.Error(w, "sign in required", http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, to, http.StatusSeeOther)
+	})
+}

@@ -34,7 +34,7 @@ internal/
                       (mirror for sqlc; caggs appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
   store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out)
-  auth/               Bearer, Basic, CORS, RateLimit (in-memory), SentryKey
+  auth/               Access (API keys, user sessions, bcrypt), CORS, RateLimit (in-memory), SentryKey
   ingest/             POST /api/{id}/envelope|store; Ingest(); PII redaction
   symbolicate/        proguard / sourcemap (in-process), dsym (sidecar client), Service (cache + Resolve at ingest + job handlers)
   jobs/               worker loop (SKIP LOCKED), handlers by kind
@@ -73,10 +73,12 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
 - API JSON is snake_case; times RFC3339 UTC; identity ids (projects, symbol
   files, channels) are integers, events are keyed by `event_id`.
 - Viewer URL state lives in `web/state.go` (`ViewState.With*` return copies);
-  HTML mutations require the `HX-Request` header (CSRF guard); `/api/*` needs
-  Bearer auth when `API_KEYS` is set (CORS on it only with `API_CORS_ORIGIN`;
-  `CORS_ORIGIN` is for the SDK ingest endpoints); the viewer needs basic auth when
-  `VIEWER_PASSWORD` is set; ingest is authenticated by the DSN key.
+  HTML mutations require the `HX-Request` header (CSRF guard); `/api/*` needs an
+  API key (`api_keys`, hashed; `auth.Access.APIKey`; CORS on it only with
+  `API_CORS_ORIGIN` — `CORS_ORIGIN` is for the SDK ingest endpoints); the viewer
+  needs a signed-in user (`users` + `user_sessions` cookie; `auth.Access.Session`;
+  `/login`, `/setup`, `/account`); ingest is authenticated by the DSN key.
+  `auth.ActorFrom(ctx)` is who acts (recorded in `issues.status_by`).
 - Never rewrite `events.payload`. Symbolication writes `symbols`,
   `fingerprint`, `error_location`, `symbolicated` only.
 - Tests: unit tests next to the code; DB-backed tests use `internal/testdb`

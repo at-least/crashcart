@@ -335,6 +335,17 @@ type AlertRule struct {
 	LastTriggered   *time.Time `json:"last_triggered"`
 }
 
+type ApiKey struct {
+	ID         int64      `json:"id"`
+	Name       string     `json:"name"`
+	KeyHash    []byte     `json:"key_hash"`
+	Prefix     string     `json:"prefix"`
+	CreatedBy  *int64     `json:"created_by"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+	RevokedAt  *time.Time `json:"revoked_at"`
+}
+
 type Event struct {
 	OccurredAt    time.Time       `json:"occurred_at"`
 	ProjectID     int64           `json:"project_id"`
@@ -380,6 +391,7 @@ type Issue struct {
 	Screen          *string     `json:"screen"`
 	Platform        *string     `json:"platform"`
 	Status          IssueStatus `json:"status"`
+	StatusBy        *string     `json:"status_by"`
 	EventCount      int64       `json:"event_count"`
 	StoredCount     int64       `json:"stored_count"`
 	FirstSeen       time.Time   `json:"first_seen"`
@@ -470,4 +482,19 @@ type UploadChunk struct {
 	Sha1      string    `json:"sha1"`
 	Data      []byte    `json:"data"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type User struct {
+	ID           int64     `json:"id"`
+	Email        string    `json:"email"`
+	Name         string    `json:"name"`
+	PasswordHash string    `json:"password_hash"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type UserSession struct {
+	TokenHash []byte    `json:"token_hash"`
+	UserID    int64     `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }

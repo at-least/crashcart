@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/ingest"
@@ -27,22 +28,25 @@ import (
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
-const apiKey = "test-key"
-
 type env struct {
 	t   *testing.T
 	st  *store.Store
 	mux *http.ServeMux
 	in  *ingest.Ingester
+	key string // an API key's secret
 }
 
 func newEnv(t *testing.T) *env {
 	st := testdb.New(t)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	cfg := config.Config{APIKeys: []string{apiKey}, CORSOrigin: "*", APICORSOrigin: "*", Addr: ":8080"}
+	cfg := config.Config{CORSOrigin: "*", APICORSOrigin: "*", Addr: ":8080"}
 	mux := http.NewServeMux()
 	(&Handler{Store: st, Cfg: cfg, Log: log, Symbols: &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient("")}}).Register(mux)
-	return &env{t: t, st: st, mux: mux, in: &ingest.Ingester{Store: st, Cfg: cfg, Log: log}}
+	_, key, err := (&auth.Access{Store: st}).CreateAPIKey(context.Background(), "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &env{t: t, st: st, mux: mux, in: &ingest.Ingester{Store: st, Cfg: cfg, Log: log}, key: key}
 }
 
 func (e *env) do(method, path string, body any) (*httptest.ResponseRecorder, map[string]any) {
@@ -53,7 +57,7 @@ func (e *env) do(method, path string, body any) (*httptest.ResponseRecorder, map
 		rd = bytes.NewReader(b)
 	}
 	req := httptest.NewRequest(method, path, rd)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+e.key)
 	req.Host = "crash.example.com"
 	rec := httptest.NewRecorder()
 	e.mux.ServeHTTP(rec, req)
@@ -86,7 +90,7 @@ func (e *env) upload(path, filename string, data []byte, fields map[string]strin
 	fw.Write(data)
 	mw.Close()
 	req := httptest.NewRequest("POST", path, &buf)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+e.key)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	rec := httptest.NewRecorder()
 	e.mux.ServeHTTP(rec, req)
@@ -175,7 +179,7 @@ func TestProjectsAndAuth(t *testing.T) {
 		t.Errorf("default alert rules: %v", out["rules"])
 	}
 	req = httptest.NewRequest("GET", "/api/projects/demo", nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+e.key)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Host = "public.example.org"
 	rec = httptest.NewRecorder()
@@ -551,7 +555,7 @@ func TestSymbols(t *testing.T) {
 		t.Errorf("sentry-cli unknown project: %d %s", rec.Code, body)
 	}
 	req := httptest.NewRequest("GET", "/api/0/projects/org/demo/files/dsyms/?debug_id="+uuid, nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+e.key)
 	rr := httptest.NewRecorder()
 	e.mux.ServeHTTP(rr, req)
 	files = nil
@@ -560,7 +564,7 @@ func TestSymbols(t *testing.T) {
 		t.Errorf("sentry-cli list by debug_id: %d %s", rr.Code, rr.Body.String())
 	}
 	req = httptest.NewRequest("GET", "/api/0/projects/org/demo/files/dsyms/?debug_id=00000000-0000-0000-0000-000000000000", nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+e.key)
 	rr = httptest.NewRecorder()
 	e.mux.ServeHTTP(rr, req)
 	if rr.Code != 200 || strings.TrimSpace(rr.Body.String()) != "[]" {
@@ -572,3 +576,17 @@ func TestSymbols(t *testing.T) {
 // commands: enough for debug/macho to parse, no LC_UUID.
 const minimalMachO = "\xcf\xfa\xed\xfe\x0c\x00\x00\x01\x00\x00\x00\x00\x02\x00\x00\x00" +
 	"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+
+func TestAPIKeyRevoked(t *testing.T) {
+	e := newEnv(t)
+	e.createProject("demo")
+	e.get("/api/projects/demo", 200)
+	keys, _ := e.st.ListAPIKeys(context.Background())
+	if _, err := e.st.RevokeAPIKey(context.Background(), keys[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	e.get("/api/projects/demo", 401)
+	if k, _ := e.st.ListAPIKeys(context.Background()); k[0].LastUsedAt == nil {
+		t.Error("last_used_at not recorded")
+	}
+}

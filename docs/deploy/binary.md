@@ -60,8 +60,6 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin crashcart
 sudo tee /etc/crashcart.env >/dev/null <<'EOF2'
 DATABASE_URL=postgres://crashcart:change-me@localhost:5432/crashcart?sslmode=disable
 PUBLIC_URL=https://crashcart.example.com
-API_KEYS=a-long-random-string
-VIEWER_PASSWORD=another-long-random-string
 RETENTION_DAYS=30
 # Only if you use a browser SDK and want to restrict which sites may send events.
 # CORS_ORIGIN=https://shop.example.com

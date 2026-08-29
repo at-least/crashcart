@@ -12,8 +12,9 @@ cd crashcart
 docker compose up -d
 ```
 
-This starts TimescaleDB and CrashCart on `http://localhost:8080`.
-Migrations run automatically at startup.
+This starts TimescaleDB and CrashCart on `http://localhost:8080`. The
+schema is created at startup. Open the address and create the first
+account (the `/setup` page).
 
 ## 2. Create a project
 

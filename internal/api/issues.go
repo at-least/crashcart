@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -25,6 +26,7 @@ type issueOut struct {
 	Screen          *string   `json:"screen"`
 	Platform        *string   `json:"platform"`
 	Status          string    `json:"status"`
+	StatusBy        *string   `json:"status_by"`
 	EventCount      int64     `json:"event_count"`
 	StoredCount     int64     `json:"stored_count"`
 	FirstSeen       time.Time `json:"first_seen"`
@@ -41,7 +43,7 @@ type issueOut struct {
 func toIssueOut(i sqlc.Issue) issueOut {
 	return issueOut{
 		Fingerprint: string(i.Fingerprint), Title: i.Title, Level: string(i.Level), ErrorType: i.ErrorType, Screen: i.Screen,
-		Platform: i.Platform, Status: string(i.Status), EventCount: i.EventCount, StoredCount: i.StoredCount,
+		Platform: i.Platform, Status: string(i.Status), StatusBy: i.StatusBy, EventCount: i.EventCount, StoredCount: i.StoredCount,
 		FirstSeen: i.FirstSeen.UTC(), LastSeen: i.LastSeen.UTC(),
 		FirstRelease: i.FirstRelease, LastRelease: i.LastRelease, ResolvedRelease: i.ResolvedRelease,
 		CreatedAt: i.CreatedAt.UTC(), UpdatedAt: i.UpdatedAt.UTC(),
@@ -218,7 +220,7 @@ func (h *Handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(in.Status)})
+	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(in.Status), StatusBy: actorName(r)})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -256,7 +258,7 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		fps = append(fps, fp)
 	}
-	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(in.Status)})
+	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(in.Status), StatusBy: actorName(r)})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -278,4 +280,12 @@ func intParam(q map[string][]string, key string, def int) (int, error) {
 		return 0, badRequest(key + " must be a non-negative integer")
 	}
 	return n, nil
+}
+
+// actorName is who is acting (the API key's name), for issues.status_by.
+func actorName(r *http.Request) *string {
+	if a := auth.ActorFrom(r.Context()); a.Name != "" {
+		return &a.Name
+	}
+	return nil
 }

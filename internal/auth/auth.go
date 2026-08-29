@@ -1,9 +1,9 @@
-// Package auth holds the HTTP middleware: bearer keys for /api, basic auth
-// for the viewer, CORS, and an in-memory rate limiter.
+// Package auth holds the HTTP middleware — API keys for /api, session
+// cookies for the viewer (see access.go), CORS, an in-memory rate limiter —
+// and the credential helpers behind them.
 package auth
 
 import (
-	"crypto/subtle"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,54 +17,6 @@ func Chain(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler 
 		h = mws[i](h)
 	}
 	return h
-}
-
-// Bearer requires `Authorization: Bearer <key>` matching one of keys.
-// An empty key list leaves the route open.
-func Bearer(keys []string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		if len(keys) == 0 {
-			return next
-		}
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
-			if tok == "" || !matchAny(tok, keys) {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="crashcart"`)
-				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// Basic requires HTTP basic auth with any username and the given password.
-// An empty password leaves the route open.
-func Basic(password string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		if password == "" {
-			return next
-		}
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, pw, ok := r.BasicAuth()
-			if !ok || subtle.ConstantTimeCompare([]byte(pw), []byte(password)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Basic realm="crashcart"`)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-func matchAny(tok string, keys []string) bool {
-	ok := false
-	for _, k := range keys {
-		if subtle.ConstantTimeCompare([]byte(tok), []byte(k)) == 1 {
-			ok = true
-		}
-	}
-	return ok
 }
 
 // CORS answers preflights and stamps the allow headers.

@@ -100,6 +100,7 @@ type issueRow struct {
 	Screen          *string `json:"screen,omitempty"`
 	Platform        *string `json:"platform,omitempty"`
 	Status          string  `json:"status"`
+	StatusBy        *string `json:"status_by,omitempty"`
 	EventCount      int64   `json:"event_count"`
 	StoredCount     int64   `json:"stored_count"`
 	FirstSeen       ts      `json:"first_seen"`
@@ -207,7 +208,7 @@ func at(t time.Time) ts { return ts{t.UTC()} }
 // ── export ─────────────────────────────────────────────────────────────
 
 const (
-	selectIssues = `SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count,
+	selectIssues = `SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count,
 	first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
 	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
@@ -255,7 +256,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		if err := stream(ctx, st, selectIssues, p.ID, func(r sqlc.Issue) error {
 			return enc.Encode(issueRow{
 				T: "issues", Project: p.Slug, Fingerprint: string(r.Fingerprint), Title: r.Title, Level: string(r.Level),
-				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: string(r.Status),
+				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: string(r.Status), StatusBy: r.StatusBy,
 				EventCount: r.EventCount, StoredCount: r.StoredCount, FirstSeen: at(r.FirstSeen), LastSeen: at(r.LastSeen),
 				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, ResolvedRelease: r.ResolvedRelease,
 				CreatedAt: at(r.CreatedAt), UpdatedAt: at(r.UpdatedAt),
@@ -366,10 +367,10 @@ const (
 	    sample_keep_first = EXCLUDED.sample_keep_first, sample_rate = EXCLUDED.sample_rate,
 	    daily_quota = EXCLUDED.daily_quota, created_at = EXCLUDED.created_at
 	RETURNING id`
-	upsertIssue = `INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform, status, event_count,
+	upsertIssue = `INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count,
 	stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-	ON CONFLICT (project_id, fingerprint) DO UPDATE SET title = EXCLUDED.title, level = EXCLUDED.level,
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+	ON CONFLICT (project_id, fingerprint) DO UPDATE SET title = EXCLUDED.title, level = EXCLUDED.level, status_by = EXCLUDED.status_by,
 	    error_type = EXCLUDED.error_type, screen = EXCLUDED.screen, platform = EXCLUDED.platform, status = EXCLUDED.status,
 	    event_count = EXCLUDED.event_count, stored_count = EXCLUDED.stored_count, first_seen = EXCLUDED.first_seen,
 	    last_seen = EXCLUDED.last_seen, first_release = EXCLUDED.first_release, last_release = EXCLUDED.last_release,
@@ -502,7 +503,7 @@ func (im *importer) line(b []byte) error {
 		if !ok {
 			return fmt.Errorf("issues row: fingerprint %q is not a 32-hex id", r.Fingerprint)
 		}
-		im.batch.Queue(upsertIssue, pid, fp, r.Title, r.Level, r.ErrorType, r.Screen, r.Platform, r.Status,
+		im.batch.Queue(upsertIssue, pid, fp, r.Title, r.Level, r.ErrorType, r.Screen, r.Platform, r.Status, r.StatusBy,
 			r.EventCount, r.StoredCount, tsOrNow(r.FirstSeen), tsOrNow(r.LastSeen), r.FirstRelease, r.LastRelease, r.ResolvedRelease,
 			tsOrNow(r.CreatedAt), tsOrNow(r.UpdatedAt))
 	case "events":

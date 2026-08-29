@@ -8,10 +8,10 @@ apps at it.
       TLS itself.
 - [ ] **`PUBLIC_URL`** is the HTTPS address your apps use. It's what
       appears in DSNs, alert links and `sentry-cli` uploads.
-- [ ] **`API_KEYS`** is set. Without it the API — projects, issues, symbol
-      uploads — is open to anyone who can reach the server.
-- [ ] **`VIEWER_PASSWORD`** is set, unless the viewer is only reachable on a
-      private network.
+- [ ] **First account created.** Open the viewer once and create it on
+      `/setup` — until then anyone reaching the server can claim it.
+- [ ] **API keys** exist only for what needs them (CI uploads, scripts),
+      and revoked ones are gone from `crashcart apikey list`.
 - [ ] **Postgres password** is not the default `crashcart`
       (`POSTGRES_PASSWORD` in `.env` for Docker Compose).
 - [ ] **Backups.** Schedule `crashcart export > backup.ndjson` (or

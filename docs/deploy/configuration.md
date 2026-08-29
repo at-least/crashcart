@@ -8,13 +8,15 @@ Everything is set with environment variables.
 |---|---|
 | `DATABASE_URL` | Postgres connection URL |
 
+Access is not configured here: the viewer uses user accounts and the API
+uses API keys, both managed in the viewer (**Account**) or with
+`crashcart user` / `crashcart apikey` — see [Security](./security).
+
 ## Recommended
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PUBLIC_URL` | derived from the request | The address your apps use. Shown in DSNs, used in alert links and by `sentry-cli`. Set it when CrashCart is behind a proxy or domain |
-| `API_KEYS` | empty (open) | Comma-separated keys accepted as `Authorization: Bearer …` on the API and by `sentry-cli` |
-| `VIEWER_PASSWORD` | empty (open) | Password for the web viewer (any username) |
 | `CORS_ORIGIN` | `*` | Which web origins may send events (the SDK endpoints). Set to your site for browser SDKs |
 | `API_CORS_ORIGIN` | empty (no CORS) | Web origin allowed to call `/api/*` from a browser. Leave empty unless a browser app talks to the JSON API |
 

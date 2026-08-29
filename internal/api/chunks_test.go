@@ -49,7 +49,7 @@ func TestChunkUpload(t *testing.T) {
 		}
 		mw.Close()
 		r := httptest.NewRequest("POST", "/api/0/organizations/o/chunk-upload/", &buf)
-		r.Header.Set("Authorization", "Bearer "+apiKey)
+		r.Header.Set("Authorization", "Bearer "+e.key)
 		r.Header.Set("Content-Type", mw.FormDataContentType())
 		w := httptest.NewRecorder()
 		e.mux.ServeHTTP(w, r)

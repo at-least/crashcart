@@ -115,7 +115,7 @@ func (q *Queries) ExpireIssues(ctx context.Context, lastSeen time.Time) (int64, 
 }
 
 const getIssue = `-- name: GetIssue :one
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND fingerprint = $2
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND fingerprint = $2
 `
 
 type GetIssueParams struct {
@@ -135,6 +135,7 @@ func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (Issue, erro
 		&i.Screen,
 		&i.Platform,
 		&i.Status,
+		&i.StatusBy,
 		&i.EventCount,
 		&i.StoredCount,
 		&i.FirstSeen,
@@ -256,7 +257,7 @@ func (q *Queries) IssueTimeline(ctx context.Context, arg IssueTimelineParams) ([
 }
 
 const listIssuesByRelease = `-- name: ListIssuesByRelease :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND (first_release = $2 OR last_release = $2)
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND (first_release = $2 OR last_release = $2)
 ORDER BY event_count DESC LIMIT $3
 `
 
@@ -284,6 +285,7 @@ func (q *Queries) ListIssuesByRelease(ctx context.Context, arg ListIssuesByRelea
 			&i.Screen,
 			&i.Platform,
 			&i.Status,
+			&i.StatusBy,
 			&i.EventCount,
 			&i.StoredCount,
 			&i.FirstSeen,
@@ -305,7 +307,7 @@ func (q *Queries) ListIssuesByRelease(ctx context.Context, arg ListIssuesByRelea
 }
 
 const listNewIssues = `-- name: ListNewIssues :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND first_seen >= $2 ORDER BY first_seen DESC LIMIT $3
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND first_seen >= $2 ORDER BY first_seen DESC LIMIT $3
 `
 
 type ListNewIssuesParams struct {
@@ -332,6 +334,7 @@ func (q *Queries) ListNewIssues(ctx context.Context, arg ListNewIssuesParams) ([
 			&i.Screen,
 			&i.Platform,
 			&i.Status,
+			&i.StatusBy,
 			&i.EventCount,
 			&i.StoredCount,
 			&i.FirstSeen,
@@ -353,7 +356,7 @@ func (q *Queries) ListNewIssues(ctx context.Context, arg ListNewIssuesParams) ([
 }
 
 const listRegressions = `-- name: ListRegressions :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND status = 'regression' ORDER BY last_seen DESC LIMIT $2
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND status = 'regression' ORDER BY last_seen DESC LIMIT $2
 `
 
 type ListRegressionsParams struct {
@@ -379,6 +382,7 @@ func (q *Queries) ListRegressions(ctx context.Context, arg ListRegressionsParams
 			&i.Screen,
 			&i.Platform,
 			&i.Status,
+			&i.StatusBy,
 			&i.EventCount,
 			&i.StoredCount,
 			&i.FirstSeen,
@@ -400,20 +404,26 @@ func (q *Queries) ListRegressions(ctx context.Context, arg ListRegressionsParams
 }
 
 const setIssueStatus = `-- name: SetIssueStatus :one
-UPDATE issues SET status = $3::issue_status,
+UPDATE issues SET status = $3::issue_status, status_by = $4,
     resolved_release = CASE WHEN $3::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
     updated_at = now()
-WHERE project_id = $1 AND fingerprint = $2 RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at
+WHERE project_id = $1 AND fingerprint = $2 RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at
 `
 
 type SetIssueStatusParams struct {
 	ProjectID   int64       `json:"project_id"`
 	Fingerprint sentry.ID   `json:"fingerprint"`
 	Status      IssueStatus `json:"status"`
+	StatusBy    *string     `json:"status_by"`
 }
 
 func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) (Issue, error) {
-	row := q.db.QueryRow(ctx, setIssueStatus, arg.ProjectID, arg.Fingerprint, arg.Status)
+	row := q.db.QueryRow(ctx, setIssueStatus,
+		arg.ProjectID,
+		arg.Fingerprint,
+		arg.Status,
+		arg.StatusBy,
+	)
 	var i Issue
 	err := row.Scan(
 		&i.ProjectID,
@@ -424,6 +434,7 @@ func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) 
 		&i.Screen,
 		&i.Platform,
 		&i.Status,
+		&i.StatusBy,
 		&i.EventCount,
 		&i.StoredCount,
 		&i.FirstSeen,
@@ -438,7 +449,7 @@ func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) 
 }
 
 const setIssuesStatus = `-- name: SetIssuesStatus :execrows
-UPDATE issues SET status = $3::issue_status,
+UPDATE issues SET status = $3::issue_status, status_by = $4,
     resolved_release = CASE WHEN $3::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
     updated_at = now()
 WHERE project_id = $1 AND fingerprint = ANY($2::uuid[])
@@ -448,10 +459,16 @@ type SetIssuesStatusParams struct {
 	ProjectID int64       `json:"project_id"`
 	Column2   []sentry.ID `json:"column_2"`
 	Status    IssueStatus `json:"status"`
+	StatusBy  *string     `json:"status_by"`
 }
 
 func (q *Queries) SetIssuesStatus(ctx context.Context, arg SetIssuesStatusParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setIssuesStatus, arg.ProjectID, arg.Column2, arg.Status)
+	result, err := q.db.Exec(ctx, setIssuesStatus,
+		arg.ProjectID,
+		arg.Column2,
+		arg.Status,
+		arg.StatusBy,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -473,7 +490,7 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
                          AND EXCLUDED.last_release IS DISTINCT FROM issues.resolved_release
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now()
-RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at, (xmax = 0) AS created
+RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at, (xmax = 0) AS created
 `
 
 type UpsertIssueParams struct {
@@ -500,6 +517,7 @@ type UpsertIssueRow struct {
 	Screen          *string     `json:"screen"`
 	Platform        *string     `json:"platform"`
 	Status          IssueStatus `json:"status"`
+	StatusBy        *string     `json:"status_by"`
 	EventCount      int64       `json:"event_count"`
 	StoredCount     int64       `json:"stored_count"`
 	FirstSeen       time.Time   `json:"first_seen"`
@@ -541,6 +559,7 @@ func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (Upser
 		&i.Screen,
 		&i.Platform,
 		&i.Status,
+		&i.StatusBy,
 		&i.EventCount,
 		&i.StoredCount,
 		&i.FirstSeen,

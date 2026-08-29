@@ -14,6 +14,11 @@ crashcart export [slug]                      stream NDJSON to stdout (all projec
 crashcart import                             load NDJSON from stdin (idempotent)
 crashcart project <slug> <name> [platform]   create a project and print its DSN
 crashcart rotate-key <slug>                  replace the project's DSN key and print the new DSN
+crashcart user add <email> [name]            create a viewer account (password: CRASHCART_PASSWORD or prompt)
+crashcart user passwd <email>                change an account's password
+crashcart apikey create <name>               create an API key; prints the secret once
+crashcart apikey list                        list API keys with last use
+crashcart apikey revoke <id>                 revoke an API key
 ```
 
 With Docker Compose, prefix with `docker compose exec crashcart /crashcart`.

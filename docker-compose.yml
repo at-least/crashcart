@@ -28,8 +28,6 @@ services:
       DATABASE_URL: postgres://crashcart:${POSTGRES_PASSWORD:-crashcart}@db:5432/crashcart?sslmode=disable
       LISTEN_ADDR: ":8080"
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
-      API_KEYS: ${API_KEYS:-}
-      VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
       RETENTION_DAYS: ${RETENTION_DAYS:-30}
       # Set in .env together with the symbolicate service below.

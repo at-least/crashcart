@@ -30,6 +30,40 @@ CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPT
 CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT) RETURNS SETOF TIMESTAMPTZ
     LANGUAGE SQL IMMUTABLE AS $$ SELECT b FROM generate_series(from_at, to_at, make_interval(secs => width)) AS b WHERE b < to_at $$;
 
+-- ── users, sessions, API keys ──────────────────────────────────────────
+-- Access to the viewer is a user account (bcrypt password) with a session
+-- cookie whose token is stored hashed; access to /api/* is an API key,
+-- also stored hashed (the secret is shown once when created). The first
+-- user is created on the /setup page (only while there are none) or with
+-- `crashcart user add`.
+
+CREATE TABLE users (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email         TEXT NOT NULL UNIQUE,                 -- lowercased
+    name          TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,                        -- bcrypt
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_sessions (
+    token_hash BYTEA PRIMARY KEY,                       -- sha256 of the cookie token
+    user_id    BIGINT NOT NULL REFERENCES users ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX user_sessions_expires ON user_sessions (expires_at);
+
+CREATE TABLE api_keys (
+    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name         TEXT NOT NULL,
+    key_hash     BYTEA NOT NULL UNIQUE,                 -- sha256 of the secret
+    prefix       TEXT NOT NULL,                         -- the secret's first characters, for display
+    created_by   BIGINT REFERENCES users ON DELETE SET NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ
+);
+
 -- ── projects ───────────────────────────────────────────────────────────
 
 CREATE TABLE projects (
@@ -118,6 +152,7 @@ CREATE TABLE issues (
     screen           TEXT,
     platform         TEXT,
     status           issue_status NOT NULL DEFAULT 'unresolved',
+    status_by        TEXT,                            -- who set the status last: a user's email or an API key's name
     event_count      BIGINT NOT NULL DEFAULT 0,       -- exact: counts sampled-out events too
     stored_count     BIGINT NOT NULL DEFAULT 0,       -- events actually stored
     first_seen       TIMESTAMPTZ NOT NULL,

@@ -23,6 +23,32 @@ CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width 
 -- DDL). Continuous aggregates appear here as plain tables so queries
 -- type-check. Keep in sync with schema.sql.
 
+CREATE TABLE users (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email         TEXT NOT NULL UNIQUE,
+    name          TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_sessions (
+    token_hash BYTEA PRIMARY KEY,
+    user_id    BIGINT NOT NULL REFERENCES users ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE api_keys (
+    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name         TEXT NOT NULL,
+    key_hash     BYTEA NOT NULL UNIQUE,
+    prefix       TEXT NOT NULL,
+    created_by   BIGINT REFERENCES users ON DELETE SET NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at   TIMESTAMPTZ
+);
+
 CREATE TABLE projects (
     id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     slug              TEXT NOT NULL UNIQUE,
@@ -89,6 +115,7 @@ CREATE TABLE issues (
     screen           TEXT,
     platform         TEXT,
     status           issue_status NOT NULL DEFAULT 'unresolved',
+    status_by        TEXT,
     event_count      BIGINT NOT NULL DEFAULT 0,
     stored_count     BIGINT NOT NULL DEFAULT 0,
     first_seen       TIMESTAMPTZ NOT NULL,

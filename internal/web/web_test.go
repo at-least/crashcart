@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/ingest"
@@ -22,6 +24,9 @@ import (
 const crashEvent = `{"event_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","timestamp":"%s","level":"fatal","platform":"android","environment":"production","transaction":"CartFragment","tags":{"device_id":"did-1","build":"42"},"user":{"id":"user-001","email":"u@example.com"},"sdk":{"name":"sentry.java.android"},"contexts":{"device":{"model":"Pixel 8","arch":"arm64"},"os":{"name":"Android","version":"14"},"app":{"app_version":"2.4.1"}},"exception":{"values":[{"type":"NullPointerException","value":"Attempt to invoke virtual method","mechanism":{"type":"UncaughtExceptionHandler","handled":false},"stacktrace":{"frames":[{"filename":"Looper.java","function":"loop","in_app":false,"lineno":10},{"filename":"com/example/CartFragment.java","function":"onCreateView","in_app":true,"lineno":142},{"instruction_addr":"0xdeadbeef","in_app":false}]}}]},"breadcrumbs":{"values":[{"timestamp":"2026-08-29T10:15:00Z","category":"navigation","message":"cart","level":"info"},{"timestamp":"2026-08-29T10:15:29Z","category":"http","message":"GET /api/cart 500","level":"error"}]}}`
 
 const sessionItem = `{"started":"%s","status":"crashed","attrs":{"release":"2.4.1","environment":"production"}}`
+
+// sessionCookie signs the test requests in (set by setup).
+var sessionCookie *http.Cookie
 
 func setup(t *testing.T) (*Web, sqlc.Project, *http.ServeMux) {
 	t.Helper()
@@ -43,12 +48,21 @@ func setup(t *testing.T) (*Web, sqlc.Project, *http.ServeMux) {
 	w := &Web{Store: st, Cfg: config.Config{CustomTags: []string{"build"}}, Log: slog.Default(), Symbols: &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient("")}}
 	mux := http.NewServeMux()
 	w.Register(mux)
+	hash, _ := auth.HashPassword("correct horse battery")
+	user, err := st.CreateUser(ctx, sqlc.CreateUserParams{Email: "dev@example.com", PasswordHash: hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionCookie, err = w.access.Login(ctx, httptest.NewRequest("GET", "/", nil), user.ID); err != nil {
+		t.Fatal(err)
+	}
 	return w, p, mux
 }
 
 func get(t *testing.T, mux *http.ServeMux, path string, hx bool) (int, string) {
 	t.Helper()
 	req := httptest.NewRequest("GET", path, nil)
+	req.AddCookie(sessionCookie)
 	if hx {
 		req.Header.Set("HX-Request", "true")
 	}
@@ -122,6 +136,7 @@ func TestBulkAndMutations(t *testing.T) {
 
 	// without HX-Request: 403, nothing changes
 	req := httptest.NewRequest("POST", "/p/shop/issues/bulk", strings.NewReader(form.Encode()))
+	req.AddCookie(sessionCookie)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -134,6 +149,7 @@ func TestBulkAndMutations(t *testing.T) {
 
 	// with HX-Request: table fragment for the (now empty) unresolved tab
 	req = httptest.NewRequest("POST", "/p/shop/issues/bulk", strings.NewReader(form.Encode()))
+	req.AddCookie(sessionCookie)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	rec = httptest.NewRecorder()
@@ -148,6 +164,7 @@ func TestBulkAndMutations(t *testing.T) {
 
 	// status select on the issue page → redirect
 	req = httptest.NewRequest("PATCH", "/p/shop/issues/"+fp+"/status", strings.NewReader("status=triaged"))
+	req.AddCookie(sessionCookie)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	rec = httptest.NewRecorder()
@@ -159,6 +176,7 @@ func TestBulkAndMutations(t *testing.T) {
 	// settings mutations
 	hx := func(method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.AddCookie(sessionCookie)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("HX-Request", "true")
 		rec := httptest.NewRecorder()
@@ -219,6 +237,7 @@ func TestBulkAndMutations(t *testing.T) {
 	mp.WriteString("--b\r\nContent-Disposition: form-data; name=\"release\"\r\n\r\n2.4.1\r\n")
 	mp.WriteString("--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"mapping.txt\"\r\nContent-Type: text/plain\r\n\r\ncom.a.B -> a.b:\r\n--b--\r\n")
 	req = httptest.NewRequest("POST", "/p/shop/settings/symbols", strings.NewReader(mp.String()))
+	req.AddCookie(sessionCookie)
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=b")
 	req.Header.Set("HX-Request", "true")
 	rec = httptest.NewRecorder()
@@ -273,6 +292,7 @@ func TestStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	req := httptest.NewRequest("GET", "/p/shop/stream?since=2000-01-01T00%3A00%3A00Z", nil).WithContext(ctx)
+	req.AddCookie(sessionCookie)
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() { mux.ServeHTTP(rec, req); close(done) }()
@@ -291,4 +311,94 @@ func TestStream(t *testing.T) {
 	_ = w
 	_ = p
 	_ = io.EOF
+}
+
+// TestAuthFlow: setup of the first account, sign in / out, API keys.
+func TestAuthFlow(t *testing.T) {
+	st := testdb.New(t)
+	w := &Web{Store: st, Cfg: config.Config{}, Log: slog.Default(), Symbols: &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient("")}}
+	mux := http.NewServeMux()
+	w.Register(mux)
+	do := func(method, path, body string, cookie *http.Cookie, hx bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		if hx {
+			req.Header.Set("HX-Request", "true")
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	// No users yet: everything leads to /setup.
+	if rec := do("GET", "/", "", nil, false); rec.Code != 303 || rec.Header().Get("Location") != "/setup" {
+		t.Fatalf("fresh install: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := do("GET", "/setup", "", nil, false); rec.Code != 200 || !strings.Contains(rec.Body.String(), "Create the first account") {
+		t.Fatalf("setup page: %d", rec.Code)
+	}
+	if rec := do("POST", "/setup", "email=me%40example.com&password=short", nil, false); rec.Code != 400 {
+		t.Errorf("short password accepted: %d", rec.Code)
+	}
+	rec := do("POST", "/setup", "email=Me%40Example.com&name=Me&password=correct+horse+battery", nil, false)
+	if rec.Code != 303 || rec.Header().Get("Location") != "/" || len(rec.Result().Cookies()) == 0 {
+		t.Fatalf("setup: %d %v", rec.Code, rec.Header())
+	}
+	cookie := rec.Result().Cookies()[0]
+	if cookie.Name != auth.SessionCookie || !cookie.HttpOnly {
+		t.Errorf("cookie = %+v", cookie)
+	}
+	// Setup is one-time; signed in, the home page renders with the account link.
+	if rec := do("GET", "/setup", "", nil, false); rec.Code != 303 || rec.Header().Get("Location") != "/login" {
+		t.Errorf("setup after first user: %d", rec.Code)
+	}
+	if rec := do("GET", "/", "", cookie, false); rec.Code != 200 || !strings.Contains(rec.Body.String(), `href="/account"`) {
+		t.Fatalf("home signed in: %d", rec.Code)
+	}
+	// An htmx request without a session gets the redirect header, not HTML.
+	if rec := do("GET", "/", "", nil, true); rec.Code != 401 || rec.Header().Get("HX-Redirect") != "/login" {
+		t.Errorf("hx signed out: %d %v", rec.Code, rec.Header())
+	}
+	// API keys: created on the account page, the secret shown once; revoked keys are gone.
+	rec = do("POST", "/account/keys", "name=ci", cookie, true)
+	body := rec.Body.String()
+	i := strings.Index(body, auth.KeyPrefix)
+	if rec.Code != 200 || i < 0 {
+		t.Fatalf("create key: %d %.300s", rec.Code, body)
+	}
+	secret := body[i : i+len(auth.KeyPrefix)+64]
+	if k, err := st.GetAPIKeyByHash(context.Background(), auth.HashToken(secret)); err != nil || k.Name != "ci" {
+		t.Fatalf("key lookup: %v %+v", err, k)
+	}
+	if rec := do("GET", "/account", "", cookie, false); strings.Contains(rec.Body.String(), secret) {
+		t.Error("secret shown again")
+	}
+	keys, _ := st.ListAPIKeys(context.Background())
+	if rec := do("DELETE", "/account/keys/"+strconv.FormatInt(keys[0].ID, 10), "", cookie, true); rec.Code != 303 {
+		t.Errorf("revoke: %d", rec.Code)
+	}
+	if _, err := st.GetAPIKeyByHash(context.Background(), auth.HashToken(secret)); err == nil {
+		t.Error("revoked key still valid")
+	}
+	// Sign out, then in again — wrong password first.
+	if rec := do("POST", "/logout", "", cookie, false); rec.Code != 303 {
+		t.Errorf("logout: %d", rec.Code)
+	}
+	if rec := do("GET", "/", "", cookie, false); rec.Code != 303 {
+		t.Errorf("after logout: %d", rec.Code)
+	}
+	if rec := do("POST", "/login", "email=me%40example.com&password=nope", nil, false); rec.Code != 401 {
+		t.Errorf("wrong password: %d", rec.Code)
+	}
+	rec = do("POST", "/login", "email=me%40example.com&password=correct+horse+battery&next=%2Fp%2Fshop", nil, false)
+	if rec.Code != 303 || rec.Header().Get("Location") != "/p/shop" || len(rec.Result().Cookies()) == 0 {
+		t.Errorf("login: %d %v", rec.Code, rec.Header())
+	}
+	if rec := do("POST", "/login", "email=me%40example.com&password=correct+horse+battery&next=https%3A%2F%2Fevil.example", nil, false); rec.Header().Get("Location") != "/" {
+		t.Errorf("open redirect: %s", rec.Header().Get("Location"))
+	}
 }

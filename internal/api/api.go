@@ -37,7 +37,8 @@ type Handler struct {
 func (h *Handler) Register(mux *http.ServeMux) {
 	// CORS on the JSON API only when API_CORS_ORIGIN is set: the SDK ingest
 	// endpoints need it (browser SDKs), a key-protected API usually does not.
-	mws := []func(http.Handler) http.Handler{auth.Bearer(h.Cfg.APIKeys), auth.RateLimit(h.Cfg.RateLimit, auth.BearerCredential)}
+	access := &auth.Access{Store: h.Store}
+	mws := []func(http.Handler) http.Handler{access.APIKey, auth.RateLimit(h.Cfg.RateLimit, auth.BearerCredential)}
 	if h.Cfg.APICORSOrigin != "" {
 		mws = append([]func(http.Handler) http.Handler{auth.CORS(h.Cfg.APICORSOrigin)}, mws...)
 	}
