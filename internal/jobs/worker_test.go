@@ -27,6 +27,7 @@ func TestBackoff(t *testing.T) {
 
 func TestWorkerRetryThenSucceed(t *testing.T) {
 	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
 	ctx := context.Background()
 	args, _ := json.Marshal(map[string]any{"event": 42})
 	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "flaky", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
@@ -107,6 +108,7 @@ func TestWorkerRetryThenSucceed(t *testing.T) {
 
 func TestWorkerPanicIsRetry(t *testing.T) {
 	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
 	ctx := context.Background()
 	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "boom", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -129,6 +131,7 @@ func TestWorkerPanicIsRetry(t *testing.T) {
 
 func TestWorkerWakesOnNotify(t *testing.T) {
 	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	l := &store.Listener{Pool: st.Pool}

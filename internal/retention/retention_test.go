@@ -13,6 +13,7 @@ import (
 
 func TestReconcile(t *testing.T) {
 	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
 	if st.Plain {
 		t.Skip("plain Postgres has no policies")
 	}
@@ -76,6 +77,7 @@ func TestReconcile(t *testing.T) {
 
 func TestSweep(t *testing.T) {
 	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
 	ctx := context.Background()
 	cfg := config.Config{RetentionDays: 30}
 	now := time.Now()
@@ -127,6 +129,7 @@ func TestSweep(t *testing.T) {
 
 func TestRefreshAggregates(t *testing.T) {
 	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
 	ctx := context.Background()
 	// An event written directly (as import does) two days ago: outside the
 	// policy window, invisible until refreshed.
@@ -148,6 +151,7 @@ func TestRefreshAggregates(t *testing.T) {
 
 func TestRollupPlain(t *testing.T) {
 	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
 	if !st.Plain {
 		t.Skip("TEST_PLAIN=1 only")
 	}

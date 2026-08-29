@@ -59,3 +59,17 @@ func New(t testing.TB) *store.Store {
 	st.Plain = plain
 	return st
 }
+
+// Projects creates placeholder projects with the given ids so rows that
+// reference them (events, issues, jobs, …) satisfy the foreign keys.
+func Projects(t testing.TB, st *store.Store, ids ...int64) {
+	t.Helper()
+	for _, id := range ids {
+		_, err := st.Pool.Exec(context.Background(),
+			`INSERT INTO projects (id, slug, name, public_key) OVERRIDING SYSTEM VALUE VALUES ($1, $2, $2, $2) ON CONFLICT DO NOTHING`,
+			id, fmt.Sprintf("p%d", id))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}

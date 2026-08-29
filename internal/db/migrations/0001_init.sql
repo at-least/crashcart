@@ -30,7 +30,7 @@ CREATE TABLE projects (
 
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (time dimension)
-    project_id     BIGINT NOT NULL,
+    project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     event_id       TEXT NOT NULL,                    -- Sentry event_id (or a derived one); the dedupe key
     level          TEXT NOT NULL,                    -- fatal | error | warning | info | debug
     message        TEXT NOT NULL,
@@ -63,7 +63,7 @@ CREATE INDEX events_project_crash ON events (project_id, occurred_at DESC) WHERE
 
 CREATE TABLE sessions (
     started_at  TIMESTAMPTZ NOT NULL,                -- time dimension
-    project_id  BIGINT NOT NULL,
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     sid         TEXT NOT NULL,                       -- SDK session id; aggregate rows get a random one
     release     TEXT NOT NULL,
     environment TEXT,
@@ -76,7 +76,7 @@ CREATE INDEX sessions_project_release ON sessions (project_id, release, started_
 -- ── issues (stateful; the only non-hypertable ingest upserts) ──────────
 
 CREATE TABLE issues (
-    project_id       BIGINT NOT NULL,
+    project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     fingerprint      TEXT NOT NULL,
     title            TEXT NOT NULL,
     level            TEXT NOT NULL,
@@ -103,7 +103,7 @@ CREATE INDEX issues_project_status ON issues (project_id, status, last_seen DESC
 
 CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    project_id  BIGINT NOT NULL,
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     kind        TEXT NOT NULL CHECK (kind IN ('proguard', 'sourcemap', 'dsym')),
     release     TEXT NOT NULL,                       -- '' when matched by debug_id only
     debug_id    TEXT,                                -- dSYM UUID / proguard mapping uuid
@@ -128,7 +128,7 @@ CREATE TABLE upload_chunks (
 CREATE TABLE jobs (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     kind       TEXT NOT NULL,                        -- symbolicate | resymbolicate | alert
-    project_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     args       JSONB NOT NULL DEFAULT '{}'::jsonb,
     run_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
     attempts   INTEGER NOT NULL DEFAULT 0,
@@ -140,7 +140,7 @@ CREATE INDEX jobs_run_after ON jobs (run_after, id);
 -- ── alerts ─────────────────────────────────────────────────────────────
 
 CREATE TABLE alert_rules (
-    project_id       BIGINT NOT NULL,
+    project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     type             TEXT NOT NULL CHECK (type IN ('new_issue', 'regression', 'crash_spike')),
     enabled          BOOLEAN NOT NULL DEFAULT true,
     cooldown_minutes INTEGER NOT NULL DEFAULT 60,
@@ -150,7 +150,7 @@ CREATE TABLE alert_rules (
 
 CREATE TABLE alert_channels (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    project_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     kind       TEXT NOT NULL CHECK (kind IN ('webhook', 'telegram')),
     config     JSONB NOT NULL,                       -- webhook: {"url"}; telegram: {"chat_id"}
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

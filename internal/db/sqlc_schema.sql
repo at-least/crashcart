@@ -19,7 +19,7 @@ CREATE TABLE projects (
 
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,
-    project_id     BIGINT NOT NULL,
+    project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     event_id       TEXT NOT NULL,
     level          TEXT NOT NULL,
     message        TEXT NOT NULL,
@@ -46,7 +46,7 @@ CREATE TABLE events (
 
 CREATE TABLE sessions (
     started_at  TIMESTAMPTZ NOT NULL,
-    project_id  BIGINT NOT NULL,
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     sid         TEXT NOT NULL,
     release     TEXT NOT NULL,
     environment TEXT,
@@ -56,7 +56,7 @@ CREATE TABLE sessions (
 );
 
 CREATE TABLE issues (
-    project_id       BIGINT NOT NULL,
+    project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     fingerprint      TEXT NOT NULL,
     title            TEXT NOT NULL,
     level            TEXT NOT NULL,
@@ -78,7 +78,7 @@ CREATE TABLE issues (
 
 CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    project_id  BIGINT NOT NULL,
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     kind        TEXT NOT NULL,
     release     TEXT NOT NULL,
     debug_id    TEXT,
@@ -98,7 +98,7 @@ CREATE TABLE upload_chunks (
 CREATE TABLE jobs (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     kind       TEXT NOT NULL,
-    project_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     args       JSONB NOT NULL DEFAULT '{}'::jsonb,
     run_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
     attempts   INTEGER NOT NULL DEFAULT 0,
@@ -107,7 +107,7 @@ CREATE TABLE jobs (
 );
 
 CREATE TABLE alert_rules (
-    project_id       BIGINT NOT NULL,
+    project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     type             TEXT NOT NULL,
     enabled          BOOLEAN NOT NULL DEFAULT true,
     cooldown_minutes INTEGER NOT NULL DEFAULT 60,
@@ -117,7 +117,7 @@ CREATE TABLE alert_rules (
 
 CREATE TABLE alert_channels (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    project_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     kind       TEXT NOT NULL,
     config     JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

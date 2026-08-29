@@ -12,6 +12,7 @@ import (
 
 func TestListenerNotifications(t *testing.T) {
 	st := testdb.New(t)
+	testdb.Projects(t, st, 1, 7)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	l := &store.Listener{Pool: st.Pool}

@@ -25,7 +25,8 @@ is a range on them, buckets are `time_bucket(INTERVAL …)`, policies take
 intervals. The primary keys are `(project_id, event_id, occurred_at)` and
 `(project_id, sid, started_at)` — the SDK's own ids, so a resent envelope
 lands on the same row (`ON CONFLICT DO NOTHING`) and a session's status
-updates hit one row. Events are addressed by `event_id` everywhere (URLs,
+updates hit one row. Every per-project table references `projects` with
+`ON DELETE CASCADE`: deleting a project deletes its data. Events are addressed by `event_id` everywhere (URLs,
 API, jobs); list pagination is a keyset cursor `(occurred_at, event_id)`.
 
 **Ingest is one transaction, no hot rows.** Per envelope: fold events by

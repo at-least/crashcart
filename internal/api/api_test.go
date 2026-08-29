@@ -208,10 +208,26 @@ func TestProjectsAndAuth(t *testing.T) {
 	}
 	e.get("/api/projects/nope", 404)
 	e.get("/api/projects/nope/issues", 404)
+	e.do("PATCH", "/api/projects/demo", map[string]any{"sample_rate": 1, "sample_keep_first": 100})
+	p, err := e.st.GetProject(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.seed(p)
 	if rec, _ := e.do("DELETE", "/api/projects/demo", nil); rec.Code != 204 {
 		t.Errorf("delete: %d", rec.Code)
 	}
 	e.get("/api/projects/demo", 404)
+	// Deleting a project cascades to everything that belongs to it.
+	for _, tbl := range []string{"events", "sessions", "issues", "jobs"} {
+		var n int
+		if err := e.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM "+tbl+" WHERE project_id = $1", p.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%s: %d rows left after project delete", tbl, n)
+		}
+	}
 }
 
 func TestOverviewIssuesEventsReleases(t *testing.T) {
