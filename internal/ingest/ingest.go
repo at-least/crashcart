@@ -426,10 +426,32 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 					level = "fatal"
 				}
 			}
+			// Sampling: keep the first N per issue, then a fraction; fatal
+			// always. When nothing can be sampled out (the default
+			// sample_rate 1, or an all-fatal group) the stored count is
+			// known up front and goes into the upsert; otherwise the
+			// decision needs the issue's count and is a second update.
+			keepAll := p.SampleRate >= 1
+			if !keepAll {
+				keepAll = true
+				for _, pr := range g {
+					if pr.ev.Level != "fatal" {
+						keepAll = false
+						break
+					}
+				}
+			}
+			stored := int64(0)
+			if keepAll {
+				for _, pr := range g {
+					pr.store = true
+				}
+				stored = int64(len(g))
+			}
 			row, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: level,
 				ErrorType: nilIfEmpty(first.ev.ErrorType), Screen: nilIfEmpty(first.ev.Screen), Platform: nilIfEmpty(first.ev.Platform),
-				EventCount: int64(len(g)), StoredCount: 0, FirstSeen: minAt, LastSeen: maxAt, FirstRelease: lastRelease,
+				EventCount: int64(len(g)), StoredCount: stored, FirstSeen: minAt, LastSeen: maxAt, FirstRelease: lastRelease,
 			})
 			if err != nil {
 				return fmt.Errorf("upsert issue: %w", err)
@@ -441,12 +463,15 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				res.Regressions = append(res.Regressions, fp)
 				jobs = append(jobs, alertJob(p.ID, "regression", fp))
 			}
-			// Sampling: keep the first N per issue, then a fraction; fatal always.
+			if keepAll {
+				continue
+			}
+			// The upsert held the row lock, so row.EventCount is the exact
+			// sequence position of this group's events.
 			prev := row.EventCount - int64(len(g))
-			stored := int64(0)
 			for i, pr := range g {
 				seq := prev + int64(i) + 1
-				pr.store = pr.ev.Level == "fatal" || seq <= int64(p.SampleKeepFirst) || p.SampleRate >= 1 || mrand.Float64() < p.SampleRate
+				pr.store = pr.ev.Level == "fatal" || seq <= int64(p.SampleKeepFirst) || mrand.Float64() < p.SampleRate
 				if pr.store {
 					stored++
 				}
@@ -490,18 +515,27 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		}
 		res.Stored = len(rows)
 
+		sessions := make([]store.SessionInsert, 0, len(env.Sessions))
 		for _, s := range env.Sessions {
-			if err := q.InsertSession(ctx, sqlc.InsertSessionParams{
+			sessions = append(sessions, store.SessionInsert{
 				StartedAt: s.StartedAt.UTC(), ProjectID: p.ID, Sid: sessionID(s), Release: s.Release, Environment: nilIfEmpty(s.Environment),
 				Status: s.Status, Count: int32(max(s.Count, 1)),
-			}); err != nil {
-				return fmt.Errorf("insert session: %w", err)
-			}
-			res.Sessions++
+			})
 		}
-		for _, j := range jobs {
-			if err := q.EnqueueJob(ctx, j); err != nil {
-				return err
+		if err := store.InsertSessions(ctx, tx, sessions); err != nil {
+			return fmt.Errorf("insert sessions: %w", err)
+		}
+		res.Sessions = len(sessions)
+		if len(jobs) > 0 {
+			jp := sqlc.EnqueueJobsParams{}
+			for _, j := range jobs {
+				jp.Kinds = append(jp.Kinds, j.Kind)
+				jp.ProjectIds = append(jp.ProjectIds, j.ProjectID)
+				jp.Args = append(jp.Args, j.Args)
+				jp.RunAfters = append(jp.RunAfters, j.RunAfter)
+			}
+			if err := q.EnqueueJobs(ctx, jp); err != nil {
+				return fmt.Errorf("enqueue jobs: %w", err)
 			}
 		}
 		res.Jobs = len(jobs)

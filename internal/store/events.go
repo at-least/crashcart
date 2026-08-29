@@ -68,6 +68,43 @@ func InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
 	return res.Close()
 }
 
+// SessionInsert is one row for InsertSessions.
+type SessionInsert struct {
+	StartedAt   time.Time
+	ProjectID   int64
+	Sid         string
+	Release     string
+	Environment *string
+	Status      string
+	Count       int32
+}
+
+// Updates of one session (same sid, same start) overwrite the status,
+// except that a terminal status is never downgraded to 'ok'.
+const insertSessionSQL = `INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count)
+	VALUES ($1, $2, $3, $4, $5, $6, $7)
+	ON CONFLICT (project_id, sid, started_at) DO UPDATE SET
+	    status = CASE WHEN sessions.status = 'ok' OR EXCLUDED.status <> 'ok' THEN EXCLUDED.status ELSE sessions.status END`
+
+// InsertSessions writes a batch in one round trip (pipelined).
+func InsertSessions(ctx context.Context, tx pgx.Tx, rows []SessionInsert) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	b := &pgx.Batch{}
+	for _, r := range rows {
+		b.Queue(insertSessionSQL, r.StartedAt, r.ProjectID, r.Sid, r.Release, r.Environment, r.Status, r.Count)
+	}
+	res := tx.SendBatch(ctx, b)
+	for range rows {
+		if _, err := res.Exec(); err != nil {
+			res.Close()
+			return err
+		}
+	}
+	return res.Close()
+}
+
 // EventFilter is the optional WHERE of ListEvents. Zero values are ignored.
 type EventFilter struct {
 	ProjectID   int64

@@ -10,39 +10,8 @@ import (
 	"time"
 )
 
-const insertSession = `-- name: InsertSession :exec
-INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (project_id, sid, started_at) DO UPDATE SET
-    status = CASE WHEN sessions.status = 'ok' OR EXCLUDED.status <> 'ok' THEN EXCLUDED.status ELSE sessions.status END
-`
-
-type InsertSessionParams struct {
-	StartedAt   time.Time `json:"started_at"`
-	ProjectID   int64     `json:"project_id"`
-	Sid         string    `json:"sid"`
-	Release     string    `json:"release"`
-	Environment *string   `json:"environment"`
-	Status      string    `json:"status"`
-	Count       int32     `json:"count"`
-}
-
-// Updates of one session (same sid, same start) overwrite the status,
-// except that a terminal status is never downgraded to 'ok'.
-func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
-	_, err := q.db.Exec(ctx, insertSession,
-		arg.StartedAt,
-		arg.ProjectID,
-		arg.Sid,
-		arg.Release,
-		arg.Environment,
-		arg.Status,
-		arg.Count,
-	)
-	return err
-}
-
 const releaseHealth = `-- name: ReleaseHealth :many
+
 SELECT release,
        COALESCE(sum(total), 0)::bigint   AS total,
        COALESCE(sum(crashed), 0)::bigint AS crashed,
@@ -65,6 +34,7 @@ type ReleaseHealthRow struct {
 	Errored int64  `json:"errored"`
 }
 
+// Session writes are pipelined by store.InsertSessions (hand-written).
 // Per release over a window: sessions and crash-free rate inputs.
 func (q *Queries) ReleaseHealth(ctx context.Context, arg ReleaseHealthParams) ([]ReleaseHealthRow, error) {
 	rows, err := q.db.Query(ctx, releaseHealth, arg.ProjectID, arg.Bucket, arg.Bucket_2)

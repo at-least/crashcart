@@ -99,6 +99,29 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) error {
 	return err
 }
 
+const enqueueJobs = `-- name: EnqueueJobs :exec
+INSERT INTO jobs (kind, project_id, args, run_after)
+SELECT unnest($1::text[]), unnest($2::bigint[]), unnest($3::jsonb[]), unnest($4::timestamptz[])
+`
+
+type EnqueueJobsParams struct {
+	Kinds      []string          `json:"kinds"`
+	ProjectIds []int64           `json:"project_ids"`
+	Args       []json.RawMessage `json:"args"`
+	RunAfters  []time.Time       `json:"run_afters"`
+}
+
+// Multi-row insert: one statement, one NOTIFY.
+func (q *Queries) EnqueueJobs(ctx context.Context, arg EnqueueJobsParams) error {
+	_, err := q.db.Exec(ctx, enqueueJobs,
+		arg.Kinds,
+		arg.ProjectIds,
+		arg.Args,
+		arg.RunAfters,
+	)
+	return err
+}
+
 const enqueueSymbolicateRelease = `-- name: EnqueueSymbolicateRelease :execrows
 INSERT INTO jobs (kind, project_id, args)
 SELECT 'symbolicate', e.project_id, jsonb_build_object('event', e.event_id)

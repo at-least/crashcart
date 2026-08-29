@@ -1,6 +1,11 @@
 -- name: EnqueueJob :exec
 INSERT INTO jobs (kind, project_id, args, run_after) VALUES ($1, $2, $3, $4);
 
+-- name: EnqueueJobs :exec
+-- Multi-row insert: one statement, one NOTIFY.
+INSERT INTO jobs (kind, project_id, args, run_after)
+SELECT unnest(sqlc.arg(kinds)::text[]), unnest(sqlc.arg(project_ids)::bigint[]), unnest(sqlc.arg(args)::jsonb[]), unnest(sqlc.arg(run_afters)::timestamptz[]);
+
 -- name: ClaimJobs :many
 -- Leases a batch (locked until $2) and counts the attempt. The caller runs
 -- the handlers outside any transaction, then deletes or reschedules each

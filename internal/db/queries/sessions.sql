@@ -1,10 +1,4 @@
--- name: InsertSession :exec
--- Updates of one session (same sid, same start) overwrite the status,
--- except that a terminal status is never downgraded to 'ok'.
-INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (project_id, sid, started_at) DO UPDATE SET
-    status = CASE WHEN sessions.status = 'ok' OR EXCLUDED.status <> 'ok' THEN EXCLUDED.status ELSE sessions.status END;
+-- Session writes are pipelined by store.InsertSessions (hand-written).
 
 -- name: ReleaseHealth :many
 -- Per release over a window: sessions and crash-free rate inputs.
