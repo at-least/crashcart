@@ -5,12 +5,9 @@ is CrashCart on Cloudflare Workers. Same SDK setup, same viewer, same export for
 
 ## When to use it
 
-| | Go edition | Serverless edition |
-|---|---|---|
-| You need | A server and Postgres | A Cloudflare account |
-| Cost for a small app | A small VM | Free plan |
-| Volume | Millions of events a month and up | Small apps |
-| iOS symbolication | Optional sidecar | Needs Workers Paid |
+Nothing to run, free for small apps, $5/month for most others. See
+[Which edition?](/deploy/which-edition) for the comparison with the Go
+edition and the limits worth knowing.
 
 ## Deploy
 

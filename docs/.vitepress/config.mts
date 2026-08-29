@@ -42,6 +42,7 @@ export default defineConfig({
         {
           text: 'Install',
           items: [
+            { text: 'Which edition?', link: '/deploy/which-edition' },
             { text: 'Docker Compose on a VPS', link: '/deploy/docker' },
             { text: 'Go binary + systemd', link: '/deploy/binary' },
             { text: 'Kubernetes', link: '/deploy/kubernetes' },

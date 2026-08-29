@@ -33,13 +33,11 @@ and discarded — no errors, just nothing stored.
 
 ## Two editions
 
-| | Go edition (this documentation) | [Serverless edition](https://github.com/crashcartapp/crashcart-serverless) |
-|---|---|---|
-| Runs on | Any server with Postgres | Cloudflare Workers (Free plan is enough for small apps) |
-| Best for | Self-hosting, larger volumes | Small apps, zero servers |
-
+The **Go edition** (this documentation) runs on any server with Postgres.
+The [**Serverless edition**](https://github.com/crashcartapp/crashcart-serverless)
+runs on Cloudflare Workers with nothing to manage — free for small apps.
 Both work with the same SDKs and share the same export format, so you can
-move between them. See [Serverless edition](/deploy/serverless).
+move between them. See [Which edition?](/deploy/which-edition).
 
 ## Next
 
