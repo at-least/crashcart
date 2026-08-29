@@ -72,8 +72,7 @@ crashcart import < backup.ndjson
 
 Creates a project and prints its id and DSN (using `PUBLIC_URL` when set).
 `platform`, if given, must be one of the SDK families: `ios`, `android`,
-`javascript`, `node`, `python`, `go`, `rust`, `java`, `dotnet`, `dart`,
-`native`, ….
+`flutter`, `react-native`, `web`, `backend`, `other`.
 
 ## `rotate-key <slug>`
 

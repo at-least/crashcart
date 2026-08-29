@@ -11,7 +11,7 @@ The vocabulary used across the viewer, the API and this documentation.
 | **Fingerprint** | Hash of the stack trace used for grouping | signature |
 | **Release** | The app version or deployment identifier the SDK reports | app version, build |
 | **Environment** | `production`, `staging`, `development`, … | env, profile |
-| **Platform** | SDK family: `ios`, `android`, `javascript`, `node`, `python`, … | OS, device type |
+| **Platform** | SDK family: `ios`, `android`, `flutter`, `react-native`, `web`, `backend`, `other` | OS, device type |
 | **Project** | One DSN; the container for issues, events, releases and settings | |
 | **DSN** | `scheme://<key>@host/<project id>` — the address an SDK reports to | |
 | **Session** | One app run (mobile) or page load / request batch, as reported by the SDK for release health | |

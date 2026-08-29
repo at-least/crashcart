@@ -25,8 +25,8 @@ docker compose exec crashcart /crashcart project shop-ios "Shop app (iOS)" ios
 # DSN: http://<key>@localhost:8080/1
 ```
 
-The platform argument is optional and one of the SDK families (`ios`,
-`android`, `javascript`, `node`, `python`, …). It is a label for the viewer,
+The platform argument is optional and one of `ios`, `android`, `flutter`,
+`react-native`, `web`, `backend`, `other`. It is a label for the viewer,
 not a filter — see [Projects & DSNs](./projects).
 
 You can also create projects from the viewer's home page.
