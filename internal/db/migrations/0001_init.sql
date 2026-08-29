@@ -131,7 +131,8 @@ CREATE TABLE jobs (
     project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     args       JSONB NOT NULL DEFAULT '{}'::jsonb,
     run_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    attempts   INTEGER NOT NULL DEFAULT 0,
+    attempts   INTEGER NOT NULL DEFAULT 0,       -- counted when claimed
+    locked_until TIMESTAMPTZ,                     -- a worker's lease; NULL = free
     last_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

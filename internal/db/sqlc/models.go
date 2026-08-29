@@ -90,14 +90,15 @@ type IssueStatsHourly struct {
 }
 
 type Job struct {
-	ID        int64           `json:"id"`
-	Kind      string          `json:"kind"`
-	ProjectID int64           `json:"project_id"`
-	Args      json.RawMessage `json:"args"`
-	RunAfter  time.Time       `json:"run_after"`
-	Attempts  int32           `json:"attempts"`
-	LastError *string         `json:"last_error"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID          int64           `json:"id"`
+	Kind        string          `json:"kind"`
+	ProjectID   int64           `json:"project_id"`
+	Args        json.RawMessage `json:"args"`
+	RunAfter    time.Time       `json:"run_after"`
+	Attempts    int32           `json:"attempts"`
+	LockedUntil *time.Time      `json:"locked_until"`
+	LastError   *string         `json:"last_error"`
+	CreatedAt   time.Time       `json:"created_at"`
 }
 
 type Project struct {

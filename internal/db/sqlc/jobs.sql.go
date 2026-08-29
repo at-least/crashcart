@@ -12,13 +12,24 @@ import (
 )
 
 const claimJobs = `-- name: ClaimJobs :many
-SELECT id, kind, project_id, args, run_after, attempts, last_error, created_at FROM jobs WHERE run_after <= now() ORDER BY run_after, id
-LIMIT $1 FOR UPDATE SKIP LOCKED
+UPDATE jobs SET locked_until = $1::timestamptz, attempts = attempts + 1
+WHERE id IN (
+    SELECT id FROM jobs
+    WHERE run_after <= now() AND (locked_until IS NULL OR locked_until < now())
+    ORDER BY run_after, id LIMIT $2::int FOR UPDATE SKIP LOCKED)
+RETURNING id, kind, project_id, args, run_after, attempts, locked_until, last_error, created_at
 `
 
-// Locks a batch for this transaction; the caller deletes or reschedules them.
-func (q *Queries) ClaimJobs(ctx context.Context, limit int32) ([]Job, error) {
-	rows, err := q.db.Query(ctx, claimJobs, limit)
+type ClaimJobsParams struct {
+	LockedUntil time.Time `json:"locked_until"`
+	Max         int32     `json:"max"`
+}
+
+// Leases a batch (locked until $2) and counts the attempt. The caller runs
+// the handlers outside any transaction, then deletes or reschedules each
+// job; a lease that expires (worker died) makes the job claimable again.
+func (q *Queries) ClaimJobs(ctx context.Context, arg ClaimJobsParams) ([]Job, error) {
+	rows, err := q.db.Query(ctx, claimJobs, arg.LockedUntil, arg.Max)
 	if err != nil {
 		return nil, err
 	}
@@ -33,6 +44,7 @@ func (q *Queries) ClaimJobs(ctx context.Context, limit int32) ([]Job, error) {
 			&i.Args,
 			&i.RunAfter,
 			&i.Attempts,
+			&i.LockedUntil,
 			&i.LastError,
 			&i.CreatedAt,
 		); err != nil {
@@ -99,8 +111,18 @@ func (q *Queries) ExpireJobs(ctx context.Context) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const releaseJob = `-- name: ReleaseJob :exec
+UPDATE jobs SET locked_until = NULL, attempts = attempts - 1 WHERE id = $1
+`
+
+// Shutdown mid-job: give the lease back without counting an attempt.
+func (q *Queries) ReleaseJob(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, releaseJob, id)
+	return err
+}
+
 const retryJob = `-- name: RetryJob :exec
-UPDATE jobs SET attempts = attempts + 1, last_error = $2, run_after = $3 WHERE id = $1
+UPDATE jobs SET last_error = $2, run_after = $3, locked_until = NULL WHERE id = $1
 `
 
 type RetryJobParams struct {

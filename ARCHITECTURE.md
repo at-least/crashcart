@@ -67,9 +67,13 @@ symbol file re-queues the release's unsymbolicated events from the last
 `RETENTION_DAYS`; hourly/daily aggregates keep 400 days. Policies are
 reconciled from the environment at startup (`internal/retention`).
 
-**Jobs live in Postgres.** `jobs` + `SELECT … FOR UPDATE SKIP LOCKED`. Kinds:
-`symbolicate {event}`, `resymbolicate {release}`, `alert {type, fingerprint}`.
-Retries with backoff, dropped after 8 attempts. Workers wake on
+**Jobs live in Postgres.** `jobs` + `UPDATE … SKIP LOCKED RETURNING`: a
+worker leases a batch (`locked_until`, attempt counted) in one short
+transaction, runs the handlers with nothing held open (they make HTTP
+calls), then deletes or reschedules each job. An expired lease — the worker
+died — makes the job claimable again. Kinds: `symbolicate {event}`,
+`resymbolicate {release}`, `alert {type, fingerprint}`. Retries with
+backoff, dropped after 8 attempts. Workers wake on
 `NOTIFY crashcart_jobs` (a trigger on insert, fired at commit; one LISTEN
 connection per process — `store.Listener`) and poll every 30 s as the
 fallback; the SSE "new issues" stream wakes the same way on

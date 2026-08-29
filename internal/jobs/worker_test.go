@@ -101,7 +101,7 @@ func TestWorkerRetryThenSucceed(t *testing.T) {
 	if cnt, _ := st.CountJobs(ctx); cnt != 0 {
 		t.Fatalf("job not deleted, %d left", cnt)
 	}
-	if calls != 2 || secondAttempts != 1 {
+	if calls != 2 || secondAttempts != 2 { // attempts are counted at claim time
 		t.Errorf("calls=%d attempts on retry=%d", calls, secondAttempts)
 	}
 }
@@ -159,5 +159,26 @@ func TestWorkerWakesOnNotify(t *testing.T) {
 				t.Fatal("worker did not wake on NOTIFY")
 			}
 		}
+	}
+}
+
+func TestWorkerLeaseExpires(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "slow", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	// A worker that died mid-job: the lease is taken but no outcome is recorded.
+	if got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(50 * time.Millisecond)}); err != nil || len(got) != 1 {
+		t.Fatalf("claim: %d %v", len(got), err)
+	}
+	if got, _ := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)}); len(got) != 0 {
+		t.Fatalf("leased job claimed again: %d", len(got))
+	}
+	time.Sleep(60 * time.Millisecond)
+	got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	if err != nil || len(got) != 1 || got[0].Attempts != 2 {
+		t.Fatalf("after lease expiry: %d %v %+v", len(got), err, got)
 	}
 }

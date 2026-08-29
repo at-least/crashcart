@@ -102,6 +102,7 @@ CREATE TABLE jobs (
     args       JSONB NOT NULL DEFAULT '{}'::jsonb,
     run_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
     attempts   INTEGER NOT NULL DEFAULT 0,
+    locked_until TIMESTAMPTZ,
     last_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
