@@ -157,7 +157,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 200 || !strings.HasPrefix(strings.TrimSpace(rec.Body.String()), "<div id=\"issues-table\"") || !strings.Contains(rec.Body.String(), "No issues") {
 		t.Fatalf("bulk = %d %.120s", rec.Code, rec.Body.String())
 	}
-	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "resolved" || got.ResolvedRelease == nil {
+	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "resolved" || got.ResolvedReleases == nil {
 		t.Errorf("bulk resolve: %+v", got)
 	}
 	assertPage(t, mux, "/p/shop/issues?status=resolved", "/p/shop/issues/"+fp)

@@ -118,7 +118,8 @@ Issue object:
   "last_seen": "2026-08-29T08:41:55Z",
   "first_release": "2.4.0",
   "last_release": "2.4.1",
-  "resolved_release": null,
+  "releases": ["2.4.0", "2.4.1"],
+  "resolved_releases": null,
   "created_at": "…",
   "updated_at": "…",
   "sparkline": [0, 2, 5, 11, 9, 3]

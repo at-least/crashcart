@@ -122,7 +122,8 @@ first_seen        ts
 last_seen         ts
 first_release?    str
 last_release?     str
-resolved_release? str
+releases?         [str]  every release the issue was seen on ("" = events without one); default []
+resolved_releases? [str] `releases` at resolve time (regression detection)
 created_at        ts
 updated_at        ts
 ```

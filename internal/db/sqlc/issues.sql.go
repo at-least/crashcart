@@ -115,7 +115,7 @@ func (q *Queries) ExpireIssues(ctx context.Context, lastSeen time.Time) (int64, 
 }
 
 const getIssue = `-- name: GetIssue :one
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND fingerprint = $2
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND fingerprint = $2
 `
 
 type GetIssueParams struct {
@@ -142,7 +142,8 @@ func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (Issue, erro
 		&i.LastSeen,
 		&i.FirstRelease,
 		&i.LastRelease,
-		&i.ResolvedRelease,
+		&i.Releases,
+		&i.ResolvedReleases,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -257,7 +258,7 @@ func (q *Queries) IssueTimeline(ctx context.Context, arg IssueTimelineParams) ([
 }
 
 const listIssuesByRelease = `-- name: ListIssuesByRelease :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND (first_release = $2 OR last_release = $2)
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND (first_release = $2 OR last_release = $2)
 ORDER BY event_count DESC LIMIT $3
 `
 
@@ -292,7 +293,8 @@ func (q *Queries) ListIssuesByRelease(ctx context.Context, arg ListIssuesByRelea
 			&i.LastSeen,
 			&i.FirstRelease,
 			&i.LastRelease,
-			&i.ResolvedRelease,
+			&i.Releases,
+			&i.ResolvedReleases,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -307,7 +309,7 @@ func (q *Queries) ListIssuesByRelease(ctx context.Context, arg ListIssuesByRelea
 }
 
 const listNewIssues = `-- name: ListNewIssues :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND first_seen >= $2 ORDER BY first_seen DESC LIMIT $3
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND first_seen >= $2 ORDER BY first_seen DESC LIMIT $3
 `
 
 type ListNewIssuesParams struct {
@@ -341,7 +343,8 @@ func (q *Queries) ListNewIssues(ctx context.Context, arg ListNewIssuesParams) ([
 			&i.LastSeen,
 			&i.FirstRelease,
 			&i.LastRelease,
-			&i.ResolvedRelease,
+			&i.Releases,
+			&i.ResolvedReleases,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -356,7 +359,7 @@ func (q *Queries) ListNewIssues(ctx context.Context, arg ListNewIssuesParams) ([
 }
 
 const listRegressions = `-- name: ListRegressions :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND status = 'regression' ORDER BY last_seen DESC LIMIT $2
+SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND status = 'regression' ORDER BY last_seen DESC LIMIT $2
 `
 
 type ListRegressionsParams struct {
@@ -389,7 +392,8 @@ func (q *Queries) ListRegressions(ctx context.Context, arg ListRegressionsParams
 			&i.LastSeen,
 			&i.FirstRelease,
 			&i.LastRelease,
-			&i.ResolvedRelease,
+			&i.Releases,
+			&i.ResolvedReleases,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -405,9 +409,9 @@ func (q *Queries) ListRegressions(ctx context.Context, arg ListRegressionsParams
 
 const setIssueStatus = `-- name: SetIssueStatus :one
 UPDATE issues SET status = $3::issue_status, status_by = $4,
-    resolved_release = CASE WHEN $3::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
+    resolved_releases = CASE WHEN $3::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
     updated_at = now()
-WHERE project_id = $1 AND fingerprint = $2 RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at
+WHERE project_id = $1 AND fingerprint = $2 RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at
 `
 
 type SetIssueStatusParams struct {
@@ -417,6 +421,7 @@ type SetIssueStatusParams struct {
 	StatusBy    *string     `json:"status_by"`
 }
 
+// Resolving records the releases seen so far (regression detection).
 func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) (Issue, error) {
 	row := q.db.QueryRow(ctx, setIssueStatus,
 		arg.ProjectID,
@@ -441,7 +446,8 @@ func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) 
 		&i.LastSeen,
 		&i.FirstRelease,
 		&i.LastRelease,
-		&i.ResolvedRelease,
+		&i.Releases,
+		&i.ResolvedReleases,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -450,7 +456,7 @@ func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) 
 
 const setIssuesStatus = `-- name: SetIssuesStatus :execrows
 UPDATE issues SET status = $3::issue_status, status_by = $4,
-    resolved_release = CASE WHEN $3::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
+    resolved_releases = CASE WHEN $3::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
     updated_at = now()
 WHERE project_id = $1 AND fingerprint = ANY($2::uuid[])
 `
@@ -477,8 +483,8 @@ func (q *Queries) SetIssuesStatus(ctx context.Context, arg SetIssuesStatusParams
 
 const upsertIssue = `-- name: UpsertIssue :one
 INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform,
-                    event_count, stored_count, first_seen, last_seen, first_release, last_release)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+                    event_count, stored_count, first_seen, last_seen, first_release, last_release, releases)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, COALESCE($13::text[], '{}'))
 ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     event_count  = issues.event_count + EXCLUDED.event_count,
     stored_count = issues.stored_count + EXCLUDED.stored_count,
@@ -486,11 +492,13 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     first_seen   = LEAST(issues.first_seen, EXCLUDED.first_seen),
     last_release = CASE WHEN EXCLUDED.last_seen >= issues.last_seen THEN COALESCE(EXCLUDED.last_release, issues.last_release) ELSE issues.last_release END,
     level        = CASE WHEN EXCLUDED.level = 'fatal' THEN 'fatal' ELSE issues.level END,
+    releases     = CASE WHEN issues.releases @> EXCLUDED.releases THEN issues.releases
+                        ELSE (SELECT array_agg(DISTINCT r ORDER BY r) FROM unnest(issues.releases || EXCLUDED.releases) AS r) END,
     status       = CASE WHEN issues.status = 'resolved'
-                         AND EXCLUDED.last_release IS DISTINCT FROM issues.resolved_release
+                         AND NOT (COALESCE(issues.resolved_releases, '{}') @> EXCLUDED.releases)
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now()
-RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at, (xmax = 0) AS created
+RETURNING project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at, (xmax = 0) AS created
 `
 
 type UpsertIssueParams struct {
@@ -506,34 +514,38 @@ type UpsertIssueParams struct {
 	FirstSeen    time.Time  `json:"first_seen"`
 	LastSeen     time.Time  `json:"last_seen"`
 	FirstRelease *string    `json:"first_release"`
+	Releases     []string   `json:"releases"`
 }
 
 type UpsertIssueRow struct {
-	ProjectID       int64       `json:"project_id"`
-	Fingerprint     sentry.ID   `json:"fingerprint"`
-	Title           string      `json:"title"`
-	Level           EventLevel  `json:"level"`
-	ErrorType       *string     `json:"error_type"`
-	Screen          *string     `json:"screen"`
-	Platform        *string     `json:"platform"`
-	Status          IssueStatus `json:"status"`
-	StatusBy        *string     `json:"status_by"`
-	EventCount      int64       `json:"event_count"`
-	StoredCount     int64       `json:"stored_count"`
-	FirstSeen       time.Time   `json:"first_seen"`
-	LastSeen        time.Time   `json:"last_seen"`
-	FirstRelease    *string     `json:"first_release"`
-	LastRelease     *string     `json:"last_release"`
-	ResolvedRelease *string     `json:"resolved_release"`
-	CreatedAt       time.Time   `json:"created_at"`
-	UpdatedAt       time.Time   `json:"updated_at"`
-	Created         bool        `json:"created"`
+	ProjectID        int64       `json:"project_id"`
+	Fingerprint      sentry.ID   `json:"fingerprint"`
+	Title            string      `json:"title"`
+	Level            EventLevel  `json:"level"`
+	ErrorType        *string     `json:"error_type"`
+	Screen           *string     `json:"screen"`
+	Platform         *string     `json:"platform"`
+	Status           IssueStatus `json:"status"`
+	StatusBy         *string     `json:"status_by"`
+	EventCount       int64       `json:"event_count"`
+	StoredCount      int64       `json:"stored_count"`
+	FirstSeen        time.Time   `json:"first_seen"`
+	LastSeen         time.Time   `json:"last_seen"`
+	FirstRelease     *string     `json:"first_release"`
+	LastRelease      *string     `json:"last_release"`
+	Releases         []string    `json:"releases"`
+	ResolvedReleases []string    `json:"resolved_releases"`
+	CreatedAt        time.Time   `json:"created_at"`
+	UpdatedAt        time.Time   `json:"updated_at"`
+	Created          bool        `json:"created"`
 }
 
-// Called once per (project, fingerprint) per envelope with the folded count.
-// Regression: a resolved issue seen again on a release other than the one
-// it was resolved on. Returns the row after the update plus whether it
-// was created / regressed in this call.
+// Called once per (project, fingerprint) per envelope with the folded
+// count; `releases` are the distinct releases of the folded events (” for
+// none). Regression: a resolved issue seen again on a release outside the
+// set it had been seen on when it was resolved (old builds in the field
+// are inside that set; a fixed release is not). Returns the row after the
+// update plus whether it was created in this call.
 func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (UpsertIssueRow, error) {
 	row := q.db.QueryRow(ctx, upsertIssue,
 		arg.ProjectID,
@@ -548,6 +560,7 @@ func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (Upser
 		arg.FirstSeen,
 		arg.LastSeen,
 		arg.FirstRelease,
+		arg.Releases,
 	)
 	var i UpsertIssueRow
 	err := row.Scan(
@@ -566,7 +579,8 @@ func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (Upser
 		&i.LastSeen,
 		&i.FirstRelease,
 		&i.LastRelease,
-		&i.ResolvedRelease,
+		&i.Releases,
+		&i.ResolvedReleases,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Created,

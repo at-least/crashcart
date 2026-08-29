@@ -357,6 +357,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 			ProjectID: projectID, Fingerprint: newFP, Title: ev.IssueTitle(), Level: row.Level,
 			ErrorType: nilIfEmpty(ev.ErrorType), Screen: nilIfEmpty(ev.Screen), Platform: nilIfEmpty(ev.Platform),
 			EventCount: 1, StoredCount: 1, FirstSeen: row.OccurredAt, LastSeen: row.OccurredAt, FirstRelease: row.Release,
+			Releases: []string{ev.Release},
 		}); err != nil {
 			return err
 		}

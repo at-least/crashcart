@@ -95,8 +95,11 @@ values have one definition and a bad value is rejected by the database.
 
 **Issues are the one stateful table.** Status lifecycle (unresolved → triaged
 → resolved → regression / ignored), first/last release, exact `event_count`
-(counts sampled-out events) and `stored_count`. Regression = a resolved
-issue seen on a release different from `resolved_release`.
+(counts sampled-out events) and `stored_count`. `releases` is every
+release the issue was seen on (kept on the row: sampled-out and expired
+events count too); resolving copies it to `resolved_releases`, and a later
+event on a release outside that set is a regression — old builds still
+crashing are inside the set, the release that carries the fix is not.
 
 **Sampling is per issue, counts stay exact.** `projects.sample_keep_first`
 events of each issue are always stored; after that `sample_rate` of them;

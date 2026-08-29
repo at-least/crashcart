@@ -65,7 +65,7 @@ func (f IssueFilter) where() (string, []any) {
 }
 
 const issueColumns = `project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count,
-	stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at`
+	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at`
 
 // ListIssues returns one page of issues matching f plus the total count.
 // Limit defaults to 50 and caps at 500.
@@ -96,7 +96,7 @@ func (s *Store) ListIssues(ctx context.Context, f IssueFilter) (issues []sqlc.Is
 	for r.Next() {
 		var is sqlc.Issue
 		if err := r.Scan(&is.ProjectID, &is.Fingerprint, &is.Title, &is.Level, &is.ErrorType, &is.Screen, &is.Platform, &is.Status, &is.StatusBy,
-			&is.EventCount, &is.StoredCount, &is.FirstSeen, &is.LastSeen, &is.FirstRelease, &is.LastRelease, &is.ResolvedRelease,
+			&is.EventCount, &is.StoredCount, &is.FirstSeen, &is.LastSeen, &is.FirstRelease, &is.LastRelease, &is.Releases, &is.ResolvedReleases,
 			&is.CreatedAt, &is.UpdatedAt, &total); err != nil {
 			return nil, 0, err
 		}

@@ -133,7 +133,8 @@ CREATE TABLE issues (
     last_seen        TIMESTAMPTZ NOT NULL,
     first_release    TEXT,
     last_release     TEXT,
-    resolved_release TEXT,
+    releases         TEXT[] NOT NULL DEFAULT '{}',
+    resolved_releases TEXT[],
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, fingerprint)

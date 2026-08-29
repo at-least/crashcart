@@ -30,7 +30,7 @@ Standardized terminology. Use these consistently across code, docs, viewer.
 | **unresolved** | New, not yet reviewed |
 | **triaged** | Acknowledged, being investigated |
 | **resolved** | Fixed |
-| **regression** | Was resolved, reappeared in new release |
+| **regression** | Was resolved, reappeared on a release it had not been seen on before |
 | **ignored** | Known, won't fix |
 
 ## Event Metadata

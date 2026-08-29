@@ -319,7 +319,7 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 
 	// status changes
 	rec, out := e.do("PATCH", "/api/projects/demo/issues/"+fp, map[string]any{"status": "resolved"})
-	if rec.Code != 200 || out["status"] != "resolved" || out["resolved_release"] != "2.4.1" {
+	if rr, _ := out["resolved_releases"].([]any); rec.Code != 200 || out["status"] != "resolved" || len(rr) != 1 || rr[0] != "2.4.1" {
 		t.Errorf("patch status: %d %v", rec.Code, out)
 	}
 	if rec, _ := e.do("PATCH", "/api/projects/demo/issues/"+fp, map[string]any{"status": "wat"}); rec.Code != 400 {

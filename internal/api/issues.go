@@ -19,25 +19,26 @@ var issueStatuses = map[string]bool{"unresolved": true, "triaged": true, "resolv
 
 // issueOut is the JSON shape of an issue.
 type issueOut struct {
-	Fingerprint     string    `json:"fingerprint"`
-	Title           string    `json:"title"`
-	Level           string    `json:"level"`
-	ErrorType       *string   `json:"error_type"`
-	Screen          *string   `json:"screen"`
-	Platform        *string   `json:"platform"`
-	Status          string    `json:"status"`
-	StatusBy        *string   `json:"status_by"`
-	EventCount      int64     `json:"event_count"`
-	StoredCount     int64     `json:"stored_count"`
-	FirstSeen       time.Time `json:"first_seen"`
-	LastSeen        time.Time `json:"last_seen"`
-	FirstRelease    *string   `json:"first_release"`
-	LastRelease     *string   `json:"last_release"`
-	ResolvedRelease *string   `json:"resolved_release"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	Users           int64     `json:"users"`
-	Sparkline       []int64   `json:"sparkline,omitempty"`
+	Fingerprint      string    `json:"fingerprint"`
+	Title            string    `json:"title"`
+	Level            string    `json:"level"`
+	ErrorType        *string   `json:"error_type"`
+	Screen           *string   `json:"screen"`
+	Platform         *string   `json:"platform"`
+	Status           string    `json:"status"`
+	StatusBy         *string   `json:"status_by"`
+	EventCount       int64     `json:"event_count"`
+	StoredCount      int64     `json:"stored_count"`
+	FirstSeen        time.Time `json:"first_seen"`
+	LastSeen         time.Time `json:"last_seen"`
+	FirstRelease     *string   `json:"first_release"`
+	LastRelease      *string   `json:"last_release"`
+	Releases         []string  `json:"releases"`          // every release the issue was seen on ("" = events without one)
+	ResolvedReleases []string  `json:"resolved_releases"` // the releases at resolve time; a later event outside them is a regression
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	Users            int64     `json:"users"`
+	Sparkline        []int64   `json:"sparkline,omitempty"`
 }
 
 func toIssueOut(i sqlc.Issue) issueOut {
@@ -45,7 +46,7 @@ func toIssueOut(i sqlc.Issue) issueOut {
 		Fingerprint: string(i.Fingerprint), Title: i.Title, Level: string(i.Level), ErrorType: i.ErrorType, Screen: i.Screen,
 		Platform: i.Platform, Status: string(i.Status), StatusBy: i.StatusBy, EventCount: i.EventCount, StoredCount: i.StoredCount,
 		FirstSeen: i.FirstSeen.UTC(), LastSeen: i.LastSeen.UTC(),
-		FirstRelease: i.FirstRelease, LastRelease: i.LastRelease, ResolvedRelease: i.ResolvedRelease,
+		FirstRelease: i.FirstRelease, LastRelease: i.LastRelease, Releases: i.Releases, ResolvedReleases: i.ResolvedReleases,
 		CreatedAt: i.CreatedAt.UTC(), UpdatedAt: i.UpdatedAt.UTC(),
 	}
 }

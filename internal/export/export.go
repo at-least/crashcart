@@ -97,25 +97,26 @@ type releaseRow struct {
 }
 
 type issueRow struct {
-	T               string  `json:"t"`
-	Project         string  `json:"project"`
-	Fingerprint     string  `json:"fingerprint"`
-	Title           string  `json:"title"`
-	Level           string  `json:"level"`
-	ErrorType       *string `json:"error_type,omitempty"`
-	Screen          *string `json:"screen,omitempty"`
-	Platform        *string `json:"platform,omitempty"`
-	Status          string  `json:"status"`
-	StatusBy        *string `json:"status_by,omitempty"`
-	EventCount      int64   `json:"event_count"`
-	StoredCount     int64   `json:"stored_count"`
-	FirstSeen       ts      `json:"first_seen"`
-	LastSeen        ts      `json:"last_seen"`
-	FirstRelease    *string `json:"first_release,omitempty"`
-	LastRelease     *string `json:"last_release,omitempty"`
-	ResolvedRelease *string `json:"resolved_release,omitempty"`
-	CreatedAt       ts      `json:"created_at"`
-	UpdatedAt       ts      `json:"updated_at"`
+	T                string   `json:"t"`
+	Project          string   `json:"project"`
+	Fingerprint      string   `json:"fingerprint"`
+	Title            string   `json:"title"`
+	Level            string   `json:"level"`
+	ErrorType        *string  `json:"error_type,omitempty"`
+	Screen           *string  `json:"screen,omitempty"`
+	Platform         *string  `json:"platform,omitempty"`
+	Status           string   `json:"status"`
+	StatusBy         *string  `json:"status_by,omitempty"`
+	EventCount       int64    `json:"event_count"`
+	StoredCount      int64    `json:"stored_count"`
+	FirstSeen        ts       `json:"first_seen"`
+	LastSeen         ts       `json:"last_seen"`
+	FirstRelease     *string  `json:"first_release,omitempty"`
+	LastRelease      *string  `json:"last_release,omitempty"`
+	Releases         []string `json:"releases,omitempty"`
+	ResolvedReleases []string `json:"resolved_releases,omitempty"`
+	CreatedAt        ts       `json:"created_at"`
+	UpdatedAt        ts       `json:"updated_at"`
 }
 
 type eventRow struct {
@@ -215,7 +216,7 @@ func at(t time.Time) ts { return ts{t.UTC()} }
 
 const (
 	selectIssues = `SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count,
-	first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at
+	first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
 	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
 	os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
@@ -264,7 +265,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 				T: "issues", Project: p.Slug, Fingerprint: string(r.Fingerprint), Title: r.Title, Level: string(r.Level),
 				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: string(r.Status), StatusBy: r.StatusBy,
 				EventCount: r.EventCount, StoredCount: r.StoredCount, FirstSeen: at(r.FirstSeen), LastSeen: at(r.LastSeen),
-				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, ResolvedRelease: r.ResolvedRelease,
+				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, Releases: r.Releases, ResolvedReleases: r.ResolvedReleases,
 				CreatedAt: at(r.CreatedAt), UpdatedAt: at(r.UpdatedAt),
 			})
 		}); err != nil {
@@ -395,13 +396,13 @@ const (
 	    daily_quota = EXCLUDED.daily_quota, created_at = EXCLUDED.created_at
 	RETURNING id`
 	upsertIssue = `INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count,
-	stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 	ON CONFLICT (project_id, fingerprint) DO UPDATE SET title = EXCLUDED.title, level = EXCLUDED.level, status_by = EXCLUDED.status_by,
 	    error_type = EXCLUDED.error_type, screen = EXCLUDED.screen, platform = EXCLUDED.platform, status = EXCLUDED.status,
 	    event_count = EXCLUDED.event_count, stored_count = EXCLUDED.stored_count, first_seen = EXCLUDED.first_seen,
 	    last_seen = EXCLUDED.last_seen, first_release = EXCLUDED.first_release, last_release = EXCLUDED.last_release,
-	    resolved_release = EXCLUDED.resolved_release, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
+	    releases = EXCLUDED.releases, resolved_releases = EXCLUDED.resolved_releases, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
 	upsertRelease = `INSERT INTO releases (project_id, release, platforms, first_seen) VALUES ($1,$2,$3,$4)
 	ON CONFLICT (project_id, release) DO UPDATE SET
 	    platforms = (SELECT array_agg(DISTINCT x ORDER BY x) FROM unnest(releases.platforms || EXCLUDED.platforms) AS x),
@@ -540,8 +541,8 @@ func (im *importer) line(b []byte) error {
 			return fmt.Errorf("issues row: fingerprint %q is not a 32-hex id", r.Fingerprint)
 		}
 		im.batch.Queue(upsertIssue, pid, fp, r.Title, r.Level, r.ErrorType, r.Screen, r.Platform, r.Status, r.StatusBy,
-			r.EventCount, r.StoredCount, tsOrNow(r.FirstSeen), tsOrNow(r.LastSeen), r.FirstRelease, r.LastRelease, r.ResolvedRelease,
-			tsOrNow(r.CreatedAt), tsOrNow(r.UpdatedAt))
+			r.EventCount, r.StoredCount, tsOrNow(r.FirstSeen), tsOrNow(r.LastSeen), r.FirstRelease, r.LastRelease,
+			nonNilStrings(r.Releases), r.ResolvedReleases, tsOrNow(r.CreatedAt), tsOrNow(r.UpdatedAt))
 	case "events":
 		var r eventRow
 		if err := json.Unmarshal(b, &r); err != nil {
@@ -760,6 +761,13 @@ func newKey() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func strOr(s *string) string {

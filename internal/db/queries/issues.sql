@@ -1,11 +1,13 @@
 -- name: UpsertIssue :one
--- Called once per (project, fingerprint) per envelope with the folded count.
--- Regression: a resolved issue seen again on a release other than the one
--- it was resolved on. Returns the row after the update plus whether it
--- was created / regressed in this call.
+-- Called once per (project, fingerprint) per envelope with the folded
+-- count; `releases` are the distinct releases of the folded events ('' for
+-- none). Regression: a resolved issue seen again on a release outside the
+-- set it had been seen on when it was resolved (old builds in the field
+-- are inside that set; a fixed release is not). Returns the row after the
+-- update plus whether it was created in this call.
 INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform,
-                    event_count, stored_count, first_seen, last_seen, first_release, last_release)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+                    event_count, stored_count, first_seen, last_seen, first_release, last_release, releases)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, COALESCE(sqlc.arg(releases)::text[], '{}'))
 ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     event_count  = issues.event_count + EXCLUDED.event_count,
     stored_count = issues.stored_count + EXCLUDED.stored_count,
@@ -13,8 +15,10 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     first_seen   = LEAST(issues.first_seen, EXCLUDED.first_seen),
     last_release = CASE WHEN EXCLUDED.last_seen >= issues.last_seen THEN COALESCE(EXCLUDED.last_release, issues.last_release) ELSE issues.last_release END,
     level        = CASE WHEN EXCLUDED.level = 'fatal' THEN 'fatal' ELSE issues.level END,
+    releases     = CASE WHEN issues.releases @> EXCLUDED.releases THEN issues.releases
+                        ELSE (SELECT array_agg(DISTINCT r ORDER BY r) FROM unnest(issues.releases || EXCLUDED.releases) AS r) END,
     status       = CASE WHEN issues.status = 'resolved'
-                         AND EXCLUDED.last_release IS DISTINCT FROM issues.resolved_release
+                         AND NOT (COALESCE(issues.resolved_releases, '{}') @> EXCLUDED.releases)
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now()
 RETURNING *, (xmax = 0) AS created;
@@ -23,14 +27,15 @@ RETURNING *, (xmax = 0) AS created;
 SELECT * FROM issues WHERE project_id = $1 AND fingerprint = $2;
 
 -- name: SetIssueStatus :one
+-- Resolving records the releases seen so far (regression detection).
 UPDATE issues SET status = sqlc.arg(status)::issue_status, status_by = sqlc.narg(status_by),
-    resolved_release = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
+    resolved_releases = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
     updated_at = now()
 WHERE project_id = $1 AND fingerprint = $2 RETURNING *;
 
 -- name: SetIssuesStatus :execrows
 UPDATE issues SET status = sqlc.arg(status)::issue_status, status_by = sqlc.narg(status_by),
-    resolved_release = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN last_release ELSE resolved_release END,
+    resolved_releases = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
     updated_at = now()
 WHERE project_id = $1 AND fingerprint = ANY($2::uuid[]);
 

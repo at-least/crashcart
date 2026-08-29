@@ -400,24 +400,25 @@ type EventStatsHourlyRolled struct {
 }
 
 type Issue struct {
-	ProjectID       int64       `json:"project_id"`
-	Fingerprint     sentry.ID   `json:"fingerprint"`
-	Title           string      `json:"title"`
-	Level           EventLevel  `json:"level"`
-	ErrorType       *string     `json:"error_type"`
-	Screen          *string     `json:"screen"`
-	Platform        *string     `json:"platform"`
-	Status          IssueStatus `json:"status"`
-	StatusBy        *string     `json:"status_by"`
-	EventCount      int64       `json:"event_count"`
-	StoredCount     int64       `json:"stored_count"`
-	FirstSeen       time.Time   `json:"first_seen"`
-	LastSeen        time.Time   `json:"last_seen"`
-	FirstRelease    *string     `json:"first_release"`
-	LastRelease     *string     `json:"last_release"`
-	ResolvedRelease *string     `json:"resolved_release"`
-	CreatedAt       time.Time   `json:"created_at"`
-	UpdatedAt       time.Time   `json:"updated_at"`
+	ProjectID        int64       `json:"project_id"`
+	Fingerprint      sentry.ID   `json:"fingerprint"`
+	Title            string      `json:"title"`
+	Level            EventLevel  `json:"level"`
+	ErrorType        *string     `json:"error_type"`
+	Screen           *string     `json:"screen"`
+	Platform         *string     `json:"platform"`
+	Status           IssueStatus `json:"status"`
+	StatusBy         *string     `json:"status_by"`
+	EventCount       int64       `json:"event_count"`
+	StoredCount      int64       `json:"stored_count"`
+	FirstSeen        time.Time   `json:"first_seen"`
+	LastSeen         time.Time   `json:"last_seen"`
+	FirstRelease     *string     `json:"first_release"`
+	LastRelease      *string     `json:"last_release"`
+	Releases         []string    `json:"releases"`
+	ResolvedReleases []string    `json:"resolved_releases"`
+	CreatedAt        time.Time   `json:"created_at"`
+	UpdatedAt        time.Time   `json:"updated_at"`
 }
 
 type IssueStatsHourly struct {

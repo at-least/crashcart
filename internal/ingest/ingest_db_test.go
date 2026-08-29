@@ -78,18 +78,33 @@ func TestIngestLifecycle(t *testing.T) {
 		t.Fatalf("jobs = %d", n)
 	}
 
-	// Resolve, then see it again on the same release: stays resolved.
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "resolved"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.0", ts, 4)), now), now); err != nil {
+	// An older build reports it too before it is resolved: both releases
+	// are in the issue's set.
+	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("0.9", ts, 6)), now), now); err != nil {
 		t.Fatal(err)
 	}
 	iss, _ = st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
-	if iss.Status != "resolved" {
-		t.Fatalf("same-release event should not regress: %s", iss.Status)
+	if len(iss.Releases) != 2 || iss.Releases[0] != "0.9" || iss.Releases[1] != "1.0" {
+		t.Fatalf("releases = %v", iss.Releases)
 	}
-	// A newer release → regression.
+	// Resolve, then see it again on releases it was already known on
+	// (old builds in the field): stays resolved.
+	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "resolved"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"1.0", "0.9"} {
+		if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash(rel, ts, 4)), now), now); err != nil {
+			t.Fatal(err)
+		}
+		iss, _ = st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+		if iss.Status != "resolved" {
+			t.Fatalf("event on known release %s should not regress: %s", rel, iss.Status)
+		}
+	}
+	if len(iss.ResolvedReleases) != 2 {
+		t.Fatalf("resolved_releases = %v", iss.ResolvedReleases)
+	}
+	// A release it was never seen on → regression.
 	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 5)), now), now)
 	if err != nil {
 		t.Fatal(err)

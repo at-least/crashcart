@@ -20,13 +20,15 @@ Upload mappings when you ship a release, not after the crashes come in.
 |---|---|
 | **Unresolved** | New, nobody has looked at it |
 | **Triaged** | Acknowledged, someone is on it |
-| **Resolved** | Fixed. CrashCart remembers the release it was resolved on |
-| **Regression** | Was resolved, then seen again on a *different* release |
+| **Resolved** | Fixed. CrashCart remembers which releases it had been seen on |
+| **Regression** | Was resolved, then seen again on a release it had *never* been seen on |
 | **Ignored** | Known, won't fix. Hidden from the default list |
 
-A resolved issue that keeps crashing **the same release** stays resolved —
-old builds in the field aren't a regression. It becomes a regression only
-when it shows up on another release.
+A resolved issue that keeps crashing on **releases it was already known
+on** stays resolved — old builds in the field aren't a regression. It
+becomes a regression when it shows up on a release it had never been
+seen on before you resolved it: the one that was supposed to carry the
+fix.
 
 Change status on the issue page, in bulk from the list, or with the
 [keyboard](./viewer#keyboard-triage).
