@@ -188,9 +188,10 @@ func deleteBefore(ctx context.Context, st *store.Store, table, col string, cutof
 const RollupLookback = 3
 
 // Rollup recomputes the *_rolled stats for [from, to), widened to whole
-// hour / day buckets (UTC) and clamped so the current hour is never rolled
-// (the views add it live). Idempotent: delete + insert per range, in one
-// transaction.
+// hour / day buckets (UTC) and clamped so the current hour is never rolled.
+// The watermark (where rolled data ends; the views compute everything after
+// it live) moves forward to the end of the range. Idempotent: delete +
+// insert per range, in one transaction.
 func Rollup(ctx context.Context, st *store.Store, from, to time.Time, now time.Time) error {
 	hourStart := now.UTC().Truncate(time.Hour)
 	if to.After(hourStart) {
@@ -229,6 +230,8 @@ func Rollup(ctx context.Context, st *store.Store, from, to time.Time, now time.T
 		         COALESCE(sum(count) FILTER (WHERE status = 'crashed'), 0),
 		         COALESCE(sum(count) FILTER (WHERE status IN ('errored', 'abnormal')), 0)
 		  FROM sessions WHERE started_at >= $1 AND started_at < $2 GROUP BY 1, 2, 3`, []any{d0, h1}},
+		{`INSERT INTO stats_rollup (id, watermark) VALUES (true, $1)
+		  ON CONFLICT (id) DO UPDATE SET watermark = GREATEST(stats_rollup.watermark, EXCLUDED.watermark)`, []any{h1}},
 	}
 	for _, s := range stmts {
 		if _, err := tx.Exec(ctx, s.sql, s.args...); err != nil {

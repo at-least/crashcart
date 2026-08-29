@@ -42,12 +42,18 @@ const (
 	MaxEvents    = 500
 	WriteTimeout = 30 * time.Second // the write outlives a client that hangs up
 	keyCacheTTL  = 10 * time.Second // a rotated DSN key stops working within this
+	// SymbolicateBudget is how long one envelope may spend in the
+	// Symbolicator (the dSYM sidecar) before the remaining native events
+	// are left to the job worker.
+	SymbolicateBudget = 3 * time.Second
 )
 
-// Symbolicator resolves frames inline when a mapping is already cached.
-// ok=false means "not now" — the event is stored as-is and a job is queued.
+// Symbolicator resolves frames at ingest. ok=false stores the event as-is
+// (a later symbol upload re-queues it); retry=true means the resolver
+// failed transiently (sidecar down, budget exhausted), so a "symbolicate"
+// job is queued to finish the work.
 type Symbolicator interface {
-	Inline(ctx context.Context, projectID int64, ev *sentry.Event) (frames []sentry.Frame, ok bool)
+	Resolve(ctx context.Context, projectID int64, ev *sentry.Event) (frames []sentry.Frame, ok, retry bool)
 }
 
 // Ingester holds the dependencies of the write path.
@@ -317,8 +323,9 @@ func (in *Ingester) fail(w http.ResponseWriter, err error) {
 // prepared is one event after analysis, before the write.
 type prepared struct {
 	ev           *sentry.Event
-	frames       []sentry.Frame // symbolicated when inline succeeded
+	frames       []sentry.Frame // symbolicated when Resolve succeeded
 	symbolicated bool
+	retry        bool // Resolve failed transiently: queue a job
 	fingerprint  string
 	location     string
 	store        bool
@@ -341,10 +348,15 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		expected = *p.Platform
 	}
 
-	// 1. Analyze. Inline symbolication when a mapping is cached; the
-	//    fingerprint is computed on the best frames we have.
+	// 1. Analyze. Symbolicate now when a mapping (or the sidecar) can
+	//    resolve the frames — the fingerprint is computed on the best
+	//    frames we have, so the issue is right from the start. The sidecar
+	//    gets one time budget per envelope; what it cannot finish goes to
+	//    the job worker.
 	preps := make([]*prepared, 0, len(env.Events))
 	seenEvent := map[string]bool{}
+	symCtx, cancelSym := context.WithTimeout(ctx, SymbolicateBudget)
+	defer cancelSym()
 	for _, ev := range env.Events {
 		if seenEvent[ev.EventID] {
 			res.Duplicates++ // the same event twice in one envelope
@@ -360,9 +372,11 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		}
 		pr := &prepared{ev: ev, frames: ev.Frames()}
 		if in.Symbols != nil && ev.NeedsSymbolication() {
-			if fr, ok := in.Symbols.Inline(ctx, p.ID, ev); ok {
+			fr, ok, retry := in.Symbols.Resolve(symCtx, p.ID, ev)
+			if ok {
 				pr.frames, pr.symbolicated = fr, true
 			}
+			pr.retry = retry && !ok
 		}
 		pr.fingerprint = sentry.Fingerprint(ev, pr.frames)
 		pr.location = sentry.ErrorLocation(pr.frames)
@@ -486,7 +500,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				Fingerprint: nilIfEmpty(pr.fingerprint), Symbolicated: pr.symbolicated,
 				Tags: tags, Breadcrumbs: crumbs, Payload: ev.Raw, Symbols: symbols,
 			})
-			if !pr.symbolicated && ev.NeedsSymbolication() && pr.fingerprint != "" {
+			if pr.retry && pr.fingerprint != "" {
 				args, _ := json.Marshal(map[string]any{"event": ev.EventID})
 				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
 			}

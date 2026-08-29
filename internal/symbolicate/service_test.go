@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/ingest"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
@@ -282,4 +285,69 @@ func deref(s *string) string {
 		return "<nil>"
 	}
 	return *s
+}
+
+// TestResolveAtIngest: with a sidecar configured, native events are
+// symbolicated inside Ingest (issue created on the resolved fingerprint, no
+// symbolicate job); when the sidecar fails, the event is stored as-is and a
+// symbolicate job is queued to retry.
+func TestResolveAtIngest(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st)
+	fail := false
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"frames": []map[string]any{{"function": "-[Cart load]", "filename": "/src/Cart.m", "lineno": 7}}})
+	}))
+	defer sidecar.Close()
+	svc := &Service{Store: st, DSYM: NewDSYMClient(sidecar.URL)}
+	in := &ingest.Ingester{Store: st, Cfg: config.Config{}, Symbols: svc, Log: slog.Default()}
+	upload(t, st, p, KindDSYM, "2.0", "", "App.dSYM", []byte("x"))
+	event := func(eid string) string {
+		return fmt.Sprintf(`{"event_id":%q,"platform":"cocoa","release":"2.0","timestamp":%d,"level":"fatal","exception":{"values":[{"type":"SIGSEGV","mechanism":{"handled":false},"stacktrace":{"frames":[{"instruction_addr":"0x104900010","in_app":true}]}}]},"debug_meta":{"images":[{"type":"macho","code_file":"App","image_addr":"0x104900000","image_size":4096}]}}`, eid, time.Now().Unix())
+	}
+	envelope := func(body string) []byte {
+		return []byte(fmt.Sprintf("{}\n{\"type\":\"event\",\"length\":%d}\n%s\n", len(body), body))
+	}
+	now := time.Now().UTC()
+	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(event("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1")), now), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"})
+	if err != nil || !row.Symbolicated || row.ErrorLocation == nil || *row.ErrorLocation != "Cart.m:7" {
+		t.Fatalf("stored symbolicated at ingest: %+v %v", row, err)
+	}
+	if res.Jobs != 1 { // the new_issue alert only
+		t.Errorf("jobs enqueued = %d, want 1 (alert)", res.Jobs)
+	}
+	is, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: *row.Fingerprint})
+	if err != nil || is.EventCount != 1 {
+		t.Errorf("issue on the symbolicated fingerprint: %+v %v", is, err)
+	}
+
+	fail = true
+	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(event("c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2")), now), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ = st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"})
+	if row.Symbolicated {
+		t.Fatal("must be stored unsymbolicated when the sidecar fails")
+	}
+	var kinds []string
+	rows, _ := st.Pool.Query(ctx, "SELECT kind FROM jobs WHERE project_id = $1 ORDER BY id", p.ID)
+	for rows.Next() {
+		var k string
+		rows.Scan(&k)
+		kinds = append(kinds, k)
+	}
+	rows.Close()
+	if len(kinds) != 3 || kinds[2] != "symbolicate" {
+		t.Errorf("jobs = %v, want [alert alert symbolicate]", kinds)
+	}
 }

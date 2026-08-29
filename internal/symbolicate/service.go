@@ -39,7 +39,7 @@ const (
 
 // Service resolves frames for a project: in-process ProGuard / source-map
 // mappings (cached per project+release) and dSYM through the sidecar.
-// It implements ingest.Symbolicator (Inline) and the job handlers.
+// It implements ingest.Symbolicator (Resolve) and the job handlers.
 type Service struct {
 	Store *store.Store
 	DSYM  *DSYMClient // Enabled() false when no sidecar
@@ -62,6 +62,29 @@ type cacheEntry struct {
 }
 
 const debugPrefix = "debug:"
+
+// Resolve symbolicates ev at ingest: in-process mappings first, then —
+// when a sidecar is configured and the event carries native addresses —
+// the sidecar, bounded by ctx (ingest shares one budget across an
+// envelope). ok=false when nothing resolved; retry=true when the
+// sidecar failed or ran out of time, so a "symbolicate" job should finish
+// the work later.
+func (s *Service) Resolve(ctx context.Context, projectID int64, ev *sentry.Event) (frames []sentry.Frame, ok, retry bool) {
+	frames, ok, err := s.resolve(ctx, projectID, ev)
+	return frames, ok, err != nil
+}
+
+// resolve is the shared symbolication path of Resolve and Event: inline
+// mappings, else the sidecar. err is only a sidecar / database failure.
+func (s *Service) resolve(ctx context.Context, projectID int64, ev *sentry.Event) ([]sentry.Frame, bool, error) {
+	if frames, ok := s.Inline(ctx, projectID, ev); ok {
+		return frames, true, nil
+	}
+	if s.DSYM.Enabled() && isNative(ev) {
+		return s.dsym(ctx, projectID, ev)
+	}
+	return nil, false, nil
+}
 
 // Inline resolves ev's frames with a proguard/sourcemap mapping. The
 // mapping is looked up in the database on a cache miss (at most once per
@@ -269,12 +292,9 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID string) er
 	if ev.Release == "" && row.Release != nil {
 		ev.Release = *row.Release
 	}
-	frames, ok := s.Inline(ctx, projectID, ev)
-	if !ok && s.DSYM.Enabled() && isNative(ev) {
-		frames, ok, err = s.dsym(ctx, projectID, ev)
-		if err != nil {
-			return fmt.Errorf("dsym: %w", err)
-		}
+	frames, ok, err := s.resolve(ctx, projectID, ev)
+	if err != nil {
+		return fmt.Errorf("dsym: %w", err)
 	}
 	if !ok {
 		return nil

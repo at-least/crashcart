@@ -159,7 +159,8 @@ func TestRollupPlain(t *testing.T) {
 	}
 	ctx := context.Background()
 	now := time.Now().UTC()
-	// Two crashes in a complete hour, one in the live hour, one session yesterday.
+	// Two crashes in a complete hour, one in the live hour, one session
+	// yesterday. On a fresh database nothing is rolled, so everything is live.
 	insert := func(at time.Time, eid, level string) {
 		if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, handled, release, payload) VALUES ($1, 1, $2, $3, 'm', false, '1.0', '{}')`, at, eid, level); err != nil {
 			t.Fatal(err)
@@ -173,8 +174,8 @@ func TestRollupPlain(t *testing.T) {
 	}
 	var live int64
 	st.Pool.QueryRow(ctx, "SELECT coalesce(sum(crashes), 0) FROM event_stats_hourly WHERE project_id = 1").Scan(&live)
-	if live != 1 {
-		t.Fatalf("before rollup only the live hour should show: crashes = %d", live)
+	if live != 3 {
+		t.Fatalf("before any rollup everything is live: crashes = %d", live)
 	}
 	if err := RollupRecent(ctx, st, now); err != nil {
 		t.Fatal(err)
@@ -184,6 +185,11 @@ func TestRollupPlain(t *testing.T) {
 	st.Pool.QueryRow(ctx, "SELECT count(*) FROM event_stats_hourly_rolled WHERE project_id = 1").Scan(&rolled)
 	if crashes != 3 || rolled != 2 {
 		t.Fatalf("after rollup: crashes = %d (want 3), rolled rows = %d (want 2)", crashes, rolled)
+	}
+	var wm time.Time
+	st.Pool.QueryRow(ctx, "SELECT watermark FROM stats_rollup").Scan(&wm)
+	if !wm.Equal(now.Truncate(time.Hour)) {
+		t.Fatalf("watermark = %v, want %v", wm, now.Truncate(time.Hour))
 	}
 	// Idempotent, and RollupAll reaches yesterday's session.
 	if err := RollupRecent(ctx, st, now); err != nil {

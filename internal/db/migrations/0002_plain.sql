@@ -5,7 +5,18 @@
 -- rows in batches; there is no compression.
 --
 -- Buckets are UTC-aligned TIMESTAMPTZ starts; complete hours only in the
--- tables, the current hour is never rolled.
+-- tables. stats_rollup.watermark is where the rolled data ends; the views
+-- compute everything at or after it live, so nothing is missing between an
+-- hour rolling over and the next rollup run.
+
+CREATE TABLE stats_rollup (
+    id        BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),  -- one row
+    watermark TIMESTAMPTZ NOT NULL
+);
+
+-- Start of the live range: the rollup watermark, or everything on a fresh database.
+CREATE FUNCTION crashcart_rolled_until() RETURNS TIMESTAMPTZ
+    LANGUAGE SQL STABLE AS $$ SELECT COALESCE((SELECT watermark FROM stats_rollup), '-infinity'::timestamptz) $$;
 
 CREATE TABLE event_stats_hourly_rolled (
     bucket     TIMESTAMPTZ NOT NULL,
@@ -42,14 +53,14 @@ SELECT date_trunc('hour', occurred_at, 'UTC'), project_id, COALESCE(release, '')
        count(*)::bigint,
        count(*) FILTER (WHERE crashcart_is_crash(level, handled))::bigint,
        count(*) FILTER (WHERE level = 'error' AND handled IS NOT false)::bigint
-FROM events WHERE occurred_at >= date_trunc('hour', now(), 'UTC')
+FROM events WHERE occurred_at >= crashcart_rolled_until()
 GROUP BY 1, 2, 3, 4, 5;
 
 CREATE VIEW issue_stats_hourly AS
 SELECT bucket, project_id, fingerprint, events FROM issue_stats_hourly_rolled
 UNION ALL
 SELECT date_trunc('hour', occurred_at, 'UTC'), project_id, fingerprint, count(*)::bigint
-FROM events WHERE occurred_at >= date_trunc('hour', now(), 'UTC') AND fingerprint IS NOT NULL
+FROM events WHERE occurred_at >= crashcart_rolled_until() AND fingerprint IS NOT NULL
 GROUP BY 1, 2, 3;
 
 CREATE VIEW release_health_daily AS
@@ -59,5 +70,5 @@ SELECT date_trunc('day', started_at, 'UTC'), project_id, release,
        sum(count)::bigint,
        COALESCE(sum(count) FILTER (WHERE status = 'crashed'), 0)::bigint,
        COALESCE(sum(count) FILTER (WHERE status IN ('errored', 'abnormal')), 0)::bigint
-FROM sessions WHERE started_at >= date_trunc('hour', now(), 'UTC')
+FROM sessions WHERE started_at >= crashcart_rolled_until()
 GROUP BY 1, 2, 3;
