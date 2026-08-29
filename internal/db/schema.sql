@@ -1,11 +1,11 @@
--- CrashCart schema. Requires TimescaleDB (Community build: compression and
--- continuous aggregates). Time-series tables (events, sessions) carry
+-- CrashCart schema, created whole on the first start against an empty
+-- database (internal/db.Init); there is no migration history. Requires
+-- TimescaleDB (Community build: compression and continuous aggregates).
+-- Time-series tables (events, sessions) carry
 -- their time in a TIMESTAMPTZ column that is the hypertable dimension; a
 -- time window is a range on it. Their unique key includes that column (a
 -- hypertable requires it). Hypertables, compression settings and the
 -- continuous aggregates follow the tables at the end of this file.
-
-CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- The one definition of "crash": fatal, or an unhandled exception. Used by
 -- the continuous aggregates, the spike check and the event filters.

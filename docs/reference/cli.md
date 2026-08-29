@@ -6,7 +6,7 @@ environment variables; most connect to the database and exit.
 
 ```
 crashcart serve                              HTTP server + job worker + schedulers (default)
-crashcart migrate                            apply pending migrations and exit
+crashcart init                               create the schema and exit
 crashcart retention                          reconcile policies and run one sweep
 crashcart alerts                             run one crash-spike check
 crashcart seed [slug]                        write a week of demo data (default project "demo")
@@ -25,11 +25,12 @@ goroutines, the retention scheduler and the crash-spike scheduler
 (`ALERT_INTERVAL`). Migrations run first. This is the default when no
 subcommand is given.
 
-## `migrate`
+## `init`
 
-Applies pending migrations and exits. Useful in a deploy pipeline step, or
-to prepare a database before `import`. Fails when the database has no
-TimescaleDB Community build (see [The database](/deploy/postgres)).
+Creates the schema in an empty database and exits (every command does
+this on start; `init` is for a deploy pipeline step, or to prepare a
+database before `import`). Fails when the database has no TimescaleDB
+Community build (see [The database](/deploy/postgres)).
 
 ## `retention`
 

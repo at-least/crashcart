@@ -18,7 +18,7 @@ make build         → bin/crashcart
 make test          go vet + unit tests
 TEST_DATABASE_URL=postgres://crashcart:crashcart@127.0.0.1:55432/crashcart?sslmode=disable make test-db
 make css           rebuild internal/web/assets/app.css (needs npm install; artifact is committed)
-crashcart serve | migrate | retention | export | import | seed | rebuild-symbols
+crashcart serve | init | retention | export | import | seed | rebuild-symbols
 ```
 
 Local TimescaleDB for tests: `docker run -d --name crashcart-test-pg -e POSTGRES_PASSWORD=crashcart -e POSTGRES_USER=crashcart -e POSTGRES_DB=crashcart -p 127.0.0.1:55432:5432 timescale/timescaledb:latest-pg16`.
@@ -30,8 +30,8 @@ cmd/crashcart/        main.go: subcommands
 internal/
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, ErrorLocation
-  db/                 migrations/*.sql, sqlc_schema.sql (mirror for sqlc; caggs appear as tables),
-                      queries/*.sql → sqlc/ (generated), migrate.go
+  db/                 schema.sql (the whole schema, created on first start — no migrations), sqlc_schema.sql
+                      (mirror for sqlc; caggs appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
   store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out)
   auth/               Bearer, Basic, CORS, RateLimit (in-memory), SentryKey
@@ -53,8 +53,8 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
 
 - Regenerate after editing: `sqlc generate` (queries or `sqlc_schema.sql`),
   `templ generate` (`.templ`). Keep `internal/db/sqlc_schema.sql` in sync with
-  the migration (it is the plain-SQL mirror sqlc parses; caggs appear as tables).
-- Hand-written SQL only in: migrations, `internal/store` (dynamic filters),
+  `schema.sql` (it is the plain-SQL mirror sqlc parses; caggs appear as tables).
+- Hand-written SQL only in: `schema.sql`, `internal/store` (dynamic filters),
   `internal/export`, `internal/retention` (policy calls).
 - Time is `TIMESTAMPTZ` everywhere (`events.occurred_at`, `sessions.started_at`,
   `issues.first_seen/last_seen`, aggregate `bucket`); windows are `[from, to)`

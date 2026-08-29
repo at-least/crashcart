@@ -152,8 +152,13 @@ import changes nothing. Aggregates are not exported; they recompute.
 
 The schema depends on the Community (TSL) half of TimescaleDB: compression
 (`segmentby project_id, fingerprint`), chunk-drop retention and continuous
-aggregates with real-time aggregation. The migrator (`internal/db`) creates
+aggregates with real-time aggregation. `db.Init` creates
 the extension and checks `timescaledb.license = 'timescale'`; a database
 with the Apache-2 build (what most managed hosts ship) or without the
-extension is refused at startup with `ErrNoTimescale`. There is one schema
-(`0001_init.sql`), one stats path and one test run.
+extension is refused at startup with `ErrNoTimescale`.
+
+**No migrations.** `internal/db/schema.sql` is the whole schema; `db.Init`
+creates it on the first start against an empty database (under an advisory
+lock, so replicas can start together) and does nothing afterwards. Until
+there are deployed databases to carry forward, a schema change is an edit
+to that file and a fresh database (`export` / `import` moves data).

@@ -19,9 +19,9 @@ CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPT
 CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT) RETURNS SETOF TIMESTAMPTZ
     LANGUAGE SQL IMMUTABLE AS $$ SELECT b FROM generate_series(from_at, to_at, make_interval(secs => width)) AS b WHERE b < to_at $$;
 
--- sqlc-only mirror of internal/db/migrations/0001_init.sql (no TimescaleDB
+-- sqlc-only mirror of internal/db/schema.sql (no TimescaleDB
 -- DDL). Continuous aggregates appear here as plain tables so queries
--- type-check. Keep in sync with the migration.
+-- type-check. Keep in sync with schema.sql.
 
 CREATE TABLE projects (
     id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

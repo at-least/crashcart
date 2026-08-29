@@ -41,7 +41,7 @@ func New(t testing.TB) *store.Store {
 		t.Fatal(err)
 	}
 	// TEST_PLAIN=1 runs the suite on the plain-Postgres schema variant.
-	if _, err := db.Migrate(ctx, pool); err != nil {
+	if _, err := db.Init(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

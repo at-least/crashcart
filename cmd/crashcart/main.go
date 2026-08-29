@@ -36,7 +36,7 @@ var version = "dev"
 const usage = `usage: crashcart <command>
 
   serve            HTTP server + job worker + schedulers (default)
-  migrate          apply pending migrations and exit
+  init             create the schema and exit
   retention        reconcile policies and run one sweep
   alerts           run one crash-spike check
   seed [slug]      write a week of demo data (default project "demo")
@@ -77,12 +77,12 @@ func main() {
 		fatal(log, err)
 	}
 	defer pool.Close()
-	ran, err := db.Migrate(ctx, pool)
+	created, err := db.Init(ctx, pool)
 	if err != nil {
 		fatal(log, err)
 	}
-	for _, m := range ran {
-		log.Info("migration applied", "name", m)
+	if created {
+		log.Info("schema created")
 	}
 	st := store.New(pool)
 	syms := &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient(cfg.SymbolicateURL)}
@@ -91,8 +91,8 @@ func main() {
 
 	args := os.Args[min(2, len(os.Args)):]
 	switch cmd {
-	case "migrate":
-		return
+	case "init":
+		return // the schema was created above
 	case "retention":
 		if err := retention.Reconcile(ctx, st, cfg, log); err != nil {
 			fatal(log, err)
