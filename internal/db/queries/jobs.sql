@@ -28,8 +28,13 @@ SELECT count(*) FROM jobs;
 -- name: ExpireJobs :execrows
 DELETE FROM jobs WHERE attempts >= 8 OR created_at < now() - INTERVAL '7 days';
 
--- name: UnsymbolicatedEvents :many
--- Events of a release that still lack symbols (bounded, newest first).
-SELECT event_id FROM events
-WHERE project_id = $1 AND release = $2 AND symbolicated = false AND fingerprint IS NOT NULL
-  AND occurred_at >= $3 ORDER BY occurred_at DESC LIMIT $4;
+-- name: EnqueueSymbolicateRelease :execrows
+-- Fans a release out into one symbolicate job per unsymbolicated event
+-- (bounded, newest first) in a single statement: one NOTIFY, and each
+-- event then retries on its own.
+INSERT INTO jobs (kind, project_id, args)
+SELECT 'symbolicate', e.project_id, jsonb_build_object('event', e.event_id)
+FROM events e
+WHERE e.project_id = $1 AND e.release = $2 AND e.symbolicated = false AND e.fingerprint IS NOT NULL
+  AND e.occurred_at >= $3
+ORDER BY e.occurred_at DESC LIMIT $4;

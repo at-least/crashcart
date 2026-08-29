@@ -15,6 +15,7 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/jobs"
 	"github.com/crashcartapp/crashcart/internal/ingest"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -173,6 +174,21 @@ func TestReleaseSourceMap(t *testing.T) {
 	if err := svc.Release(ctx, p.ID, "web-7"); err != nil {
 		t.Fatal(err)
 	}
+	// Release queues one symbolicate job per event; run them.
+	w := &jobs.Worker{Store: st, Handlers: map[string]jobs.Handler{
+		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
+			var a struct {
+				Event string `json:"event"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return err
+			}
+			return svc.Event(ctx, j.ProjectID, a.Event)
+		},
+	}}
+	if n, err := w.RunOnce(ctx); err != nil || n != 2 {
+		t.Fatalf("symbolicate jobs: %d %v", n, err)
+	}
 	for _, id := range []string{id1, id2} {
 		row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 		if err != nil {
@@ -182,9 +198,10 @@ func TestReleaseSourceMap(t *testing.T) {
 			t.Errorf("event %s: symbolicated=%v location=%v", id, row.Symbolicated, row.ErrorLocation)
 		}
 	}
-	left, _ := st.UnsymbolicatedEvents(ctx, sqlc.UnsymbolicatedEventsParams{ProjectID: p.ID, Release: ptr("web-7"), OccurredAt: time.Time{}, Limit: 10})
-	if len(left) != 0 {
-		t.Errorf("unsymbolicated left: %v", left)
+	var left int
+	st.Pool.QueryRow(ctx, "SELECT count(*) FROM events WHERE project_id = $1 AND symbolicated = false", p.ID).Scan(&left)
+	if left != 0 {
+		t.Errorf("unsymbolicated left: %d", left)
 	}
 	// Both events share one fingerprint now: one issue with count 2.
 	rows, _ := st.CountIssuesByStatus(ctx, p.ID)

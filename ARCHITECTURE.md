@@ -59,7 +59,8 @@ with a per-envelope time budget (`ingest.SymbolicateBudget`) — only when
 the sidecar fails or runs out of time is a `symbolicate` job queued. An
 event with no mapping yet is stored as-is, without a job: uploading a
 symbol file re-queues the release's unsymbolicated events from the last
-`COMPRESS_AFTER` (`resymbolicate`), which may move them to a new issue.
+`COMPRESS_AFTER` (`resymbolicate` fans out to one `symbolicate` job per
+event in a single `INSERT … SELECT`), which may move them to a new issue.
 
 **Compression + retention are policies.** Chunks older than `COMPRESS_AFTER`
 (48 h) are compressed (`segmentby project_id, fingerprint`; typically

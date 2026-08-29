@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +34,7 @@ const (
 	// ReleaseWindow is how far back Release() looks for unsymbolicated
 	// events (updates must land before the chunk is compressed).
 	ReleaseWindow = 48 * time.Hour
-	// ReleaseMax bounds the events one Release() call touches.
+	// ReleaseMax bounds the events one Release() call queues.
 	ReleaseMax = 2000
 )
 
@@ -484,30 +485,21 @@ func normalizeDebugID(id string) string {
 	return id
 }
 
-// Release re-symbolicates every unsymbolicated event of a release from the
+// Release re-symbolicates the unsymbolicated events of a release from the
 // last ReleaseWindow (job kind "resymbolicate"), called after a symbol
-// upload. The cache for the release is dropped first.
+// upload: the cache for the release is dropped and one "symbolicate" job
+// per event (at most ReleaseMax) is queued in a single statement, so the
+// work is spread over the workers and each event retries on its own.
 func (s *Service) Release(ctx context.Context, projectID int64, release string) error {
 	s.Invalidate(projectID, release)
-	ids, err := s.Store.UnsymbolicatedEvents(ctx, sqlc.UnsymbolicatedEventsParams{
+	n, err := s.Store.EnqueueSymbolicateRelease(ctx, sqlc.EnqueueSymbolicateReleaseParams{
 		ProjectID: projectID, Release: &release, OccurredAt: time.Now().Add(-ReleaseWindow), Limit: ReleaseMax,
 	})
 	if err != nil {
 		return err
 	}
-	var failed int
-	var last error
-	for _, id := range ids {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := s.Event(ctx, projectID, id); err != nil {
-			failed++
-			last = err
-		}
-	}
-	if failed > 0 {
-		return fmt.Errorf("resymbolicate %q: %d of %d events failed: %w", release, failed, len(ids), last)
+	if n > 0 {
+		slog.Info("symbolicate: release queued", "project", projectID, "release", release, "events", n)
 	}
 	return nil
 }

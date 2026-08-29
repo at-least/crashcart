@@ -99,6 +99,38 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) error {
 	return err
 }
 
+const enqueueSymbolicateRelease = `-- name: EnqueueSymbolicateRelease :execrows
+INSERT INTO jobs (kind, project_id, args)
+SELECT 'symbolicate', e.project_id, jsonb_build_object('event', e.event_id)
+FROM events e
+WHERE e.project_id = $1 AND e.release = $2 AND e.symbolicated = false AND e.fingerprint IS NOT NULL
+  AND e.occurred_at >= $3
+ORDER BY e.occurred_at DESC LIMIT $4
+`
+
+type EnqueueSymbolicateReleaseParams struct {
+	ProjectID  int64     `json:"project_id"`
+	Release    *string   `json:"release"`
+	OccurredAt time.Time `json:"occurred_at"`
+	Limit      int32     `json:"limit"`
+}
+
+// Fans a release out into one symbolicate job per unsymbolicated event
+// (bounded, newest first) in a single statement: one NOTIFY, and each
+// event then retries on its own.
+func (q *Queries) EnqueueSymbolicateRelease(ctx context.Context, arg EnqueueSymbolicateReleaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enqueueSymbolicateRelease,
+		arg.ProjectID,
+		arg.Release,
+		arg.OccurredAt,
+		arg.Limit,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const expireJobs = `-- name: ExpireJobs :execrows
 DELETE FROM jobs WHERE attempts >= 8 OR created_at < now() - INTERVAL '7 days'
 `
@@ -134,43 +166,4 @@ type RetryJobParams struct {
 func (q *Queries) RetryJob(ctx context.Context, arg RetryJobParams) error {
 	_, err := q.db.Exec(ctx, retryJob, arg.ID, arg.LastError, arg.RunAfter)
 	return err
-}
-
-const unsymbolicatedEvents = `-- name: UnsymbolicatedEvents :many
-SELECT event_id FROM events
-WHERE project_id = $1 AND release = $2 AND symbolicated = false AND fingerprint IS NOT NULL
-  AND occurred_at >= $3 ORDER BY occurred_at DESC LIMIT $4
-`
-
-type UnsymbolicatedEventsParams struct {
-	ProjectID  int64     `json:"project_id"`
-	Release    *string   `json:"release"`
-	OccurredAt time.Time `json:"occurred_at"`
-	Limit      int32     `json:"limit"`
-}
-
-// Events of a release that still lack symbols (bounded, newest first).
-func (q *Queries) UnsymbolicatedEvents(ctx context.Context, arg UnsymbolicatedEventsParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, unsymbolicatedEvents,
-		arg.ProjectID,
-		arg.Release,
-		arg.OccurredAt,
-		arg.Limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var event_id string
-		if err := rows.Scan(&event_id); err != nil {
-			return nil, err
-		}
-		items = append(items, event_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
