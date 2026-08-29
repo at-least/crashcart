@@ -67,26 +67,27 @@ type DebugImage struct {
 
 // Event is one parsed "event" envelope item.
 type Event struct {
-	EventID     string
-	Timestamp   time.Time
-	Level       string
-	Message     string
-	Platform    string
-	Environment string
-	Release     string
-	OSVersion   string
-	DeviceModel string
-	Screen      string
-	ErrorType   string
-	Handled     *bool // false = crash, true = caught, nil = no exception
-	SDKName     string
-	UserID      string
-	Tags        map[string]string
-	Breadcrumbs []Breadcrumb
-	Exceptions  []Exception // exception.values in SDK order
-	DebugImages []DebugImage
+	EventID        string
+	Timestamp      time.Time
+	Level          string
+	Message        string
+	Platform       string
+	Environment    string
+	Release        string
+	OSVersion      string
+	DeviceModel    string
+	Screen         string
+	ErrorType      string
+	Handled        *bool // false = crash, true = caught, nil = no exception
+	SDKName        string
+	UserID         string
+	Tags           map[string]string
+	Breadcrumbs    []Breadcrumb
+	Exceptions     []Exception // exception.values in SDK order
+	DebugImages    []DebugImage
 	SDKFingerprint []string
-	Primary        int // index into Exceptions of the root cause
+	Primary        int     // index into Exceptions of the root cause
+	ThreadFrames   []Frame // crashed/current thread stack when there is no exception
 	// Raw is the untouched item body.
 	Raw []byte
 }
@@ -99,12 +100,28 @@ func (e *Event) IsCrash() bool {
 	return e.Level == "fatal" || (e.Handled != nil && !*e.Handled)
 }
 
-// Frames returns the primary exception's frames (innermost last).
+// Frames returns the primary exception's frames (innermost last), or the
+// crashed/current thread's stack for events without an exception.
 func (e *Event) Frames() []Frame {
 	if len(e.Exceptions) == 0 {
-		return nil
+		return e.ThreadFrames
 	}
 	return e.Exceptions[e.Primary].Frames
+}
+
+// threadFrames picks the crashed thread's stack, else the current one's.
+func threadFrames(threads []rawThread) []Frame {
+	for _, pick := range []func(t rawThread) bool{
+		func(t rawThread) bool { return t.Crashed },
+		func(t rawThread) bool { return t.Current },
+	} {
+		for _, t := range threads {
+			if pick(t) && t.Stacktrace != nil && len(t.Stacktrace.Frames) > 0 {
+				return t.Stacktrace.Frames
+			}
+		}
+	}
+	return nil
 }
 
 // primaryException picks the root cause of a chain and the exception that
@@ -162,6 +179,7 @@ type Envelope struct {
 	Events   []*Event
 	Sessions []Session
 	Dropped  int // items of types CrashCart does not store
+	Invalid  int // event items that did not parse (logged and reported to the SDK)
 }
 
 type itemHeader struct {
@@ -221,6 +239,8 @@ func Parse(body []byte, now time.Time) Envelope {
 		case "event":
 			if ev := ParseEvent(hdr.EventID, fallbackTS, itemBody, now); ev != nil {
 				env.Events = append(env.Events, ev)
+			} else {
+				env.Invalid++
 			}
 		case "session", "sessions":
 			env.Sessions = append(env.Sessions, parseSessions(itemBody, now)...)
@@ -255,6 +275,38 @@ type rawException struct {
 		ExceptionID *int   `json:"exception_id"`
 		ParentID    *int   `json:"parent_id"`
 	} `json:"mechanism"`
+}
+
+type rawThread struct {
+	Crashed    bool `json:"crashed"`
+	Current    bool `json:"current"`
+	Stacktrace *struct {
+		Frames []Frame `json:"frames"`
+	} `json:"stacktrace"`
+}
+
+// valuesOf accepts the protocol's two spellings of a value list:
+// {"values": [...]} and the bare-array shorthand [...] (sentry-go).
+type valuesOf[T any] struct {
+	Values []T
+}
+
+func (v *valuesOf[T]) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || bytes.Equal(b, []byte("null")) {
+		return nil
+	}
+	if b[0] == '[' {
+		return json.Unmarshal(b, &v.Values)
+	}
+	var obj struct {
+		Values []T `json:"values"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	v.Values = obj.Values
+	return nil
 }
 
 type rawBreadcrumb struct {
@@ -300,18 +352,8 @@ type rawEvent struct {
 			Version string `json:"version"`
 		} `json:"runtime"`
 	} `json:"contexts"`
-	Exception *struct {
-		Values []rawException `json:"values"`
-	} `json:"exception"`
-	Threads *struct {
-		Values []struct {
-			Crashed    bool `json:"crashed"`
-			Current    bool `json:"current"`
-			Stacktrace *struct {
-				Frames []Frame `json:"frames"`
-			} `json:"stacktrace"`
-		} `json:"values"`
-	} `json:"threads"`
+	Exception valuesOf[rawException] `json:"exception"`
+	Threads   valuesOf[rawThread]    `json:"threads"`
 	DebugMeta *struct {
 		Images []DebugImage `json:"images"`
 	} `json:"debug_meta"`
@@ -386,7 +428,7 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	if ev.DeviceModel == "" {
 		ev.DeviceModel = re.ServerName
 	}
-	if re.Exception != nil {
+	{
 		for _, x := range re.Exception.Values {
 			ex := Exception{Type: x.Type, Value: x.Value}
 			if x.Stacktrace != nil {
@@ -418,25 +460,15 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 			handled := true
 			ev.Handled = &handled
 		}
-		if len(ev.Exceptions[root].Frames) == 0 && re.Threads != nil {
+		if len(ev.Exceptions[root].Frames) == 0 {
 			// .NET sends a never-thrown exception without a stack and the
 			// capturing thread's stack under threads; native SDKs mark the
 			// crashed thread.
-			for _, pick := range []func(crashed, current bool) bool{
-				func(c, _ bool) bool { return c },
-				func(_, cur bool) bool { return cur },
-			} {
-				for _, t := range re.Threads.Values {
-					if pick(t.Crashed, t.Current) && t.Stacktrace != nil && len(t.Stacktrace.Frames) > 0 {
-						ev.Exceptions[root].Frames = t.Stacktrace.Frames
-						break
-					}
-				}
-				if len(ev.Exceptions[root].Frames) > 0 {
-					break
-				}
-			}
+			ev.Exceptions[root].Frames = threadFrames(re.Threads.Values)
 		}
+	}
+	if len(ev.Exceptions) == 0 {
+		ev.ThreadFrames = threadFrames(re.Threads.Values)
 	}
 	if re.DebugMeta != nil {
 		ev.DebugImages = re.DebugMeta.Images
@@ -513,7 +545,7 @@ func extractMessage(re *rawEvent, primary int) string {
 			}
 		}
 	}
-	if re.Exception != nil && len(re.Exception.Values) > primary {
+	if len(re.Exception.Values) > primary {
 		v := re.Exception.Values[primary]
 		t := v.Type
 		if t == "" {

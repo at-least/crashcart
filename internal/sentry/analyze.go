@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -14,12 +16,17 @@ import (
 // digest, so it is safe as a primary key and URL segment. "" means the
 // event has nothing to group by (no exception, no SDK fingerprint).
 func Fingerprint(e *Event, frames []Frame) string {
-	if e.ErrorType == "" && len(e.SDKFingerprint) == 0 {
+	if e.ErrorType == "" && len(e.SDKFingerprint) == 0 && !groupableMessage(e) {
 		return ""
 	}
 	var sig string
 	if len(e.SDKFingerprint) > 0 {
 		sig = "sdk:" + strings.Join(e.SDKFingerprint, "|")
+	} else if e.ErrorType == "" {
+		// Message events at error/fatal (Go panics, captureMessage("...",
+		// "error")) group by their normalized text plus the stack, like
+		// Sentry's message grouping.
+		sig = "msg:" + e.Platform + ":" + normalizeMessage(e.Message) + ":" + strings.Join(frameSignature(e, frames), "|")
 	} else {
 		// Prefer in-app frames; fall back to all frames when the SDK marks
 		// none. SDK-internal and pseudo frames never contribute — Dart
@@ -39,34 +46,97 @@ func Fingerprint(e *Event, frames []Frame) string {
 		if len(sel) == 0 {
 			sel = all
 		}
-		if len(sel) > 5 {
-			sel = sel[len(sel)-5:]
-		}
-		parts := make([]string, 0, len(sel))
-		for _, f := range sel {
-			file := f.Filename
-			if file == "" {
-				file = f.Module
-			}
-			if i := strings.IndexByte(file, '?'); i >= 0 {
-				file = file[:i]
-			}
-			fn := f.Function
-			if fn == "" && f.InstrAddr != "" {
-				fn = f.InstrAddr // unsymbolicated native frame: address is the identity
-			}
-			if fn == "" {
-				fn = "?"
-			}
-			if file == "" {
-				file = "?"
-			}
-			parts = append(parts, baseName(file)+":"+fn)
-		}
-		sig = e.Platform + ":" + e.ErrorType + ":" + strings.Join(parts, "|")
+		sig = e.Platform + ":" + e.ErrorType + ":" + strings.Join(frameSignature(e, frames), "|")
 	}
 	sum := sha256.Sum256([]byte(sig))
 	return hex.EncodeToString(sum[:16])
+}
+
+// frameSignature renders the last five code frames (in-app when the SDK
+// marks any, SDK-internal and pseudo frames dropped) as file:function.
+// Unsymbolicated native frames use debug_id+offset, which is stable across
+// runs (ASLR moves the raw address every time).
+func frameSignature(e *Event, frames []Frame) []string {
+	var sel, all []Frame
+	for _, f := range frames {
+		if isSDKFrame(f) {
+			continue
+		}
+		all = append(all, f)
+		if f.IsInApp() {
+			sel = append(sel, f)
+		}
+	}
+	if len(sel) == 0 {
+		sel = all
+	}
+	if len(sel) > 5 {
+		sel = sel[len(sel)-5:]
+	}
+	parts := make([]string, 0, len(sel))
+	for _, f := range sel {
+		file := f.Filename
+		if file == "" {
+			file = f.Module
+		}
+		if i := strings.IndexByte(file, '?'); i >= 0 {
+			file = file[:i]
+		}
+		fn := f.Function
+		if fn == "" && f.InstrAddr != "" {
+			fn = e.relativeAddr(f.InstrAddr)
+		}
+		if fn == "" {
+			fn = "?"
+		}
+		if file == "" {
+			file = "?"
+		}
+		parts = append(parts, baseName(file)+":"+fn)
+	}
+	return parts
+}
+
+// groupableMessage: message-only events worth an issue.
+func groupableMessage(e *Event) bool {
+	return (e.Level == "fatal" || e.Level == "error") && e.Message != "" && e.Message != "(no message)"
+}
+
+var messageNoise = regexp.MustCompile(`0x[0-9a-fA-F]+|[0-9a-fA-F]{8,}|\d+`)
+
+// normalizeMessage strips the parts of a message that vary per occurrence.
+func normalizeMessage(m string) string {
+	return messageNoise.ReplaceAllString(m, "#")
+}
+
+// relativeAddr maps an instruction address to "<debug_id>+<offset>" using
+// debug_meta.images; the raw address is returned when no image contains it.
+func (e *Event) relativeAddr(addr string) string {
+	a, ok := parseHex(addr)
+	if !ok {
+		return addr
+	}
+	for _, im := range e.DebugImages {
+		base, ok := parseHex(im.ImageAddr)
+		if !ok || a < base || (im.ImageSize > 0 && a >= base+uint64(im.ImageSize)) {
+			continue
+		}
+		id := im.DebugID
+		if id == "" {
+			id = baseName(im.CodeFile)
+		}
+		return id + "+0x" + strconv.FormatUint(a-base, 16)
+	}
+	return addr
+}
+
+func parseHex(s string) (uint64, bool) {
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(s, 16, 64)
+	return v, err == nil
 }
 
 // IssueTitle is the human title for the event's issue: the exception type,
@@ -94,17 +164,24 @@ func (e *Event) IssueTitle() string {
 // ErrorLocation is "File.ext:line" of the deepest in-app frame (or the
 // innermost frame overall when nothing is marked in-app); "" without frames.
 func ErrorLocation(frames []Frame) string {
-	var root *Frame
+	var root, last *Frame
 	for i := range frames {
+		if isSDKFrame(frames[i]) {
+			continue
+		}
+		last = &frames[i]
 		if frames[i].IsInApp() {
 			root = &frames[i]
 		}
 	}
-	if root == nil && len(frames) > 0 {
-		root = &frames[len(frames)-1]
+	if root == nil {
+		root = last
 	}
 	if root == nil {
 		return ""
+	}
+	if root.Function == "" && root.Filename == "" && root.AbsPath == "" && root.Module == "" {
+		return "" // address-only native frame: unknown until symbolicated
 	}
 	name := root.Filename
 	if name == "" {
@@ -146,11 +223,15 @@ func isSDKFrame(f Frame) bool {
 	if strings.HasPrefix(f.Function, "<") && strings.HasSuffix(f.Function, ">") { // <asynchronous suspension>
 		return true
 	}
-	if f.Package == "sentry" || strings.HasPrefix(f.Package, "sentry_") {
+	if f.Package == "sentry" || strings.HasPrefix(f.Package, "sentry_") || strings.HasPrefix(f.Package, "sentry-") {
 		return true
 	}
+	if strings.HasPrefix(f.Function, "sentry_") || strings.HasPrefix(f.Function, "sentry::") || strings.HasPrefix(f.Function, "sentry.") || strings.HasPrefix(f.Function, "io.sentry.") {
+		return true // sentry_panic::…, sentry_core::…, sentry.CurrentHub…, io.sentry.Sentry.captureException
+	}
 	for _, p := range []string{f.Filename, f.AbsPath, f.Module} {
-		if strings.HasPrefix(p, "package:sentry") || strings.Contains(p, "/sentry_sdk/") || strings.HasPrefix(p, "io.sentry.") || strings.HasPrefix(p, "Sentry.") || strings.Contains(p, "/@sentry/") {
+		if strings.HasPrefix(p, "package:sentry") || strings.Contains(p, "/sentry_sdk/") || strings.HasPrefix(p, "io.sentry.") || strings.HasPrefix(p, "Sentry.") ||
+			strings.Contains(p, "/@sentry/") || strings.Contains(p, "/sentry-") || strings.Contains(p, "getsentry/sentry-go") || strings.HasPrefix(p, "sentry_") {
 			return true
 		}
 	}

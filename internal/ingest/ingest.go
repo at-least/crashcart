@@ -69,6 +69,7 @@ type Result struct {
 	Stored      int      // events written
 	Sampled     int      // events counted but not stored
 	Duplicates  int      // resent events already stored
+	Invalid     int      // event items that did not parse
 	Sessions    int      // session rows written
 	NewIssues   []string // fingerprints created by this envelope
 	Regressions []string // fingerprints flipped to 'regression'
@@ -137,11 +138,15 @@ func (in *Ingester) serveEnvelope(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"too many events"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
+	if env.Invalid > 0 {
+		in.Log.Warn("ingest: unparseable event item", "project", p.Slug, "invalid", env.Invalid, "sdk", r.Header.Get("User-Agent"))
+	}
 	res, err := in.Ingest(detached(r), p, env, now)
 	if err != nil {
 		in.fail(w, err)
 		return
 	}
+	res.Invalid = env.Invalid
 	in.ok(w, res, firstEventID(env))
 }
 
@@ -222,7 +227,7 @@ func firstEventID(env sentry.Envelope) string {
 
 func (in *Ingester) ok(w http.ResponseWriter, res Result, id string) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions})
+	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions, "invalid": res.Invalid})
 }
 
 func (in *Ingester) fail(w http.ResponseWriter, err error) {

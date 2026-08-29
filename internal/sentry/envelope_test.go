@@ -78,8 +78,12 @@ func TestParseFallbacks(t *testing.T) {
 	if e.EventID != "h1" {
 		t.Errorf("header event id fallback = %q", e.EventID)
 	}
-	if Fingerprint(e, e.Frames()) != "" {
-		t.Error("no exception → no fingerprint")
+	if Fingerprint(e, e.Frames()) == "" {
+		t.Error("an error-level message event groups by its text")
+	}
+	info := ParseEvent("", now, []byte(`{"level":"info","message":"user signed in"}`), now)
+	if Fingerprint(info, nil) != "" {
+		t.Error("info messages are not issues")
 	}
 }
 
@@ -203,5 +207,56 @@ func TestThreadFallbackAndSDKFrames(t *testing.T) {
 	a, b := mk("loadCart"), mk("checkout")
 	if Fingerprint(a, a.Frames()) == Fingerprint(b, b.Frames()) {
 		t.Fatal("SDK/pseudo frames dominated the fingerprint")
+	}
+}
+
+func TestBareArraysAndMessageEvents(t *testing.T) {
+	// sentry-go: exception and threads as bare arrays.
+	ev := ParseEvent("", now, []byte(`{"platform":"go","exception":[{"type":"*errors.errorString","value":"handled boom","stacktrace":{"frames":[{"abs_path":"/x/main.go","function":"main.main","lineno":67,"in_app":true}]}}],"threads":[{"id":1,"current":true}]}`), now)
+	if ev == nil || ev.ErrorType != "*errors.errorString" || ErrorLocation(ev.Frames()) != "main.go:67" {
+		t.Fatalf("bare arrays: %+v", ev)
+	}
+	// sentry-go panic("string"): a fatal message event with the thread stack.
+	body := `{"platform":"go","level":"fatal","message":"unhandled boom","threads":[{"id":1,"current":true,"crashed":true,"stacktrace":{"frames":[
+	  {"abs_path":"/usr/lib/go/src/runtime/panic.go","function":"gopanic","lineno":1},
+	  {"abs_path":"/x/main.go","function":"main.main","lineno":71,"in_app":true},
+	  {"abs_path":"/go/pkg/mod/github.com/getsentry/sentry-go@v0.49.0/hub.go","function":"sentry.(*Hub).Recover","lineno":10,"in_app":true}]}}]}`
+	ev = ParseEvent("", now, []byte(body), now)
+	if loc := ErrorLocation(ev.Frames()); loc != "main.go:71" {
+		t.Fatalf("panic location = %q", loc)
+	}
+	fp := Fingerprint(ev, ev.Frames())
+	if fp == "" {
+		t.Fatal("fatal message event should group")
+	}
+	// The same panic with a different id in the text groups together.
+	ev1 := ParseEvent("", now, []byte(strings.Replace(body, "unhandled boom", "unhandled boom 111", 1)), now)
+	ev2 := ParseEvent("", now, []byte(strings.Replace(body, "unhandled boom", "unhandled boom 222", 1)), now)
+	if Fingerprint(ev1, ev1.Frames()) != Fingerprint(ev2, ev2.Frames()) {
+		t.Fatal("digits in a message must not split the issue")
+	}
+	// Rust: sentry_panic frames marked in_app are not the location.
+	ev = ParseEvent("", now, []byte(`{"platform":"native","exception":{"values":[{"type":"panic","stacktrace":{"frames":[
+	  {"abs_path":"/x/src/main.rs","filename":"main.rs","function":"sdkrust::main::{closure#1}","lineno":37,"in_app":true},
+	  {"abs_path":"/c/sentry-panic-0.49.2/src/lib.rs","filename":"lib.rs","function":"sentry_panic::panic_handler","lineno":128,"in_app":true}]}}]}}`), now)
+	if loc := ErrorLocation(ev.Frames()); loc != "main.rs:37" {
+		t.Fatalf("rust location = %q", loc)
+	}
+	// Native: address-only frames fingerprint by image+offset, not raw address.
+	native := func(base string) *Event {
+		return ParseEvent("", now, []byte(`{"platform":"native","exception":{"values":[{"type":"SIGSEGV","value":"Segfault","mechanism":{"type":"signalhandler","handled":false},
+		  "stacktrace":{"frames":[{"instruction_addr":"`+base+`205"}]}}]},"debug_meta":{"images":[{"type":"elf","debug_id":"5ce4a09d-f963-2a1b-799f-a33024a288eb","image_addr":"`+base+`000","image_size":20480}]}}`), now)
+	}
+	a, b := native("0x559bd2abb"), native("0x7f10c0aaa")
+	if Fingerprint(a, a.Frames()) != Fingerprint(b, b.Frames()) {
+		t.Fatal("ASLR-shifted native crash should keep its fingerprint")
+	}
+	if loc := ErrorLocation(a.Frames()); loc != "" {
+		t.Fatalf("address-only location should be empty, got %q", loc)
+	}
+	// An unparseable event item is counted, not silently dropped.
+	env := Parse([]byte("{}\n"+`{"type":"event"}`+"\n"+`not json`+"\n"), now)
+	if env.Invalid != 1 || len(env.Events) != 0 {
+		t.Fatalf("invalid = %d events = %d", env.Invalid, len(env.Events))
 	}
 }
