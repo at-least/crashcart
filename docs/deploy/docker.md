@@ -1,7 +1,8 @@
 # Docker Compose
 
-The recommended way to self-host: one `docker-compose.yml`, two
-containers (CrashCart and Postgres), one volume.
+The quickest way to self-host: one `docker-compose.yml`, two containers
+(CrashCart and Postgres), one volume. Prefer a plain service on a Linux
+host? See [Go binary + systemd](./binary).
 
 ```sh
 git clone https://github.com/crashcartapp/crashcart

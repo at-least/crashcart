@@ -9,7 +9,7 @@ otherwise. Nothing changes in how you use it. The difference:
 
 | | Plain Postgres | With TimescaleDB |
 |---|---|---|
-| Works on | Neon, Supabase, RDS, Cloud SQL, any Postgres | The `timescale/timescaledb` image, Timescale Cloud, self-managed |
+| Works on | Neon, Supabase, RDS, Cloud SQL, a local `apt install postgresql` | The `timescale/timescaledb` image (what Docker Compose uses), Timescale Cloud, self-managed |
 | Storage | 5–10× more (no compression) | Compressed after 48 h |
 | Matters at | — | Tens of millions of events a month |
 
@@ -23,47 +23,25 @@ into a new database.
 The `TIMESCALE` variable controls detection: `auto` (default), `on` or
 `off`.
 
+## Permissions
+
+The database user needs to create tables. On hosts that offer TimescaleDB,
+either let the user create the extension or create it once as an admin:
+
+```sql
+CREATE EXTENSION timescaledb;
+```
+
 ## Managed Postgres
 
-Point `DATABASE_URL` at your provider and start CrashCart:
+Take the provider's connection URL as `DATABASE_URL`:
 
-```sh
-DATABASE_URL=postgres://user:pass@host/crashcart?sslmode=require \
-PUBLIC_URL=https://crashcart.example.com \
-API_KEYS=… VIEWER_PASSWORD=… \
-crashcart serve
 ```
-
-The database user needs permission to create tables. On providers that
-offer TimescaleDB, either let the user create the extension or create it
-once as an admin: `CREATE EXTENSION timescaledb`.
+DATABASE_URL=postgres://user:pass@host/crashcart?sslmode=require
+```
 
 A zero-ops setup is the CrashCart Docker image on Cloud Run or Fly.io with
-`DATABASE_URL` pointing at Neon.
-
-## Running the binary directly
-
-```sh
-make build          # → bin/crashcart (needs Go 1.24+)
-bin/crashcart serve
-```
-
-`serve` is the whole application — web, ingest, background work — in one
-process. A minimal systemd unit:
-
-```ini
-[Unit]
-Description=CrashCart
-After=network.target
-
-[Service]
-EnvironmentFile=/etc/crashcart.env
-ExecStart=/usr/local/bin/crashcart serve
-Restart=always
-User=crashcart
-
-[Install]
-WantedBy=multi-user.target
-```
-
-with the environment variables in `/etc/crashcart.env`.
+`DATABASE_URL` pointing at Neon. Because CrashCart does its housekeeping
+in the background, on a scale-to-zero host run
+[`crashcart retention` and `crashcart alerts` from cron](./operations#running-without-a-long-lived-server)
+instead.

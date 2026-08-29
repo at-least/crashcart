@@ -1,8 +1,8 @@
 # Getting started
 
 This page takes you from nothing to a crash in the viewer. It uses Docker
-Compose; see [Deploy](/deploy/docker) for production settings and
-[Binary & managed Postgres](/deploy/postgres) for running without Docker.
+Compose; for production see [Docker Compose](/deploy/docker) or
+[Go binary + systemd](/deploy/binary).
 
 ## 1. Run CrashCart
 

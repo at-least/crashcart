@@ -43,7 +43,8 @@ export default defineConfig({
           text: 'Deploy',
           items: [
             { text: 'Docker Compose', link: '/deploy/docker' },
-            { text: 'Binary & managed Postgres', link: '/deploy/postgres' },
+            { text: 'Go binary + systemd', link: '/deploy/binary' },
+            { text: 'Postgres options', link: '/deploy/postgres' },
             { text: 'Configuration', link: '/deploy/configuration' },
             { text: 'Operations', link: '/deploy/operations' },
             { text: 'Serverless edition', link: '/deploy/serverless' },
