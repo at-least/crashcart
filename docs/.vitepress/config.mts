@@ -33,11 +33,11 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/shadlessdev/crashcart' },
+      { icon: 'github', link: 'https://github.com/crashcartdev/crashcart' },
     ],
 
     editLink: {
-      pattern: 'https://github.com/shadlessdev/crashcart/edit/main/docs/:path',
+      pattern: 'https://github.com/crashcartdev/crashcart/edit/main/docs/:path',
       text: 'Edit this page on GitHub',
     },
 
