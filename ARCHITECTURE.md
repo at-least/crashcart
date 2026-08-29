@@ -72,6 +72,8 @@ event with no mapping yet is stored as-is, without a job: uploading a
 symbol file re-queues the release's unsymbolicated events from the last
 `COMPRESS_AFTER` (`resymbolicate` fans out to one `symbolicate` job per
 event in a single `INSERT … SELECT`), which may move them to a new issue.
+`symbol_files.release` is NULL for a mapping matched by debug id only
+(`UNIQUE NULLS NOT DISTINCT` keeps one row per project/kind/release/filename).
 
 **Compression + retention are policies.** Chunks older than `COMPRESS_AFTER`
 (48 h) are compressed (`segmentby project_id, fingerprint`; typically
@@ -85,11 +87,19 @@ transaction, runs the handlers with nothing held open (they make HTTP
 calls), then deletes or reschedules each job. An expired lease — the worker
 died — makes the job claimable again. Kinds: `symbolicate {event}`,
 `resymbolicate {release}`, `alert {type, fingerprint}`. Retries with
-backoff, dropped after 8 attempts. Workers wake on
+backoff; after 8 attempts a job is dead: never claimed again, kept with its
+`last_error` for a week (`DeadJobs`), then dropped. A partial unique index
+(`jobs_pending`) keeps one pending job per `(kind, project, args)`, so
+enqueues are `ON CONFLICT DO NOTHING`. Workers wake on
 `NOTIFY crashcart_jobs` (a trigger on insert, fired at commit; one LISTEN
 connection per process — `store.Listener`) and poll every 30 s as the
 fallback; the SSE "new issues" stream wakes the same way on
 `crashcart_issues` (new issue / regression, payload = project id).
+
+**Scheduled work runs on one replica.** The spike check, the retention
+sweep and the plain-Postgres rollup tick in every process, but each tick
+takes a Postgres advisory lock (`store.RunAsLeader`) and skips when another
+replica holds it.
 
 **Rate limiting is in memory, the daily quota is in Postgres.** Rate
 limits are fixed 60 s windows per credential, per process; with several
@@ -134,8 +144,9 @@ Spec: `docs/reference/export-format.md` (change it before the code).
 to projects by `project` slug (never by id), timestamps are RFC3339 UTC,
 events / sessions carry their natural keys, JSON columns are embedded,
 bytes are base64. `crashcart import` upserts (events/sessions
-`ON CONFLICT DO NOTHING`, everything else on its key), so importing twice or
-onto live data is safe. Aggregates are not exported; they recompute.
+`ON CONFLICT DO NOTHING`, everything else on its key) inside one
+transaction, so importing twice or onto live data is safe and a failed
+import changes nothing. Aggregates are not exported; they recompute.
 
 ## Plain-Postgres mode (Neon, Supabase, RDS, …)
 

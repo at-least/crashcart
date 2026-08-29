@@ -372,40 +372,44 @@ const (
 	WHERE NOT EXISTS (SELECT 1 FROM alert_channels WHERE project_id = $1 AND kind = $2 AND config = $3::jsonb)`
 )
 
-// importer carries the state of one Import call.
+// importer carries the state of one Import call. Everything is written
+// through one transaction, so a failed import leaves the database as it was.
 type importer struct {
 	ctx      context.Context
-	st       *store.Store
+	tx       pgx.Tx
+	q        *sqlc.Queries
 	projects map[string]int64 // slug → id
 	events   []store.EventInsert
 	batch    *pgx.Batch // sessions / issues / symbol files / alert rows
 	report   Report
 }
 
-// Import loads NDJSON from r (idempotent). Rows referencing a project slug
-// that does not exist create it (name = slug, fresh public key).
+// Import loads NDJSON from r (idempotent) in one transaction: either the
+// whole file lands or nothing does. Rows referencing a project slug that
+// does not exist create it (name = slug, fresh public key).
 func Import(ctx context.Context, st *store.Store, r io.Reader) (Report, error) {
-	im := &importer{ctx: ctx, st: st, projects: map[string]int64{}, batch: &pgx.Batch{}, report: Report{Rows: map[string]int64{}}}
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 1<<20), maxLine)
-	line := 0
-	for sc.Scan() {
-		line++
-		b := sc.Bytes()
-		if len(b) == 0 {
-			continue
+	im := &importer{ctx: ctx, projects: map[string]int64{}, batch: &pgx.Batch{}, report: Report{Rows: map[string]int64{}}}
+	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+		im.tx, im.q = tx, q
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 1<<20), maxLine)
+		line := 0
+		for sc.Scan() {
+			line++
+			b := sc.Bytes()
+			if len(b) == 0 {
+				continue
+			}
+			if err := im.line(b); err != nil {
+				return fmt.Errorf("line %d: %w", line, err)
+			}
 		}
-		if err := im.line(b); err != nil {
-			return im.report, fmt.Errorf("line %d: %w", line, err)
+		if err := sc.Err(); err != nil {
+			return err
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return im.report, err
-	}
-	if err := im.flush(); err != nil {
-		return im.report, err
-	}
-	return im.report, nil
+		return im.flush()
+	})
+	return im.report, err
 }
 
 func (im *importer) line(b []byte) error {
@@ -441,7 +445,7 @@ func (im *importer) line(b []byte) error {
 		if r.DailyQuota != nil {
 			quota = *r.DailyQuota
 		}
-		err := im.st.Pool.QueryRow(im.ctx, upsertProject, r.Slug, r.Name, r.Platform, r.PublicKey, r.SampleKeepFirst, r.SampleRate, quota, tsOrNow(r.CreatedAt)).Scan(&id)
+		err := im.tx.QueryRow(im.ctx, upsertProject, r.Slug, r.Name, r.Platform, r.PublicKey, r.SampleKeepFirst, r.SampleRate, quota, tsOrNow(r.CreatedAt)).Scan(&id)
 		if err != nil {
 			return fmt.Errorf("upsert project %q: %w", r.Slug, err)
 		}
@@ -555,9 +559,9 @@ func (im *importer) project(slug string) (int64, error) {
 	if id, ok := im.projects[slug]; ok {
 		return id, nil
 	}
-	p, err := im.st.GetProject(im.ctx, slug)
+	p, err := im.q.GetProject(im.ctx, slug)
 	if errors.Is(err, pgx.ErrNoRows) {
-		p, err = im.st.CreateProject(im.ctx, sqlc.CreateProjectParams{Slug: slug, Name: slug, PublicKey: newKey()})
+		p, err = im.q.CreateProject(im.ctx, sqlc.CreateProjectParams{Slug: slug, Name: slug, PublicKey: newKey()})
 	}
 	if err != nil {
 		return 0, fmt.Errorf("project %q: %w", slug, err)
@@ -579,9 +583,7 @@ func (im *importer) flushEvents() error {
 	}
 	rows := im.events
 	im.events = nil
-	return im.st.Tx(im.ctx, func(ctx context.Context, tx pgx.Tx, _ *sqlc.Queries) error {
-		return store.InsertEvents(ctx, tx, rows)
-	})
+	return store.InsertEvents(im.ctx, im.tx, rows)
 }
 
 func (im *importer) flushBatch() error {
@@ -590,7 +592,7 @@ func (im *importer) flushBatch() error {
 	}
 	b := im.batch
 	im.batch = &pgx.Batch{}
-	res := im.st.Pool.SendBatch(im.ctx, b)
+	res := im.tx.SendBatch(im.ctx, b)
 	for range b.Len() {
 		if _, err := res.Exec(); err != nil {
 			res.Close()

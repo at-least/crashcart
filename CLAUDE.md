@@ -63,12 +63,17 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
   `time_bucket` / `date_trunc(…, 'UTC')`). Events are addressed by `event_id`;
   event lists page with `store.Cursor` (`occurred_at` + `event_id`).
 - Nullable text columns are `*string` (sqlc `emit_pointers_for_null_types`);
-  `TIMESTAMPTZ` → `time.Time`; `JSONB` → `json.RawMessage`.
+  `TIMESTAMPTZ` → `time.Time`; `JSONB` → `json.RawMessage`. Level / status /
+  kind columns are Postgres enum types → `sqlc.EventLevel`, `sqlc.IssueStatus`,
+  `sqlc.JobKind`, … (convert with `string(v)` / `sqlc.X(s)` at the edges).
+- Every per-project table has a FK to `projects` (`ON DELETE CASCADE`);
+  DB tests that insert rows for a made-up project id call `testdb.Projects`.
 - API JSON is snake_case; times RFC3339 UTC; identity ids (projects, symbol
   files, channels) are integers, events are keyed by `event_id`.
 - Viewer URL state lives in `web/state.go` (`ViewState.With*` return copies);
   HTML mutations require the `HX-Request` header (CSRF guard); `/api/*` needs
-  Bearer auth when `API_KEYS` is set; the viewer needs basic auth when
+  Bearer auth when `API_KEYS` is set (CORS on it only with `API_CORS_ORIGIN`;
+  `CORS_ORIGIN` is for the SDK ingest endpoints); the viewer needs basic auth when
   `VIEWER_PASSWORD` is set; ingest is authenticated by the DSN key.
 - Never rewrite `events.payload`. Symbolication writes `symbols`,
   `fingerprint`, `error_location`, `symbolicated` only.

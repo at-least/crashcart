@@ -219,6 +219,8 @@ expire.
    ordering and any `created_at` filled with *now* on rows that omitted it).
 4. Report per-table row counts on completion (`{"rows":{"events":123,…}}`).
 5. Fail fast on the first malformed line, reporting its 1-based line number.
+   `crashcart import` runs the whole file in one transaction, so a failed
+   import leaves the database as it was.
 
 ## Evolving the format
 
