@@ -50,7 +50,7 @@ func fill(t *testing.T, st *store.Store) sqlc.Project {
 		t.Fatal(err)
 	}
 	dbg := "abc-123"
-	if _, err := st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", Release: "2.4.0", DebugID: &dbg, Filename: "mapping.txt", Size: 5, Data: []byte("a -> b")}); err != nil {
+	if _, err := st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", Release: strPtr("2.4.0"), DebugID: &dbg, Filename: "mapping.txt", Size: 5, Data: []byte("a -> b")}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: "new_issue", Enabled: true, CooldownMinutes: 30}); err != nil {
@@ -215,3 +215,5 @@ func TestExportProjectFilter(t *testing.T) {
 		t.Fatal("unknown project should fail")
 	}
 }
+
+func strPtr(s string) *string { return &s }

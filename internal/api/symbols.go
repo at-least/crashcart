@@ -97,7 +97,7 @@ func sentryDebugFileFrom(f sqlc.ListSymbolFilesRow, sha string) sentryDebugFile 
 	return sentryDebugFile{
 		ID: strconv.FormatInt(f.ID, 10), UUID: deref(f.DebugID), DebugID: deref(f.DebugID), Name: f.Filename,
 		CPUName: "any", SHA1: sha, Size: f.Size, DateCreated: f.UploadedAt.UTC(), Headers: map[string]any{},
-		SymbolType: typ, Data: data, Release: f.Release,
+		SymbolType: typ, Data: data, Release: deref(f.Release),
 	}
 }
 

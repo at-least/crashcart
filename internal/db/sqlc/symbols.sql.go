@@ -48,7 +48,7 @@ type ListSymbolFilesRow struct {
 	ID         int64      `json:"id"`
 	ProjectID  int64      `json:"project_id"`
 	Kind       SymbolKind `json:"kind"`
-	Release    string     `json:"release"`
+	Release    *string    `json:"release"`
 	DebugID    *string    `json:"debug_id"`
 	Filename   string     `json:"filename"`
 	Size       int64      `json:"size"`
@@ -86,13 +86,13 @@ func (q *Queries) ListSymbolFiles(ctx context.Context, projectID int64) ([]ListS
 
 const setSymbolFileRelease = `-- name: SetSymbolFileRelease :execrows
 UPDATE symbol_files SET release = $1
-WHERE project_id = $2 AND release = ''
+WHERE project_id = $2 AND release IS NULL
   AND (($3::text IS NOT NULL AND debug_id = $3::text)
     OR ($3::text IS NULL AND kind = 'proguard' AND uploaded_at > $4))
 `
 
 type SetSymbolFileReleaseParams struct {
-	Release   string    `json:"release"`
+	Release   *string   `json:"release"`
 	ProjectID int64     `json:"project_id"`
 	DebugID   *string   `json:"debug_id"`
 	Since     time.Time `json:"since"`
@@ -140,14 +140,14 @@ func (q *Queries) SymbolFileByDebugID(ctx context.Context, arg SymbolFileByDebug
 }
 
 const symbolFileExists = `-- name: SymbolFileExists :one
-SELECT EXISTS (SELECT 1 FROM symbol_files WHERE project_id = $1 AND kind = $2 AND (release = $3 OR debug_id = ANY($4::text[])))
+SELECT EXISTS (SELECT 1 FROM symbol_files WHERE project_id = $1 AND kind = $2 AND (release = $3::text OR debug_id = ANY($4::text[])))
 `
 
 type SymbolFileExistsParams struct {
 	ProjectID int64      `json:"project_id"`
 	Kind      SymbolKind `json:"kind"`
 	Release   string     `json:"release"`
-	Column4   []string   `json:"column_4"`
+	DebugIds  []string   `json:"debug_ids"`
 }
 
 func (q *Queries) SymbolFileExists(ctx context.Context, arg SymbolFileExistsParams) (bool, error) {
@@ -155,7 +155,7 @@ func (q *Queries) SymbolFileExists(ctx context.Context, arg SymbolFileExistsPara
 		arg.ProjectID,
 		arg.Kind,
 		arg.Release,
-		arg.Column4,
+		arg.DebugIds,
 	)
 	var exists bool
 	err := row.Scan(&exists)
@@ -163,17 +163,17 @@ func (q *Queries) SymbolFileExists(ctx context.Context, arg SymbolFileExistsPara
 }
 
 const symbolFilesForRelease = `-- name: SymbolFilesForRelease :many
-SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at FROM symbol_files WHERE project_id = $1 AND release = $2 AND kind = $3
+SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at FROM symbol_files WHERE project_id = $1 AND release = $3::text AND kind = $2
 `
 
 type SymbolFilesForReleaseParams struct {
 	ProjectID int64      `json:"project_id"`
-	Release   string     `json:"release"`
 	Kind      SymbolKind `json:"kind"`
+	Release   string     `json:"release"`
 }
 
 func (q *Queries) SymbolFilesForRelease(ctx context.Context, arg SymbolFilesForReleaseParams) ([]SymbolFile, error) {
-	rows, err := q.db.Query(ctx, symbolFilesForRelease, arg.ProjectID, arg.Release, arg.Kind)
+	rows, err := q.db.Query(ctx, symbolFilesForRelease, arg.ProjectID, arg.Kind, arg.Release)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +213,7 @@ RETURNING id, project_id, kind, release, debug_id, filename, size, uploaded_at
 type UpsertSymbolFileParams struct {
 	ProjectID int64      `json:"project_id"`
 	Kind      SymbolKind `json:"kind"`
-	Release   string     `json:"release"`
+	Release   *string    `json:"release"`
 	DebugID   *string    `json:"debug_id"`
 	Filename  string     `json:"filename"`
 	Size      int64      `json:"size"`
@@ -224,7 +224,7 @@ type UpsertSymbolFileRow struct {
 	ID         int64      `json:"id"`
 	ProjectID  int64      `json:"project_id"`
 	Kind       SymbolKind `json:"kind"`
-	Release    string     `json:"release"`
+	Release    *string    `json:"release"`
 	DebugID    *string    `json:"debug_id"`
 	Filename   string     `json:"filename"`
 	Size       int64      `json:"size"`

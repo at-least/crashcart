@@ -126,3 +126,10 @@ func tagsMap(raw json.RawMessage) map[string]string {
 
 func i64(n int64) string { return fmt.Sprintf("%d", n) }
 func itoa(n int) string  { return fmt.Sprintf("%d", n) }
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}

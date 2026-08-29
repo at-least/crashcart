@@ -272,7 +272,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := stream(ctx, st, selectSymbolFiles, p.ID, func(r sqlc.SymbolFile) error {
 			return enc.Encode(symbolFileRow{
-				T: "symbol_files", Project: p.Slug, Kind: string(r.Kind), Release: r.Release, DebugID: r.DebugID,
+				T: "symbol_files", Project: p.Slug, Kind: string(r.Kind), Release: strOr(r.Release), DebugID: r.DebugID,
 				Filename: r.Filename, Size: r.Size, Data: r.Data, UploadedAt: at(r.UploadedAt),
 			})
 		}); err != nil {
@@ -511,7 +511,7 @@ func (im *importer) line(b []byte) error {
 		if r.Size == 0 {
 			r.Size = int64(len(r.Data))
 		}
-		im.batch.Queue(upsertSymbolFile, pid, r.Kind, r.Release, r.DebugID, r.Filename, r.Size, r.Data, tsOrNow(r.UploadedAt))
+		im.batch.Queue(upsertSymbolFile, pid, r.Kind, nilIfEmptyStr(r.Release), r.DebugID, r.Filename, r.Size, r.Data, tsOrNow(r.UploadedAt))
 	case "alert_rules":
 		var r alertRuleRow
 		if err := json.Unmarshal(b, &r); err != nil {
@@ -618,4 +618,18 @@ func newKey() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func strOr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func nilIfEmptyStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

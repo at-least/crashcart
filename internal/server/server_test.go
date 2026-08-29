@@ -37,7 +37,7 @@ func crashItem(release string, n int) string {
 func TestEndToEnd(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	cfg := config.Config{APIKeys: []string{"apikey"}, CORSOrigin: "*", RetentionDays: 30}
+	cfg := config.Config{APIKeys: []string{"apikey"}, CORSOrigin: "*", APICORSOrigin: "*", RetentionDays: 30}
 	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "shop", Name: "Shop", PublicKey: "dsnkey"})
 	if err != nil {
 		t.Fatal(err)

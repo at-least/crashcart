@@ -17,7 +17,8 @@ type Config struct {
 
 	APIKeys        []string // Bearer keys for /api/*; empty = open
 	ViewerPassword string   // HTTP basic auth for the viewer; "" = open
-	CORSOrigin     string
+	CORSOrigin     string // SDK ingest endpoints (browser SDKs); "*" by default
+	APICORSOrigin  string // /api/* JSON API; "" = no CORS headers (same-origin / non-browser callers)
 	RateLimit      int // requests / minute / credential; 0 = off
 
 	RetentionDays    int
@@ -41,6 +42,7 @@ func Load() (Config, error) {
 		APIKeys:          SplitCSV(get("API_KEYS", "")),
 		ViewerPassword:   get("VIEWER_PASSWORD", ""),
 		CORSOrigin:       get("CORS_ORIGIN", "*"),
+		APICORSOrigin:    get("API_CORS_ORIGIN", ""),
 		SymbolicateURL:   strings.TrimSuffix(get("SYMBOLICATE_URL", ""), "/"),
 		TelegramBotToken: get("TELEGRAM_BOT_TOKEN", ""),
 		PIIRedact:        get("PII_REDACT", "false") == "true",

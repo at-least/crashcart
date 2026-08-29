@@ -39,5 +39,34 @@ func (s *Store) Tx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx, 
 	return tx.Commit(ctx)
 }
 
+// Leader keys for RunAsLeader (pg advisory lock ids).
+const (
+	LeaderSpikeCheck int64 = 0x63726173 + 1 // "cras" + n
+	LeaderSweep      int64 = 0x63726173 + 2
+	LeaderRollup     int64 = 0x63726173 + 3
+)
+
+// RunAsLeader runs fn while holding the session advisory lock key, and
+// reports false without running it when another replica holds the lock —
+// so scheduled work (sweeps, rollups, spike checks) runs once per
+// deployment, not once per replica.
+func (s *Store) RunAsLeader(ctx context.Context, key int64, fn func()) (bool, error) {
+	conn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Release()
+	var got bool
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&got); err != nil {
+		return false, err
+	}
+	if !got {
+		return false, nil
+	}
+	defer conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", key)
+	fn()
+	return true, nil
+}
+
 // Close closes the pool.
 func (s *Store) Close() { s.Pool.Close() }

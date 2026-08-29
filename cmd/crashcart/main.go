@@ -221,24 +221,26 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 		wake, _ := listener.Subscribe(store.ChannelJobs, "")
 		go (&jobs.Worker{Store: st, Log: log, Handlers: handlers, Wake: wake}).Run(ctx)
 	}
-	go every(ctx, cfg.AlertInterval, func() {
+	// Scheduled work runs on one replica at a time: each tick takes a
+	// Postgres advisory lock and skips when another process holds it.
+	go every(ctx, cfg.AlertInterval, leader(st, log, store.LeaderSpikeCheck, func() {
 		if err := notifier.CheckSpikes(ctx); err != nil {
 			log.Error("crash-spike check", "err", err)
 		}
-	})
-	go every(ctx, time.Hour, func() {
+	}))
+	go every(ctx, time.Hour, leader(st, log, store.LeaderSweep, func() {
 		if err := retention.Sweep(ctx, st, cfg, log); err != nil {
 			log.Error("retention sweep", "err", err)
 		}
-	})
+	}))
 	if st.Plain {
 		// Plain Postgres: no continuous aggregates — re-roll the last few
 		// hours of stats every 10 minutes (the current hour is live).
-		go every(ctx, 10*time.Minute, func() {
+		go every(ctx, 10*time.Minute, leader(st, log, store.LeaderRollup, func() {
 			if err := retention.RollupRecent(ctx, st, time.Now()); err != nil {
 				log.Error("stats rollup", "err", err)
 			}
-		})
+		}))
 	}
 
 	srv := &http.Server{
@@ -258,6 +260,15 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	log.Info("listening", "addr", cfg.Addr, "workers", cfg.Workers)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fatal(log, err)
+	}
+}
+
+// leader wraps a tick so it runs only on the replica that wins the lock.
+func leader(st *store.Store, log *slog.Logger, key int64, fn func()) func() {
+	return func() {
+		if _, err := st.RunAsLeader(context.Background(), key, fn); err != nil {
+			log.Error("scheduler: leader lock", "err", err)
+		}
 	}
 }
 

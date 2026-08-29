@@ -35,10 +35,13 @@ type Handler struct {
 // can route by method; the shared middleware chain (CORS → Bearer → rate
 // limit) wraps each handler.
 func (h *Handler) Register(mux *http.ServeMux) {
-	wrap := func(fn http.HandlerFunc) http.Handler {
-		return auth.Chain(fn, auth.CORS(h.Cfg.CORSOrigin), auth.Bearer(h.Cfg.APIKeys),
-			auth.RateLimit(h.Cfg.RateLimit, auth.BearerCredential))
+	// CORS on the JSON API only when API_CORS_ORIGIN is set: the SDK ingest
+	// endpoints need it (browser SDKs), a key-protected API usually does not.
+	mws := []func(http.Handler) http.Handler{auth.Bearer(h.Cfg.APIKeys), auth.RateLimit(h.Cfg.RateLimit, auth.BearerCredential)}
+	if h.Cfg.APICORSOrigin != "" {
+		mws = append([]func(http.Handler) http.Handler{auth.CORS(h.Cfg.APICORSOrigin)}, mws...)
 	}
+	wrap := func(fn http.HandlerFunc) http.Handler { return auth.Chain(fn, mws...) }
 	routes := map[string]http.HandlerFunc{
 		// projects
 		"GET /api/projects":                    h.listProjects,

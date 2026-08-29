@@ -450,7 +450,7 @@ type SymbolFile struct {
 	ID         int64      `json:"id"`
 	ProjectID  int64      `json:"project_id"`
 	Kind       SymbolKind `json:"kind"`
-	Release    string     `json:"release"`
+	Release    *string    `json:"release"`
 	DebugID    *string    `json:"debug_id"`
 	Filename   string     `json:"filename"`
 	Size       int64      `json:"size"`

@@ -123,13 +123,13 @@ CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     kind        symbol_kind NOT NULL,
-    release     TEXT NOT NULL,                       -- '' when matched by debug_id only
+    release     TEXT,                                -- NULL when matched by debug_id only
     debug_id    TEXT,                                -- dSYM UUID / proguard mapping uuid
     filename    TEXT NOT NULL,
     size        BIGINT NOT NULL,
     data        BYTEA NOT NULL,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (project_id, kind, release, filename)
+    UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename)
 );
 CREATE INDEX symbol_files_debug_id ON symbol_files (project_id, debug_id) WHERE debug_id IS NOT NULL;
 
@@ -166,6 +166,8 @@ CREATE TABLE jobs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX jobs_run_after ON jobs (run_after, id);
+-- One pending job per (kind, project, args): enqueues use ON CONFLICT DO NOTHING.
+CREATE UNIQUE INDEX jobs_pending ON jobs (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8;
 
 -- ── alerts ─────────────────────────────────────────────────────────────
 

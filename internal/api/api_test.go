@@ -39,7 +39,7 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	st := testdb.New(t)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	cfg := config.Config{APIKeys: []string{apiKey}, CORSOrigin: "*", Addr: ":8080"}
+	cfg := config.Config{APIKeys: []string{apiKey}, CORSOrigin: "*", APICORSOrigin: "*", Addr: ":8080"}
 	mux := http.NewServeMux()
 	(&Handler{Store: st, Cfg: cfg, Log: log, Symbols: &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient("")}}).Register(mux)
 	return &env{t: t, st: st, mux: mux, in: &ingest.Ingester{Store: st, Cfg: cfg, Log: log}}

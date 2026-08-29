@@ -78,7 +78,7 @@ func upload(t *testing.T, st *store.Store, p sqlc.Project, kind, release, debugI
 		did = &debugID
 	}
 	_, err := st.UpsertSymbolFile(context.Background(), sqlc.UpsertSymbolFileParams{
-		ProjectID: p.ID, Kind: sqlc.SymbolKind(kind), Release: release, DebugID: did, Filename: filename, Size: int64(len(data)), Data: data,
+		ProjectID: p.ID, Kind: sqlc.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: did, Filename: filename, Size: int64(len(data)), Data: data,
 	})
 	if err != nil {
 		t.Fatal(err)

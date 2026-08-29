@@ -227,7 +227,7 @@ func TestBulkAndMutations(t *testing.T) {
 		t.Fatalf("upload = %d %s", rec.Code, rec.Body)
 	}
 	files, _ := w.Store.ListSymbolFiles(ctx, p.ID)
-	if len(files) != 1 || files[0].Kind != "proguard" || files[0].Release != "2.4.1" || files[0].Filename != "mapping.txt" {
+	if len(files) != 1 || files[0].Kind != "proguard" || derefStr(files[0].Release) != "2.4.1" || files[0].Filename != "mapping.txt" {
 		t.Errorf("symbol files = %+v", files)
 	}
 	var kinds []string

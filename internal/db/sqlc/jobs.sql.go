@@ -15,7 +15,7 @@ const claimJobs = `-- name: ClaimJobs :many
 UPDATE jobs SET locked_until = $1::timestamptz, attempts = attempts + 1
 WHERE id IN (
     SELECT id FROM jobs
-    WHERE run_after <= now() AND (locked_until IS NULL OR locked_until < now())
+    WHERE run_after <= now() AND (locked_until IS NULL OR locked_until < now()) AND attempts < 8
     ORDER BY run_after, id LIMIT $2::int FOR UPDATE SKIP LOCKED)
 RETURNING id, kind, project_id, args, run_after, attempts, locked_until, last_error, created_at
 `
@@ -69,6 +69,40 @@ func (q *Queries) CountJobs(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const deadJobs = `-- name: DeadJobs :many
+SELECT id, kind, project_id, args, run_after, attempts, locked_until, last_error, created_at FROM jobs WHERE project_id = $1 AND attempts >= 8 ORDER BY id DESC LIMIT 100
+`
+
+func (q *Queries) DeadJobs(ctx context.Context, projectID int64) ([]Job, error) {
+	rows, err := q.db.Query(ctx, deadJobs, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Job{}
+	for rows.Next() {
+		var i Job
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.ProjectID,
+			&i.Args,
+			&i.RunAfter,
+			&i.Attempts,
+			&i.LockedUntil,
+			&i.LastError,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteJob = `-- name: DeleteJob :exec
 DELETE FROM jobs WHERE id = $1
 `
@@ -79,7 +113,9 @@ func (q *Queries) DeleteJob(ctx context.Context, id int64) error {
 }
 
 const enqueueJob = `-- name: EnqueueJob :exec
+
 INSERT INTO jobs (kind, project_id, args, run_after) VALUES ($1, $2, $3, $4)
+ON CONFLICT (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8 DO NOTHING
 `
 
 type EnqueueJobParams struct {
@@ -89,6 +125,8 @@ type EnqueueJobParams struct {
 	RunAfter  time.Time       `json:"run_after"`
 }
 
+// Enqueues dedupe against the pending job with the same (kind, project,
+// args) — jobs_pending — so a resend or a repeated upload queues once.
 func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) error {
 	_, err := q.db.Exec(ctx, enqueueJob,
 		arg.Kind,
@@ -102,6 +140,7 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) error {
 const enqueueJobs = `-- name: EnqueueJobs :exec
 INSERT INTO jobs (kind, project_id, args, run_after)
 SELECT unnest($1::text[])::job_kind, unnest($2::bigint[]), unnest($3::jsonb[]), unnest($4::timestamptz[])
+ON CONFLICT (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8 DO NOTHING
 `
 
 type EnqueueJobsParams struct {
@@ -129,6 +168,7 @@ FROM events e
 WHERE e.project_id = $1 AND e.release = $2 AND e.symbolicated = false AND e.fingerprint IS NOT NULL
   AND e.occurred_at >= $3
 ORDER BY e.occurred_at DESC LIMIT $4
+ON CONFLICT (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8 DO NOTHING
 `
 
 type EnqueueSymbolicateReleaseParams struct {
@@ -155,9 +195,11 @@ func (q *Queries) EnqueueSymbolicateRelease(ctx context.Context, arg EnqueueSymb
 }
 
 const expireJobs = `-- name: ExpireJobs :execrows
-DELETE FROM jobs WHERE attempts >= 8 OR created_at < now() - INTERVAL '7 days'
+DELETE FROM jobs WHERE created_at < now() - INTERVAL '7 days'
 `
 
+// A job that failed 8 times is dead: never claimed again, kept with its
+// last_error for a week so the failure can be seen, then dropped.
 func (q *Queries) ExpireJobs(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, expireJobs)
 	if err != nil {

@@ -97,11 +97,11 @@ func TestSweep(t *testing.T) {
 	mk("old-open", old, "unresolved")
 	mk("new-resolved", fresh, "resolved")
 
-	for _, j := range []struct {
+	for i, j := range []struct {
 		attempts int
 		age      string
 	}{{8, "1 hour"}, {0, "8 days"}, {0, "1 hour"}} {
-		if _, err := st.Pool.Exec(ctx, `INSERT INTO jobs (kind, project_id, attempts, created_at) VALUES ('alert', 1, $1, now() - $2::interval)`, j.attempts, j.age); err != nil {
+		if _, err := st.Pool.Exec(ctx, `INSERT INTO jobs (kind, project_id, args, attempts, created_at) VALUES ('alert', 1, jsonb_build_object('n', $3::int), $1, now() - $2::interval)`, j.attempts, j.age, i); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -118,11 +118,19 @@ func TestSweep(t *testing.T) {
 	st.Pool.QueryRow(ctx, "SELECT count(*) FROM issues").Scan(&issues)
 	st.Pool.QueryRow(ctx, "SELECT count(*) FROM jobs").Scan(&jobs)
 	st.Pool.QueryRow(ctx, "SELECT count(*) FROM symbol_files").Scan(&symbols)
-	if issues != 2 || jobs != 1 || symbols != 1 {
+	// Jobs: the week-old one is gone; the dead one (8 attempts) stays
+	// visible with its error but is never claimed again.
+	if issues != 2 || jobs != 2 || symbols != 1 {
 		t.Errorf("after sweep: issues=%d jobs=%d symbol_files=%d", issues, jobs, symbols)
 	}
+	if dead, _ := st.DeadJobs(ctx, 1); len(dead) != 1 {
+		t.Errorf("dead jobs = %d", len(dead))
+	}
+	if claimed, _ := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)}); len(claimed) != 1 {
+		t.Errorf("claimable jobs = %d, want 1 (the dead one must not be claimed)", len(claimed))
+	}
 	left, _ := st.ListSymbolFiles(ctx, 1)
-	if len(left) != 1 || left[0].Release != "1 day" {
+	if len(left) != 1 || left[0].Release == nil || *left[0].Release != "1 day" {
 		t.Errorf("symbol files left = %+v", left)
 	}
 }

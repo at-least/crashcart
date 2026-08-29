@@ -147,7 +147,7 @@ func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, na
 		debugID = DebugIDFor(kind, name, data)
 	}
 	return s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
-		ProjectID: projectID, Kind: sqlc.SymbolKind(kind), Release: release, DebugID: debugID,
+		ProjectID: projectID, Kind: sqlc.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: debugID,
 		Filename: name, Size: int64(len(data)), Data: data,
 	})
 }
@@ -189,7 +189,7 @@ func (s *Service) Associate(ctx context.Context, projectID int64, release, debug
 		id = &debugID
 	}
 	if _, err := s.Store.SetSymbolFileRelease(ctx, sqlc.SetSymbolFileReleaseParams{
-		ProjectID: projectID, Release: release, DebugID: id, Since: time.Now().Add(-time.Hour),
+		ProjectID: projectID, Release: &release, DebugID: id, Since: time.Now().Add(-time.Hour),
 	}); err != nil {
 		return err
 	}

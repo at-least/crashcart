@@ -98,13 +98,13 @@ CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     kind        symbol_kind NOT NULL,
-    release     TEXT NOT NULL,
+    release     TEXT,
     debug_id    TEXT,
     filename    TEXT NOT NULL,
     size        BIGINT NOT NULL,
     data        BYTEA NOT NULL,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (project_id, kind, release, filename)
+    UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename)
 );
 
 CREATE TABLE upload_chunks (
@@ -131,6 +131,7 @@ CREATE TABLE jobs (
     last_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX jobs_pending ON jobs (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8;
 
 CREATE TABLE alert_rules (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
