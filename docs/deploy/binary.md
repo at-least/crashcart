@@ -1,14 +1,14 @@
 # Go binary + systemd
 
 Run CrashCart as a plain service on a Linux host, with Postgres installed
-on the same machine or provided by a managed service. Prefer containers?
+on the same machine or provided by a managed service, and an
+S3-compatible bucket for payloads and symbol files. Prefer containers?
 See [Docker Compose on a VPS](./docker).
 
-::: info Storage: TimescaleDB
-CrashCart needs Postgres with TimescaleDB. Install
-[TimescaleDB's package](https://docs.tigerdata.com/self-hosted/latest/install/installation-linux/)
-for your distro before step 2, or use [Docker Compose](./docker), which
-ships it. See [The database](./postgres).
+::: info Storage
+Any Postgres 14+ does. For the bucket, use your cloud's (S3, R2, B2, …)
+or run [MinIO](https://min.io/docs/minio/linux/index.html) next to the
+service. See [The database and the object store](./postgres).
 :::
 
 ## 1. Get the binary
@@ -50,8 +50,9 @@ CREATE DATABASE crashcart OWNER crashcart;
 SQL
 ```
 
-or a managed one that runs the TimescaleDB Community build (Tiger Cloud) —
-take its connection URL. See [The database](./postgres).
+or a managed one — take its connection URL. Then create a bucket for
+CrashCart (dedicated: it manages the bucket's lifecycle rules) and an
+access key for it. See [The database and the object store](./postgres).
 
 ## 3. Configure
 
@@ -59,6 +60,11 @@ take its connection URL. See [The database](./postgres).
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin crashcart
 sudo tee /etc/crashcart.env >/dev/null <<'EOF2'
 DATABASE_URL=postgres://crashcart:change-me@localhost:5432/crashcart?sslmode=disable
+S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com   # empty for AWS S3; http://localhost:9000 for a local MinIO
+S3_REGION=auto
+S3_BUCKET=crashcart
+S3_ACCESS_KEY=change-me
+S3_SECRET_KEY=change-me
 PUBLIC_URL=https://crashcart.example.com
 RETENTION_DAYS=30
 # Only if you use a browser SDK and want to restrict which sites may send events.
@@ -93,7 +99,8 @@ sudo systemctl enable --now crashcart
 sudo systemctl status crashcart
 ```
 
-CrashCart is listening on port 8080 and has created its tables.
+CrashCart is listening on port 8080, has created its tables and set the
+bucket's lifecycle rules (the log says if it could not).
 
 ## 5. Put a reverse proxy in front
 
@@ -128,7 +135,7 @@ sudo install -m 755 crashcart /usr/local/bin/crashcart
 sudo systemctl restart crashcart
 ```
 
-Migrations run on start.
+The schema is created on start.
 
 ## iOS crashes
 

@@ -12,21 +12,20 @@ GROUP BY first_release;
 SELECT count(*) FROM issues WHERE project_id = $1 AND status = 'regression' AND last_seen >= $2;
 
 -- name: ReleaseHealthNN :many
--- Like ReleaseHealth, but crashed/errored are 0 (not NULL) when no session
--- of that status exists in the window (the cagg's FILTERed sums are NULL).
+-- Like ReleaseHealth, with 0 (not NULL) totals when the window is empty.
 SELECT release,
        COALESCE(sum(total), 0)::bigint   AS total,
        COALESCE(sum(crashed), 0)::bigint AS crashed,
        COALESCE(sum(errored), 0)::bigint AS errored
-FROM release_health_daily
+FROM release_health_hourly
 WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
 GROUP BY release;
 
 -- name: ReleaseHealthDailyNN :many
-SELECT bucket,
+SELECT crashcart_bucket(bucket, 86400)::timestamptz AS bucket,
        COALESCE(sum(total), 0)::bigint   AS total,
        COALESCE(sum(crashed), 0)::bigint AS crashed,
        COALESCE(sum(errored), 0)::bigint AS errored
-FROM release_health_daily
+FROM release_health_hourly
 WHERE project_id = $1 AND release = $2 AND bucket >= $3 AND bucket < $4
-GROUP BY bucket ORDER BY bucket;
+GROUP BY 1 ORDER BY 1;

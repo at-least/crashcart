@@ -137,8 +137,9 @@ func (e *env) seed(p sqlc.Project) {
 	if res.Stored != 4 || res.Sessions != 3 || len(res.NewIssues) != 2 {
 		e.t.Fatalf("seed: %+v", res)
 	}
-	// Past hours only reach the stats after a rollup on plain Postgres.
-	if err := retention.RefreshAggregates(context.Background(), e.in.Store); err != nil {
+	// Roll the past hours up, so the stats are read from the rollup tables
+	// (the views would compute them live otherwise — same numbers).
+	if err := retention.RollupAll(context.Background(), e.in.Store); err != nil {
 		e.t.Fatal(err)
 	}
 }

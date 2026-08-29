@@ -12,10 +12,13 @@ apps at it.
       `/setup` — until then anyone reaching the server can claim it.
 - [ ] **API keys** exist only for what needs them (CI uploads, scripts),
       and revoked ones are gone from `crashcart apikey list`.
-- [ ] **Postgres password** is not the default `crashcart`
-      (`POSTGRES_PASSWORD` in `.env` for Docker Compose).
+- [ ] **Postgres and MinIO passwords** are not the defaults
+      (`POSTGRES_PASSWORD`, `MINIO_PASSWORD` in `.env` for Docker Compose).
+- [ ] **The bucket is CrashCart's own** — it replaces the bucket's
+      lifecycle rules at startup. Check the startup log: if the rules could
+      not be set, create them by hand.
 - [ ] **Backups.** Schedule `crashcart export > backup.ndjson` (or
-      `pg_dump`). See [Operations](./operations#backups).
+      `pg_dump` plus a bucket copy). See [Operations](./operations#backups).
 - [ ] **Retention** (`RETENTION_DAYS`, default 30) matches how long you
       want to keep raw events.
 - [ ] Health check `GET /health` is wired into your monitoring.

@@ -196,7 +196,7 @@ func TestCheckSpikes(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		rows = append(rows, store.EventInsert{
 			OccurredAt: time.Now().UTC().Add(-time.Duration(i) * time.Second), ProjectID: p.ID, EventID: sentry.DerivedID([]byte(fmt.Sprint("e", i))), Level: "fatal",
-			Message: "boom", Handled: &f, Fingerprint: &fp, Tags: []byte("{}"), Payload: []byte("{}"),
+			Message: "boom", Handled: &f, Fingerprint: &fp, Tags: []byte("{}"),
 		})
 	}
 	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return store.InsertEvents(ctx, tx, rows) })

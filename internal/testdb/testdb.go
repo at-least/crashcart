@@ -10,12 +10,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/db"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
-// New returns a Store on a throwaway schema (dropped at cleanup). The test is
-// skipped when TEST_DATABASE_URL is unset.
+// New returns a Store on a throwaway schema (dropped at cleanup) with an
+// in-memory object store. The test is skipped when TEST_DATABASE_URL is
+// unset.
 func New(t testing.TB) *store.Store {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
@@ -40,17 +42,15 @@ func New(t testing.TB) *store.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// TEST_PLAIN=1 runs the suite on the plain-Postgres schema variant.
 	if _, err := db.Init(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		// Continuous aggregates must go before their hypertables.
 		admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
 		admin.Close()
 	})
-	return store.New(pool)
+	return store.New(pool, blob.NewMemory())
 }
 
 // Projects creates placeholder projects with the given ids so rows that

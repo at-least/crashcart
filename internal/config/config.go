@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/blob"
 )
 
 // Config is everything the binary needs; loaded once in main.
@@ -19,9 +21,9 @@ type Config struct {
 	APICORSOrigin string // /api/* JSON API; "" = no CORS headers (same-origin / non-browser callers)
 	RateLimit     int    // requests / minute / credential; 0 = off
 
+	S3 blob.S3Config // the object store: event payloads, symbol files (S3_BUCKET, S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY, S3_SECRET_KEY, S3_PREFIX)
+
 	RetentionDays    int
-	CompressAfter    time.Duration
-	ChunkInterval    time.Duration // hypertable chunk width (events, sessions)
 	AlertInterval    time.Duration
 	Workers          int
 	SymbolicateURL   string // dSYM sidecar
@@ -43,6 +45,10 @@ func Load() (Config, error) {
 		TelegramBotToken: get("TELEGRAM_BOT_TOKEN", ""),
 		PIIRedact:        get("PII_REDACT", "false") == "true",
 		CustomTags:       SplitCSV(get("CUSTOM_TAGS", "")),
+		S3: blob.S3Config{
+			Bucket: get("S3_BUCKET", ""), Endpoint: get("S3_ENDPOINT", ""), Region: get("S3_REGION", ""),
+			AccessKey: get("S3_ACCESS_KEY", ""), SecretKey: get("S3_SECRET_KEY", ""), Prefix: get("S3_PREFIX", ""),
+		},
 	}
 	var err error
 	if c.RateLimit, err = intEnv("RATE_LIMIT", 600); err != nil {
@@ -54,20 +60,11 @@ func Load() (Config, error) {
 	if c.Workers, err = intEnv("WORKERS", 4); err != nil {
 		return c, err
 	}
-	if c.CompressAfter, err = durEnv("COMPRESS_AFTER", 48*time.Hour); err != nil {
-		return c, err
-	}
-	if c.ChunkInterval, err = durEnv("CHUNK_INTERVAL", 7*24*time.Hour); err != nil {
-		return c, err
-	}
 	if c.AlertInterval, err = durEnv("ALERT_INTERVAL", 10*time.Minute); err != nil {
 		return c, err
 	}
 	if c.RetentionDays < 1 {
 		return c, fmt.Errorf("RETENTION_DAYS must be >= 1")
-	}
-	if c.ChunkInterval < time.Hour {
-		return c, fmt.Errorf("CHUNK_INTERVAL must be >= 1h")
 	}
 	return c, nil
 }

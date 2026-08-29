@@ -36,7 +36,9 @@ and follow [Go binary + systemd](https://crashcart.app/deploy/binary).
 - **Your data, portable** — one command exports everything to a plain file
   that restores into any CrashCart
 
-Needs Postgres 16+ with TimescaleDB (the `timescale/timescaledb` image, or Tiger Cloud).
+Needs Postgres 14+ (any — a container, a package, RDS, Neon, Supabase, …)
+and an S3-compatible bucket for event payloads and symbol files (the
+compose file bundles MinIO; AWS S3, R2, Backblaze and the like work too).
 
 ## Learn more
 
@@ -51,8 +53,8 @@ Needs Postgres 16+ with TimescaleDB (the `timescale/timescaledb` image, or Tiger
 
 Design notes are in [ARCHITECTURE.md](ARCHITECTURE.md), code layout and
 conventions in [CLAUDE.md](CLAUDE.md). `make test` runs the unit tests;
-`make test-db` the database-backed ones (see the Makefile for a one-line
-TimescaleDB container).
+`make test-db` the database-backed ones (see the Makefile for the one-line
+Postgres and MinIO containers).
 
 ## License
 

@@ -27,7 +27,7 @@ type ExistingEventIDsParams struct {
 
 // Which of these event_ids are already stored (resent envelopes). A resend
 // carries the SDK's own timestamp, so the window is the envelope's own
-// time range: only the chunks it spans are read.
+// time range: only the partitions it spans are read.
 func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsParams) ([]sentry.ID, error) {
 	rows, err := q.db.Query(ctx, existingEventIDs,
 		arg.ProjectID,
@@ -54,7 +54,7 @@ func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsPara
 }
 
 const getEvent = `-- name: GetEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, payload, symbols FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload_ref FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
 `
 
 type GetEventParams struct {
@@ -63,7 +63,7 @@ type GetEventParams struct {
 }
 
 // By Sentry event_id alone (the viewer and the API: URLs carry only the
-// id). Without a time this touches every chunk; the newest row wins when
+// id). Without a time this touches every partition; the newest row wins when
 // a resend carried another timestamp.
 func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, error) {
 	row := q.db.QueryRow(ctx, getEvent, arg.ProjectID, arg.EventID)
@@ -89,14 +89,14 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 		&i.Fingerprint,
 		&i.Symbolicated,
 		&i.Tags,
-		&i.Payload,
 		&i.Symbols,
+		&i.PayloadRef,
 	)
 	return i, err
 }
 
 const getEventAt = `-- name: GetEventAt :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, payload, symbols FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload_ref FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3
 `
 
 type GetEventAtParams struct {
@@ -105,7 +105,7 @@ type GetEventAtParams struct {
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
-// By primary key: the time lets the planner open one chunk. Jobs carry it.
+// By primary key: the time lets the planner open one partition. Jobs carry it.
 func (q *Queries) GetEventAt(ctx context.Context, arg GetEventAtParams) (Event, error) {
 	row := q.db.QueryRow(ctx, getEventAt, arg.ProjectID, arg.EventID, arg.OccurredAt)
 	var i Event
@@ -130,8 +130,8 @@ func (q *Queries) GetEventAt(ctx context.Context, arg GetEventAtParams) (Event, 
 		&i.Fingerprint,
 		&i.Symbolicated,
 		&i.Tags,
-		&i.Payload,
 		&i.Symbols,
+		&i.PayloadRef,
 	)
 	return i, err
 }

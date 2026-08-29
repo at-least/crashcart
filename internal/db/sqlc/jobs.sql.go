@@ -166,28 +166,21 @@ INSERT INTO jobs (kind, project_id, args)
 SELECT 'symbolicate', e.project_id, jsonb_build_object('event', replace(e.event_id::text, '-', ''), 'at', e.occurred_at)
 FROM events e
 WHERE e.project_id = $1 AND e.release = $2 AND e.symbolicated = false AND e.fingerprint IS NOT NULL
-  AND e.occurred_at >= $3
-ORDER BY e.occurred_at DESC LIMIT $4
+ORDER BY e.occurred_at DESC LIMIT $3
 ON CONFLICT (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8 DO NOTHING
 `
 
 type EnqueueSymbolicateReleaseParams struct {
-	ProjectID  int64     `json:"project_id"`
-	Release    *string   `json:"release"`
-	OccurredAt time.Time `json:"occurred_at"`
-	Limit      int32     `json:"limit"`
+	ProjectID int64   `json:"project_id"`
+	Release   *string `json:"release"`
+	Limit     int32   `json:"limit"`
 }
 
 // Fans a release out into one symbolicate job per unsymbolicated event
-// (bounded, newest first) in a single statement: one NOTIFY, and each
-// event then retries on its own.
+// (bounded, newest first, the whole retention window) in a single
+// statement: one NOTIFY, and each event then retries on its own.
 func (q *Queries) EnqueueSymbolicateRelease(ctx context.Context, arg EnqueueSymbolicateReleaseParams) (int64, error) {
-	result, err := q.db.Exec(ctx, enqueueSymbolicateRelease,
-		arg.ProjectID,
-		arg.Release,
-		arg.OccurredAt,
-		arg.Limit,
-	)
+	result, err := q.db.Exec(ctx, enqueueSymbolicateRelease, arg.ProjectID, arg.Release, arg.Limit)
 	if err != nil {
 		return 0, err
 	}

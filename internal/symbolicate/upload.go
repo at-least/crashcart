@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
 
@@ -36,7 +38,7 @@ var uuidRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 // release's unsymbolicated events and drops cached mappings. This is the
 // single write path used by the JSON API, the sentry-cli endpoint and the
 // viewer.
-func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte) ([]sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte) ([]sqlc.SymbolFile, error) {
 	return s.upload(ctx, projectID, release, kind, filename, data, nil)
 }
 
@@ -44,7 +46,7 @@ func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, fi
 // computes one for ProGuard mappings and sends it in the assemble request;
 // the Android SDK reports the same uuid in debug_meta). Zips fall back to
 // per-file detection.
-func (s *Service) UploadWithDebugID(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID string) ([]sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) UploadWithDebugID(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID string) ([]sqlc.SymbolFile, error) {
 	var id *string
 	if debugID = strings.ToLower(strings.TrimSpace(debugID)); debugID != "" {
 		id = &debugID
@@ -52,7 +54,7 @@ func (s *Service) UploadWithDebugID(ctx context.Context, projectID int64, releas
 	return s.upload(ctx, projectID, release, kind, filename, data, id)
 }
 
-func (s *Service) upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID *string) ([]sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID *string) ([]sqlc.SymbolFile, error) {
 	if len(data) == 0 {
 		return nil, UploadError("empty file")
 	}
@@ -62,7 +64,7 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 	if kind != "" && !kinds[kind] {
 		return nil, UploadError("kind must be proguard, sourcemap or dsym")
 	}
-	var rows []sqlc.UpsertSymbolFileRow
+	var rows []sqlc.SymbolFile
 	if isZip(filename, data) {
 		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
@@ -142,14 +144,29 @@ func classify(name string, data []byte) string {
 	return k
 }
 
-func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte, debugID *string) (sqlc.UpsertSymbolFileRow, error) {
+// upsert writes the row, then the bytes to the object store under the
+// row's id (a re-upload keeps the id and replaces the object). When the
+// object store fails, a new row is removed again so the file does not
+// appear uploaded; an existing row keeps its previous object.
+func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte, debugID *string) (sqlc.SymbolFile, error) {
 	if debugID == nil {
 		debugID = DebugIDFor(kind, name, data)
 	}
-	return s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
+	r, err := s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
 		ProjectID: projectID, Kind: sqlc.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: debugID,
-		Filename: name, Size: int64(len(data)), Data: data,
+		Filename: name, Size: int64(len(data)),
 	})
+	if err != nil {
+		return sqlc.SymbolFile{}, err
+	}
+	row := sqlc.SymbolFile{ID: r.ID, ProjectID: r.ProjectID, Kind: r.Kind, Release: r.Release, DebugID: r.DebugID, Filename: r.Filename, Size: r.Size, UploadedAt: r.UploadedAt}
+	if err := s.Store.Blobs.Put(ctx, blob.SymbolKey(projectID, row.ID), data); err != nil {
+		if r.Created {
+			s.Store.DeleteSymbolFile(context.WithoutCancel(ctx), sqlc.DeleteSymbolFileParams{ProjectID: projectID, ID: row.ID})
+		}
+		return sqlc.SymbolFile{}, fmt.Errorf("store symbol file: %w", err)
+	}
+	return row, nil
 }
 
 // DebugIDFor derives the debug id of a symbol file: the Mach-O LC_UUID for

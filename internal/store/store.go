@@ -1,26 +1,51 @@
 // Package store is the data-access layer: a pgx pool plus the sqlc-generated
-// queries, and the few dynamic queries sqlc cannot express (event listing
-// with optional filters, tag breakdowns).
+// queries, the few dynamic queries sqlc cannot express (event listing with
+// optional filters, tag breakdowns), and the object store for the bytes
+// that are not in Postgres (event payloads, symbol files).
 package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
 
 // Store wraps the pool. Queries are usable directly (auto-commit) or via Tx.
 type Store struct {
-	Pool *pgxpool.Pool
+	Pool  *pgxpool.Pool
+	Blobs blob.Store
 	*sqlc.Queries
 }
 
-// New builds a Store on an open pool.
-func New(pool *pgxpool.Pool) *Store {
-	return &Store{Pool: pool, Queries: sqlc.New(pool)}
+// New builds a Store on an open pool and an object store.
+func New(pool *pgxpool.Pool, blobs blob.Store) *Store {
+	return &Store{Pool: pool, Blobs: blobs, Queries: sqlc.New(pool)}
+}
+
+// Payload reads an event's raw payload: from its pack in the object store
+// once packed, from payload_spool before that. nil, nil when the event
+// has none (its pack expired, or it was imported without one).
+func (s *Store) Payload(ctx context.Context, e sqlc.Event) ([]byte, error) {
+	if e.PayloadRef == nil {
+		b, err := s.SpooledPayload(ctx, sqlc.SpooledPayloadParams{ProjectID: e.ProjectID, EventID: e.EventID, OccurredAt: e.OccurredAt})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return blob.Gunzip(b)
+	}
+	b, err := blob.ReadRef(ctx, s.Blobs, *e.PayloadRef)
+	if errors.Is(err, blob.ErrNotFound) {
+		return nil, nil
+	}
+	return b, err
 }
 
 // Tx runs fn inside a transaction with a transaction-scoped Queries.
@@ -40,6 +65,7 @@ func (s *Store) Tx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx, 
 const (
 	LeaderSpikeCheck int64 = 0x63726173 + 1 // "cras" + n
 	LeaderSweep      int64 = 0x63726173 + 2
+	LeaderRollup     int64 = 0x63726173 + 3
 )
 
 // RunAsLeader runs fn while holding the session advisory lock key, and

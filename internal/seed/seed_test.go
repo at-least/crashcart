@@ -18,7 +18,7 @@ func TestRun(t *testing.T) {
 	if err := Run(ctx, in, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	if err := retention.RefreshAggregates(ctx, st); err != nil {
+	if err := retention.RollupAll(ctx, st); err != nil {
 		t.Fatal(err)
 	}
 	p, err := st.GetProject(ctx, "demo")
@@ -61,7 +61,7 @@ func TestRun(t *testing.T) {
 	if err := Run(ctx, in, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	if err := retention.RefreshAggregates(ctx, st); err != nil {
+	if err := retention.RollupAll(ctx, st); err != nil {
 		t.Fatal(err)
 	}
 }

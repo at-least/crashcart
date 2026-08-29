@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -31,10 +32,8 @@ const (
 	missTTL = 60 * time.Second
 	// cacheMax bounds the parsed mappings kept in memory.
 	cacheMax = 64
-	// ReleaseWindow is how far back Release() looks for unsymbolicated
-	// events (updates must land before the chunk is compressed).
-	ReleaseWindow = 48 * time.Hour
-	// ReleaseMax bounds the events one Release() call queues.
+	// ReleaseMax bounds the events one Release() call queues (newest
+	// first; the whole retention window is eligible).
 	ReleaseMax = 2000
 )
 
@@ -235,7 +234,11 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 		// are disjoint per module, so one merged table serves them all.
 		var sb strings.Builder
 		for _, f := range files {
-			sb.Write(f.Data)
+			data, err := s.data(ctx, f)
+			if err != nil {
+				return nil, err
+			}
+			sb.Write(data)
 			sb.WriteByte('\n')
 		}
 		m := ParseProGuard(sb.String())
@@ -246,7 +249,11 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 	case KindSourceMap:
 		byName := make(map[string][]byte, len(files))
 		for _, f := range files {
-			byName[f.Filename] = f.Data
+			data, err := s.data(ctx, f)
+			if err != nil {
+				return nil, err
+			}
+			byName[f.Filename] = data
 		}
 		set := NewSourceMapSet(byName)
 		if set.Len() == 0 {
@@ -255,6 +262,18 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
 		return set, nil
 	}
 	return nil, nil
+}
+
+// data reads a symbol file's bytes from the object store. A row whose
+// object is gone (expired before the row, or never written) reads as
+// empty rather than failing every event that needs it.
+func (s *Service) data(ctx context.Context, f sqlc.SymbolFile) ([]byte, error) {
+	b, err := s.Store.Blobs.Get(ctx, blob.SymbolKey(f.ProjectID, f.ID))
+	if errors.Is(err, blob.ErrNotFound) {
+		slog.Warn("symbolicate: symbol file has no object", "project", f.ProjectID, "id", f.ID, "filename", f.Filename)
+		return nil, nil
+	}
+	return b, err
 }
 
 // Invalidate drops the cached mappings of (project, release) — and every
@@ -271,7 +290,7 @@ func (s *Service) Invalidate(projectID int64, release string) {
 }
 
 // Event symbolicates one stored event (job kind "symbolicate"; the args
-// carry the event's time, so only its chunk is read). It returns nil when
+// carry the event's time, so only its partition is read). It returns nil when
 // nothing can be resolved yet (the event stays unsymbolicated — a later
 // upload re-queues it); only sidecar / database failures are errors, so
 // the job retries.
@@ -286,8 +305,15 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 	if row.Symbolicated {
 		return nil
 	}
+	payload, err := s.Store.Payload(ctx, row)
+	if err != nil {
+		return err
+	}
+	if payload == nil {
+		return nil // the payload never reached the object store: nothing to resolve
+	}
 	now := time.Now().UTC()
-	ev := sentry.ParseEvent(string(row.EventID), row.OccurredAt, row.Payload, now)
+	ev := sentry.ParseEvent(string(row.EventID), row.OccurredAt, payload, now)
 	if ev == nil {
 		return nil
 	}
@@ -321,6 +347,11 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 		}
 		if newFP == oldFP || newFP == "" {
 			return nil
+		}
+		// The event moved between issues: its hour's per-issue counts
+		// are recomputed.
+		if err := q.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: projectID, Buckets: []time.Time{row.OccurredAt.UTC().Truncate(time.Hour)}}); err != nil {
+			return err
 		}
 		if _, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 			ProjectID: projectID, Fingerprint: newFP, Title: ev.IssueTitle(), Level: row.Level,
@@ -404,7 +435,14 @@ func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event) (
 		for i, lk := range lks {
 			addrs[i] = DSYMAddr{Address: lk.addr - base, Module: module}
 		}
-		results, err := s.DSYM.Resolve(ctx, file.Data, addrs)
+		data, err := s.data(ctx, *file)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(data) == 0 {
+			continue
+		}
+		results, err := s.DSYM.Resolve(ctx, data, addrs)
 		if err != nil {
 			return nil, false, err
 		}
@@ -494,7 +532,7 @@ func normalizeDebugID(id string) string {
 func (s *Service) Release(ctx context.Context, projectID int64, release string) error {
 	s.Invalidate(projectID, release)
 	n, err := s.Store.EnqueueSymbolicateRelease(ctx, sqlc.EnqueueSymbolicateReleaseParams{
-		ProjectID: projectID, Release: &release, OccurredAt: time.Now().Add(-ReleaseWindow), Limit: ReleaseMax,
+		ProjectID: projectID, Release: &release, Limit: ReleaseMax,
 	})
 	if err != nil {
 		return err

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/crashcartapp/crashcart/internal/blob"
 )
 
 func sha(b []byte) string {
@@ -74,10 +76,11 @@ func TestChunkUpload(t *testing.T) {
 	if len(syms) != 1 || syms[0].(map[string]any)["debug_id"] != "564ca29d-9553-5cda-b46b-135303369724" {
 		t.Fatalf("stored = %v", syms)
 	}
-	var chunks int
-	e.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM upload_chunks").Scan(&chunks)
-	if chunks != 0 {
-		t.Fatalf("chunks not cleaned up: %d", chunks)
+	if chunks := e.st.Blobs.(*blob.Memory).Keys(blob.PrefixChunks); len(chunks) != 0 {
+		t.Fatalf("chunks not cleaned up: %v", chunks)
+	}
+	if syms := e.st.Blobs.(*blob.Memory).Keys(blob.PrefixSymbols); len(syms) != 1 {
+		t.Fatalf("symbol objects = %v", syms)
 	}
 	// The Gradle plugin's follow-up association tags the release.
 	rec, _ = e.do("POST", "/api/0/projects/o/app/files/dsyms/associate/", map[string]any{"checksums": []string{file}, "appId": "com.example", "version": "2.4.1", "build": "9"})

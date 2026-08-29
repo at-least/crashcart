@@ -4,9 +4,11 @@
 //	POST /api/{project_id}/store/      (legacy single-event JSON)
 //
 // The DSN public key authenticates the request. Per envelope, one
-// transaction writes events, sessions and the folded issue upserts; the
-// only work deferred to the job worker is symbolication that needs a
-// symbol file not yet cached, and alert delivery.
+// transaction writes events, their payloads (payload_spool, drained into
+// the object store in batches by retention.PackPayloads), sessions and
+// the folded issue upserts. The only work deferred to the job worker is
+// symbolication that needs a symbol file not yet cached, and alert
+// delivery.
 package ingest
 
 import (
@@ -30,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
@@ -532,6 +535,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		}
 
 		rows := make([]store.EventInsert, 0, len(preps))
+		spool := sqlc.SpoolPayloadsParams{ProjectID: p.ID}
 		for _, pr := range preps {
 			if !pr.store {
 				res.Sampled++
@@ -543,6 +547,9 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			if pr.symbolicated {
 				symbols, _ = json.Marshal(pr.frames)
 			}
+			spool.EventIds = append(spool.EventIds, ev.EventID)
+			spool.OccurredAts = append(spool.OccurredAts, ev.Timestamp.UTC())
+			spool.Datas = append(spool.Datas, blob.Gzip(ev.Raw)) // compressed once here; the pack is a concatenation
 			rows = append(rows, store.EventInsert{
 				OccurredAt: ev.Timestamp.UTC(), ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message,
 				Platform: nilIfEmpty(ev.Platform), Environment: nilIfEmpty(ev.Environment), Release: nilIfEmpty(ev.Release),
@@ -550,7 +557,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				Screen: nilIfEmpty(ev.Screen), ErrorType: nilIfEmpty(ev.ErrorType), ErrorLocation: nilIfEmpty(pr.location),
 				Handled: ev.Handled, SDKName: nilIfEmpty(ev.SDKName), UserID: nilIfEmpty(ev.UserID),
 				Fingerprint: pr.fingerprint.Ptr(), Symbolicated: pr.symbolicated,
-				Tags: tags, Payload: ev.Raw, Symbols: symbols,
+				Tags: tags, Symbols: symbols,
 			})
 			if pr.retry && pr.fingerprint != "" {
 				args, _ := json.Marshal(map[string]any{"event": ev.EventID, "at": ev.Timestamp})
@@ -561,6 +568,23 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			return fmt.Errorf("insert events: %w", err)
 		}
 		res.Stored = len(rows)
+		if len(rows) > 0 {
+			if err := q.SpoolPayloads(ctx, spool); err != nil {
+				return fmt.Errorf("spool payloads: %w", err)
+			}
+			hours := map[time.Time]bool{}
+			var buckets []time.Time
+			for _, r := range rows {
+				h := r.OccurredAt.Truncate(time.Hour)
+				if !hours[h] {
+					hours[h] = true
+					buckets = append(buckets, h)
+				}
+			}
+			if err := q.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: p.ID, Buckets: buckets}); err != nil {
+				return fmt.Errorf("mark stats: %w", err)
+			}
+		}
 
 		sessions := make([]store.SessionInsert, 0, len(env.Sessions))
 		for _, s := range env.Sessions {
@@ -573,6 +597,20 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			return fmt.Errorf("insert sessions: %w", err)
 		}
 		res.Sessions = len(sessions)
+		if len(sessions) > 0 {
+			hours := map[time.Time]bool{}
+			var buckets []time.Time
+			for _, s := range sessions {
+				h := s.StartedAt.Truncate(time.Hour)
+				if !hours[h] {
+					hours[h] = true
+					buckets = append(buckets, h)
+				}
+			}
+			if err := q.MarkSessionStatsDirty(ctx, sqlc.MarkSessionStatsDirtyParams{ProjectID: p.ID, Buckets: buckets}); err != nil {
+				return fmt.Errorf("mark stats: %w", err)
+			}
+		}
 		if len(jobs) > 0 {
 			jp := sqlc.EnqueueJobsParams{}
 			for _, j := range jobs {

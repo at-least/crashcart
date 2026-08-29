@@ -1,4 +1,4 @@
-# CLAUDE.md — CrashCart (Go + Postgres/TimescaleDB)
+# CLAUDE.md — CrashCart (Go + Postgres + S3)
 
 Sentry-SDK-compatible crash tracking backend + viewer. Read ARCHITECTURE.md
 for the design; GLOSSARY.md for terminology (Event / Issue / Release /
@@ -6,9 +6,11 @@ Platform — never "log entry", "error group", "app version", "OS").
 
 ## Stack
 
-Go 1.24+ (std `net/http` mux, pgx/v5, sqlc, templ), Postgres 16 +
-TimescaleDB (required: Community build), htmx + Tailwind v4 + shadless for the viewer.
-Optional: dSYM symbolication sidecar (`container/symbolicate`).
+Go 1.24+ (std `net/http` mux, pgx/v5, sqlc, templ), plain Postgres 14+
+(no extensions), an S3-compatible bucket (`internal/blob`, minio-go) for
+event payloads / symbol files, htmx + Tailwind v4 +
+shadless for the viewer. Optional: dSYM symbolication sidecar
+(`container/symbolicate`).
 
 ## Commands
 
@@ -21,7 +23,8 @@ make css           rebuild internal/web/assets/app.css (needs npm install; artif
 crashcart serve | init | retention | export | import | seed | rebuild-symbols
 ```
 
-Local TimescaleDB for tests: `docker run -d --name crashcart-test-pg -e POSTGRES_PASSWORD=crashcart -e POSTGRES_USER=crashcart -e POSTGRES_DB=crashcart -p 127.0.0.1:55432:5432 timescale/timescaledb:latest-pg16`.
+Local Postgres for tests: `docker run -d --name crashcart-test-pg -e POSTGRES_PASSWORD=crashcart -e POSTGRES_USER=crashcart -e POSTGRES_DB=crashcart -p 127.0.0.1:55432:5432 postgres:16-alpine`.
+The S3 client test needs `TEST_S3_ENDPOINT` / `TEST_S3_BUCKET` / `TEST_S3_ACCESS_KEY` / `TEST_S3_SECRET_KEY` (a MinIO: `docker run -d --name crashcart-test-minio -p 127.0.0.1:59000:9000 -e MINIO_ROOT_USER=crashcart -e MINIO_ROOT_PASSWORD=crashcart12 minio/minio server /data`); every other test uses `blob.Memory`.
 
 ## Layout
 
@@ -31,15 +34,16 @@ internal/
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, ErrorLocation
   db/                 schema.sql (the whole schema, created on first start — no migrations), sqlc_schema.sql
-                      (mirror for sqlc; caggs appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
-  store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
+                      (mirror for sqlc; the stats views appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
+  blob/               Store interface + keys (SymbolKey / ChunkKey), packs (BuildPack / Ref / ReadRef), S3 (minio-go), Memory (tests)
+  store/              Store = pool + Blobs + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out)
   auth/               Access (API keys, user sessions, bcrypt), CORS, RateLimit (in-memory), SentryKey
   ingest/             POST /api/{id}/envelope|store; Ingest(); PII redaction
   symbolicate/        proguard / sourcemap (in-process), dsym (sidecar client), Service (cache + Resolve at ingest + job handlers)
   jobs/               worker loop (SKIP LOCKED), handlers by kind
   alerts/             notifier (webhook, telegram), crash-spike scheduler
-  retention/          Timescale policy reconcile + sweeps (issues, jobs, upload chunks, symbol files)
+  retention/          weekly partitions (ensure / drop), stats rollup (dirty keys), payload packs (spool → bucket), lifecycle rules, sweeps
   api/                /api/projects/… JSON handlers, /api/0/… sentry-cli compat
   web/                templ views, handlers, state.go (URL ↔ ViewState), svg charts, assets/, styles/
   export/             NDJSON export / import (format: docs/reference/export-format.md)
@@ -53,14 +57,32 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
 
 - Regenerate after editing: `sqlc generate` (queries or `sqlc_schema.sql`),
   `templ generate` (`.templ`). Keep `internal/db/sqlc_schema.sql` in sync with
-  `schema.sql` (it is the plain-SQL mirror sqlc parses; caggs appear as tables).
+  `schema.sql` (it is the plain-SQL mirror sqlc parses; the stats views appear as tables).
 - Hand-written SQL only in: `schema.sql`, `internal/store` (dynamic filters),
-  `internal/export`, `internal/retention` (policy calls).
+  `internal/export`, `internal/retention` (partitions, rollup).
+- Bytes live in the object store, not in Postgres for long: an event's
+  payload is gzipped and written to `payload_spool` in the ingest
+  transaction (`SpoolPayloads`), and `retention.PackPayloads` (every 5 s in every
+  process, SKIP LOCKED; a pack per 8 MB of gzipped payloads, nothing else triggers it) moves batches into pack objects and sets
+  `events.payload_ref`; read with `store.Payload(ctx, event)` (spool or
+  pack; nil when neither). A symbol file's data is at
+  `blob.SymbolKey(project, id)`, sentry-cli chunks at `blob.ChunkKey(sha1)`.
+  Retention of objects is the bucket's lifecycle rules. CLI commands that
+  write events (`seed`, `import`) call `retention.PackAll` at the end.
+- Statistics: every write to `events` / `sessions` marks its (project, hour)
+  in `event_stats_dirty` / `session_stats_dirty` in the same transaction
+  (`MarkEventStatsDirty`, also after a fingerprint change); the
+  `event_stats_hourly` / `issue_stats_hourly` / `release_health_hourly`
+  views read the `*_rolled` tables for clean hours and compute dirty hours
+  live, `retention.Rollup` (every minute, leader) recomputes and clears
+  them. Never write the `*_rolled` tables from elsewhere.
 - Time is `TIMESTAMPTZ` everywhere (`events.occurred_at`, `sessions.started_at`,
-  `issues.first_seen/last_seen`, aggregate `bucket`); windows are `[from, to)`
+  `issues.first_seen/last_seen`, stats `bucket`); windows are `[from, to)`
   on those columns, buckets are UTC-aligned (`t.Truncate(width)` in Go matches
-  `time_bucket` / `date_trunc(…, 'UTC')`). Events are addressed by `event_id`;
-  event lists page with `store.Cursor` (`occurred_at` + `event_id`).
+  `crashcart_bucket` / `date_trunc(…, 'UTC')`). `events` / `sessions` are
+  partitioned by week on that column (`events_pYYYYMMDD`, plus `events_default`);
+  a query that carries a time range touches only its partitions. Events are
+  addressed by `event_id`; event lists page with `store.Cursor` (`occurred_at` + `event_id`).
 - `event_id` / `fingerprint` are Postgres `UUID` ↔ `sentry.ID` (32-hex string with
   pgx UUID scanner/valuer); parse untrusted input with `sentry.ParseID`, make test
   ids with `sentry.DerivedID([]byte("name"))`.
@@ -79,8 +101,8 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
   needs a signed-in user (`users` + `user_sessions` cookie; `auth.Access.Session`;
   `/login`, `/setup`, `/account`); ingest is authenticated by the DSN key.
   `auth.ActorFrom(ctx)` is who acts (recorded in `issues.status_by`).
-- Never rewrite `events.payload`. Symbolication writes `symbols`,
+- Never rewrite a payload object. Symbolication writes `symbols`,
   `fingerprint`, `error_location`, `symbolicated` only.
 - Tests: unit tests next to the code; DB-backed tests use `internal/testdb`
-  and skip without `TEST_DATABASE_URL`; `internal/server/server_test.go` is
-  the end-to-end suite (ingest → API → viewer).
+  (fresh schema + `blob.Memory`) and skip without `TEST_DATABASE_URL`;
+  `internal/server/server_test.go` is the end-to-end suite (ingest → API → viewer).

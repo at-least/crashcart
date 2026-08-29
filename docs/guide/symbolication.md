@@ -80,6 +80,6 @@ frames just stay as addresses.
 
 ## Already-collected events
 
-Uploading a symbol file also symbolicates events from the last 48 hours
-(the [`COMPRESS_AFTER`](/deploy/configuration) setting). Older events keep
-their original frames.
+Uploading a symbol file also symbolicates the release's events already
+stored (the newest 2000, within `RETENTION_DAYS`), which may regroup them
+into the right issue.

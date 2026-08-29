@@ -7,6 +7,13 @@ Everything is set with environment variables.
 | Variable | Meaning |
 |---|---|
 | `DATABASE_URL` | Postgres connection URL |
+| `S3_BUCKET` | The bucket for event payloads and symbol files (dedicated to CrashCart: it sets the bucket's lifecycle rules) |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Credentials for it |
+| `S3_ENDPOINT` | The S3-compatible endpoint, e.g. `http://minio:9000`, `https://<account>.r2.cloudflarestorage.com`. Leave empty for AWS S3 |
+| `S3_REGION` | AWS region (`us-east-1` when empty); other providers usually ignore it |
+| `S3_PREFIX` | optional key prefix inside the bucket |
+
+See [The database and the object store](./postgres).
 
 Access is not configured here: the viewer uses user accounts and the API
 uses API keys, both managed in the viewer (**Account**) or with
@@ -24,13 +31,11 @@ uses API keys, both managed in the viewer (**Account**) or with
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RETENTION_DAYS` | `30` | Days to keep raw events and sessions. Issues and statistics are kept longer |
+| `RETENTION_DAYS` | `30` | Days to keep raw events and sessions (whole weekly partitions are dropped, so up to a week longer). Payloads in the bucket expire a week after that, symbol files after twice it. Issues and statistics are kept longer |
 | `PII_REDACT` | `false` | Scrub emails, phone numbers, tokens and user ids before storing events |
-| `COMPRESS_AFTER` | `48h` | How long events stay editable. Symbol uploads re-symbolicate events newer than this; with TimescaleDB, older data is compressed |
-| `CHUNK_INTERVAL` | `168h` (7 days) | Width of the TimescaleDB chunks that hold events and sessions. Keep a chunk (with its indexes) within about a quarter of the database's memory: `168h` suits up to a few tens of thousands of events a day, `24h` a few hundred thousand. Applies to new chunks; every query pays a little per chunk in the window, so do not go narrower than the volume needs |
 
 Changing a data setting and restarting is enough — it applies to existing
-data too.
+data too (the bucket's lifecycle rules are reset at startup).
 
 ## Optional features
 

@@ -1,14 +1,15 @@
 # CrashCart — Architecture
 
-Sentry-SDK-compatible crash tracking for self-hosters. One Go binary, one
-Postgres (with TimescaleDB), nothing else required.
+Sentry-SDK-compatible crash tracking for self-hosters. One Go binary, any
+Postgres, one S3-compatible bucket; nothing else required.
 
 ```
-Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres + TimescaleDB
-Browser    ──GET  /p/{slug}/…  (htmx) ──▶    │        (events, sessions: hypertables
+Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres 14+ (no extensions)
+Browser    ──GET  /p/{slug}/…  (htmx) ──▶    │        (events, sessions: weekly partitions
 Scripts    ──GET  /api/projects/… ──────▶    │         issues: stateful table
-sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   │         stats: continuous aggregates
+sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   │         stats: rollup tables + dirty keys
                                              │         jobs: SKIP LOCKED queue)
+                                             ├──▶ S3 bucket (payload packs, symbol files, upload chunks)
                                              └──▶ symbolicate sidecar (dSYM only, optional)
 ```
 
@@ -20,13 +21,16 @@ replays and client reports are accepted and dropped. The Sentry Web API and
 UI are not imitated; the viewer is our own.
 
 **Time is a TIMESTAMPTZ column, keys are natural.** `events.occurred_at` /
-`sessions.started_at` are the TimescaleDB time dimensions; a time window
-is a range on them, buckets are `time_bucket(INTERVAL …)`, policies take
-intervals. The primary keys are `(project_id, event_id, occurred_at)` and
+`sessions.started_at` are the partition keys (`PARTITION BY RANGE`, one
+partition per week, plus a DEFAULT partition so an insert never fails for
+want of one — a device with a wrong clock lands there and is moved into a
+real partition when it is created); a time window is a range on them and
+prunes to its partitions, buckets are `crashcart_bucket(…)`. The primary
+keys are `(project_id, event_id, occurred_at)` and
 `(project_id, sid, started_at)` — the SDK's own ids, so a resent envelope
 lands on the same row (`ON CONFLICT DO NOTHING`) and a session's status
 updates hit one row. `event_id` and `fingerprint` are `UUID` columns (16
-bytes in every key, index and compression segment); in Go they are
+bytes in every key and index); in Go they are
 `sentry.ID`, a 32-hex string that encodes/decodes itself as a Postgres
 UUID, so URLs, JSON and the SDK protocol never see dashes. An SDK event
 without a proper id gets one derived from the event body (sha256), so a
@@ -34,27 +38,55 @@ resend still dedupes. Every per-project table references `projects` with
 `ON DELETE CASCADE`: deleting a project deletes its data. Events are addressed by `event_id` everywhere (URLs,
 API, jobs); list pagination is a keyset cursor `(occurred_at, event_id)`.
 
-**Ingest is one transaction, no hot rows.** Per envelope: quota bump →
+**Ingest is one transaction, then the payloads.** Per envelope: quota bump →
 `releases` upsert (a no-op unless a new release / platform appears) → fold
 events by fingerprint → one `issues` upsert per distinct fingerprint →
 sampling decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events →
-sessions → jobs. Aggregates are *not* touched at ingest.
+payload spool → sessions → dirty-hour marks → jobs. The payloads go into
+`payload_spool` in the same transaction — as durable as the event row,
+nothing is ever lost — and every process drains the spool every 5 s
+(`retention.PackPayloads`): once 8 MB of payloads are waiting (their
+sizes are a column, so the check reads no data), claim the oldest rows up
+to that size with `SKIP LOCKED`, concatenate them (each was gzipped at
+ingest, so the spool is small and the packer does no compression) into
+one *pack* object, PUT it, set the events' `payload_ref`, delete the
+spool rows, commit. Nothing else triggers a pack: a quiet server keeps
+its payloads in the spool until 8 MB have gathered (the sweep drops the
+ones whose events retention already took), so the object store sees one
+PUT per 8 MB whatever the events' size, and no upload is bigger — PUT
+requests are what an S3 bill is made of. A failed PUT rolls the batch
+back for the next run; reads come from the spool until then, so the
+object store being down is invisible except for a growing spool. No
+aggregate row is written at ingest.
 
-**Aggregates are continuous aggregates.** `event_stats_hourly`,
-`issue_stats_hourly`, `release_health_daily` are TimescaleDB continuous
-aggregates with real-time aggregation on; `event_stats_daily` is a
-continuous aggregate on `event_stats_hourly` (the 30 / 90-day charts read
-one row per day instead of folding 24). They are functions of the raw
-tables: nothing to keep consistent, adding a dimension is a new view with
-history, import never recomputes them. The chart queries read
+**Statistics are rollups with dirty keys.** `event_stats_hourly_rolled`,
+`issue_stats_hourly_rolled` and `release_health_hourly_rolled` hold one
+row per project, hour and dimension. Every write to `events` / `sessions`
+marks its `(project, hour)` in `event_stats_dirty` / `session_stats_dirty`
+in the same transaction (one small upsert per hour touched; the hot row is
+per project and hour, and ingest already serializes per project on the
+quota row). The views the queries read — `event_stats_hourly`,
+`issue_stats_hourly`, `release_health_hourly` — take the rollup for clean
+hours and aggregate dirty hours live from the raw table, so they are exact
+at every instant: an event that arrives days after it occurred (a crash
+sent on the next app launch — the normal case for mobile) counts in its
+own hour the moment it is committed, and so does a session whose status
+changes or an event whose fingerprint moves after symbolication. Every
+minute, on one replica, `retention.Rollup` reads up to 500 dirty keys with
+their `gen`, recomputes those hours from the raw rows in one transaction,
+and deletes each key only if its `gen` is unchanged — a mark that landed
+meanwhile keeps it; no ingest transaction ever waits on the rollup. The
+current hour stays dirty by construction and is always computed live.
+The rollups keep 400 days, longer than the raw rows, and import / seed
+just mark what they wrote. The chart queries read
 `crashcart_event_stats(project, from, to, width)` — an inlined SQL function
-that is the hourly aggregate below a day's width and the daily roll-up from
-a day up, so the planner keeps one branch — fold into buckets of any width
-(`crashcart_bucket`), gap-fill (`crashcart_buckets`), rank the top releases
-and fold the rest into "other" — all in SQL, so the API and the viewer
-share one query per chart and the Go side only maps rows. Issue breakdowns (release / OS / device / environment / `tags.<key>`)
-are one scan with a `LATERAL VALUES` unpivot and a window function. Tag
-filters are containment (`tags @> {k: v}`) on a GIN index.
+over the hourly view — fold into buckets of any width (`crashcart_bucket`),
+gap-fill (`crashcart_buckets`), rank the top releases and fold the rest
+into "other" — all in SQL, so the API and the viewer share one query per
+chart and the Go side only maps rows. Issue breakdowns (release / OS /
+device / environment / `tags.<key>`) are one scan with a `LATERAL VALUES`
+unpivot and a window function. Tag filters are containment
+(`tags @> {k: v}`) on a GIN index.
 
 **Enumerations are Postgres types.** `event_level`, `session_status`,
 `issue_status`, `symbol_kind`, `job_kind`, `alert_type`, `channel_kind` are
@@ -70,41 +102,57 @@ issue seen on a release different from `resolved_release`.
 events of each issue are always stored; after that `sample_rate` of them;
 `fatal` always. Dropped events still increment `event_count`.
 
-**Symbolicate at ingest, store beside the payload.** `payload` is the
-event's JSON bytes exactly as the SDK sent them (`BYTEA`: the database never
-parses it, nothing queries inside it — everything filterable is a column or
-a `tags` key, extracted at ingest) and is never rewritten (it is TOASTed;
-rewriting it doubles the write). Symbolicated
-frames go in `events.symbols`; `fingerprint` and `error_location` are
-computed on the resolved frames, so the issue is right from the first
-event. ProGuard and source maps resolve in-process (mappings are loaded
+**Bytes live in the bucket, rows in Postgres.** The event payload — the
+JSON exactly as the SDK sent it — is gzipped on its own and packed with
+its neighbours into `events/<day>/<pack id>`; `events.payload_ref` is
+`<key>#<offset>#<length>`, and a read is one ranged GET (`store.Payload`
+reads the spool while the ref is still NULL). Everything
+filterable is a column or a `tags` key, extracted at ingest, so nothing
+ever queries inside a payload and it is never rewritten. Symbol files are
+at `symbols/<project>/<symbol_files.id>`, sentry-cli's upload chunks at
+`chunks/<sha1>` until assembled — keys derived from the row. An object
+that outlives its rows (a quota-rejected envelope's bytes in a pack, a
+deleted symbol file) needs no garbage collection: the bucket's lifecycle
+rules expire each prefix on the retention schedule. A row is a few
+hundred bytes, so the database stays small whatever the payload volume;
+the only readers of a payload are the event page, the JSON event
+endpoint, the symbolication job and export. The S3 client is minio-go
+(put, ranged get, delete, bucket lifecycle), which knows the S3-compatible
+providers' quirks. Symbolicated frames go in `events.symbols`; `fingerprint` and
+`error_location` are computed on the resolved frames, so the issue is
+right from the first event.
+
+**Symbolicate at ingest.** ProGuard and source maps resolve in-process (mappings are loaded
 from the database on first use and cached); dSYM goes through the sidecar
 with a per-envelope time budget (`ingest.SymbolicateBudget`) — only when
 the sidecar fails or runs out of time is a `symbolicate` job queued. An
 event with no mapping yet is stored as-is, without a job: uploading a
-symbol file re-queues the release's unsymbolicated events from the last
-`COMPRESS_AFTER` (`resymbolicate` fans out to one `symbolicate` job per
-event in a single `INSERT … SELECT`), which may move them to a new issue.
+symbol file re-queues the release's unsymbolicated events (the newest
+2000, anywhere in the retention window — `resymbolicate` fans out to one
+`symbolicate` job per event in a single `INSERT … SELECT`), which may move
+them to a new issue.
 `symbol_files.release` is NULL for a mapping matched by debug id only
 (`UNIQUE NULLS NOT DISTINCT` keeps one row per project/kind/release/filename).
 
-**Compression + retention are policies.** Chunks older than `COMPRESS_AFTER`
-(48 h) are compressed (`segmentby project_id, fingerprint`; typically
-10–20× on Sentry payloads). Retention drops whole chunks after
-`RETENTION_DAYS` (so up to one chunk width longer); the aggregates keep
-400 days and are compressed after 30 days (past every refresh window). The chunk width is `CHUNK_INTERVAL` (7 days: right for
-self-hosters at tens of thousands of events a day, and every query pays
-planning time per chunk in its window; a busier deployment narrows it to
-fit a chunk in a quarter of memory). Policies and the chunk width are
-reconciled from the environment at startup (`internal/retention`): an
-existing policy is altered in place (its job keeps its id and history),
-and the width applies to new chunks only, so it can follow the traffic.
+**Retention is a DROP TABLE and a lifecycle rule.** `internal/retention`
+keeps weekly partitions (`events_pYYYYMMDD`, Monday-aligned) from one week
+before the retention window to two weeks ahead — at startup and on the
+hourly sweep — and drops a partition once it ends before
+`now − RETENTION_DAYS` (rows live up to a week longer; the default
+partition is swept row by row, it only ever holds clock outliers). A week
+that already has rows in the default partition when its partition is
+created gets them moved in the same transaction (standalone table → move →
+`ATTACH PARTITION`). The bucket's lifecycle rules, set at startup, expire
+`events/` after `RETENTION_DAYS + 7` days, `symbols/` after
+`2 × RETENTION_DAYS` (when `ExpireSymbolFiles` drops the rows), `chunks/`
+after a day; nothing lists or deletes objects one by one. The rollups keep
+400 days.
 
 **Jobs live in Postgres.** `jobs` + `UPDATE … SKIP LOCKED RETURNING`: a
 worker leases a batch (`locked_until`, attempt counted) in one short
 transaction, runs the handlers with nothing held open (they make HTTP
 calls), then deletes or reschedules each job. An expired lease — the worker
-died — makes the job claimable again. Kinds: `symbolicate {event, at}` (the time keeps the lookup to one chunk),
+died — makes the job claimable again. Kinds: `symbolicate {event, at}` (the time keeps the lookup to one partition),
 `resymbolicate {release}`, `alert {type, fingerprint}`. Retries with
 backoff; after 8 attempts a job is dead: never claimed again, kept with its
 `last_error` for a week (`DeadJobs`), then dropped. A partial unique index
@@ -115,10 +163,10 @@ connection per process — `store.Listener`) and poll every 30 s as the
 fallback; the SSE "new issues" stream wakes the same way on
 `crashcart_issues` (new issue / regression, payload = project id).
 
-**Scheduled work runs on one replica.** The spike check and the retention
-sweep tick in every process, but each tick
-takes a Postgres advisory lock (`store.RunAsLeader`) and skips when another
-replica holds it.
+**Scheduled work runs on one replica.** The stats rollup (every minute),
+the spike check and the retention sweep (hourly) tick in every process,
+but each tick takes a Postgres advisory lock (`store.RunAsLeader`) and
+skips when another replica holds it.
 
 **Access is users and API keys, in Postgres.** The viewer needs a signed-in
 user: `users` (email, bcrypt hash) and `user_sessions` (the cookie token
@@ -148,25 +196,30 @@ theme, and the SSE "new issues" banner.
 |---|---|---|---|
 | users / user_sessions / api_keys | table | id / token_hash / id | viewer accounts, session cookies (hashed), API keys (hashed) |
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
-| events | hypertable (`CHUNK_INTERVAL` chunks, 7 days) | (project_id, event_id, occurred_at) | compressed after 48 h |
-| sessions | hypertable | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
+| events | weekly partitions + default | (project_id, event_id, occurred_at) | columns + `payload_ref` into a pack in the bucket |
+| payload_spool | table | (project_id, event_id, occurred_at) | payloads not yet packed (seconds to a minute; longer while the bucket is down) |
+| sessions | weekly partitions + default | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
 | releases | table | (project_id, release) | every release seen, platforms, first_seen |
 | issues | table | (project_id, fingerprint) | stateful |
-| symbol_files | table | (project_id, kind, release, filename) | BYTEA in Postgres |
+| symbol_files | table | (project_id, kind, release, filename) | metadata; the bytes are `symbols/<project>/<id>` in the bucket |
 | project_usage | table | (project_id, day) | events received per UTC day; daily quota |
 | jobs | table | id | queue |
 | alert_rules / alert_channels | table | | per project |
-| event_stats_hourly | cagg | bucket, project, release, platform, level | events / crashes / errors |
-| event_stats_daily | cagg on event_stats_hourly | bucket, project, release, platform, level | the same, per day; `crashcart_event_stats(…)` picks one by width |
-| issue_stats_hourly | cagg | bucket, project, fingerprint | sparklines |
-| release_health_daily | cagg | bucket, project, release | total / crashed / errored sessions |
+| event_stats_dirty / session_stats_dirty | table | (project_id, bucket) | hours awaiting rollup, with `gen` |
+| event_stats_hourly_rolled → event_stats_hourly | table → view | bucket, project, release, platform, level | events / crashes / errors; `crashcart_event_stats(…)` reads the view |
+| issue_stats_hourly_rolled → issue_stats_hourly | table → view | bucket, project, fingerprint | sparklines |
+| release_health_hourly_rolled → release_health_hourly | table → view | bucket, project, release | total / crashed / errored sessions |
+| *(bucket)* `events/<day>/<pack>`, `symbols/`, `chunks/` | objects | pack: `payload_ref`; others derived from the row | expired by lifecycle rule |
 
 ## Write cost per event
 
 Non-exception event: 1 insert. Exception event: 1 insert + 1 issue upsert
-(+1 `stored_count` bump) + 0–1 job row; symbolication via the worker adds one
-UPDATE of the small columns (the TOASTed payload is not rewritten). Aggregate
-refresh is per bucket, compression per chunk.
+(+1 `stored_count` bump) + 0–1 job row; plus 1 spool insert per stored
+event (deleted again within a minute) and one dirty-hour upsert per hour
+an envelope touches; one object PUT per 1000 payloads or per minute.
+Symbolication via the worker adds one UPDATE of the small columns (the
+payload is never rewritten) and re-marks the hour. Rollup is per dirty
+hour, retention per partition.
 
 ## Export / import
 
@@ -175,19 +228,27 @@ Spec: `docs/reference/export-format.md` (change it before the code).
 `crashcart export` streams NDJSON: `{"t":"<table>", ...columns}`. Rows refer
 to projects by `project` slug (never by id), timestamps are RFC3339 UTC,
 events / sessions carry their natural keys, JSON columns are embedded,
-bytes are base64. `crashcart import` upserts (events/sessions
-`ON CONFLICT DO NOTHING`, everything else on its key) inside one
-transaction, so importing twice or onto live data is safe and a failed
-import changes nothing. Aggregates are not exported; they recompute.
+bytes are base64; payloads and symbol files are read from the bucket and
+embedded (a row whose object is gone is exported without it).
+`crashcart import` upserts (events/sessions `ON CONFLICT DO NOTHING`,
+everything else on its key) inside one transaction and writes the objects
+as it goes, so importing twice or onto live data is safe and a failed
+import changes nothing in the database (objects it wrote expire by
+lifecycle). Rollups are not exported; the imported hours are marked dirty
+and recomputed.
 
-## Why TimescaleDB is required
+## Why plain Postgres and a bucket
 
-The schema depends on the Community (TSL) half of TimescaleDB: compression
-(`segmentby project_id, fingerprint`), chunk-drop retention and continuous
-aggregates with real-time aggregation. `db.Init` creates
-the extension and checks `timescaledb.license = 'timescale'`; a database
-with the Apache-2 build (what most managed hosts ship) or without the
-extension is refused at startup with `ErrNoTimescale`.
+Postgres without extensions runs anywhere — a container, a package, RDS,
+Cloud SQL, Neon, Supabase — and `pg_dump` / `pg_upgrade` stay ordinary.
+What an extension would have added (compression, chunk-drop retention,
+continuous aggregates) is covered by keeping the bytes out of the database
+(the rows are small enough not to need compressing), weekly partitions
+(retention is a `DROP TABLE`) and the dirty-key rollups (exact for late
+data by construction — a policy that only refreshes a recent window is
+not). The bucket is the one dependency added: it is what makes the bytes
+cheap, expirable without code and shared between replicas, and every
+environment from a laptop (MinIO) to any cloud has one.
 
 **No migrations.** `internal/db/schema.sql` is the whole schema; `db.Init`
 creates it on the first start against an empty database (under an advisory

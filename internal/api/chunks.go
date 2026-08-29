@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/symbolicate"
 )
 
@@ -22,8 +22,9 @@ import (
 //     {"<file sha1>": {"name", "chunks": [sha1…], "debug_id"?}} → state per file;
 //     sentry-cli uploads whatever is reported missing and polls until "ok".
 //
-// Chunks live in upload_chunks (Postgres, so any replica can assemble) and
-// are deleted on assembly or expired by the retention sweep.
+// Chunks go to the object store (blob.ChunkKey, so any replica can
+// assemble) and are deleted on assembly; the ones never assembled expire
+// by the bucket's lifecycle rule.
 
 const (
 	chunkSize        = 8 << 20
@@ -75,7 +76,7 @@ func (h *Handler) sentryChunkUploadPost(w http.ResponseWriter, r *http.Request) 
 			h.fail(w, badRequest("chunk checksum mismatch: "+part.FileName()))
 			return
 		}
-		if err := h.Store.PutUploadChunk(r.Context(), sqlc.PutUploadChunkParams{Sha1: strings.ToLower(part.FileName()), Data: data}); err != nil {
+		if err := h.Store.Blobs.Put(r.Context(), blob.ChunkKey(strings.ToLower(part.FileName())), data); err != nil {
 			h.fail(w, err)
 			return
 		}
@@ -114,33 +115,27 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 		for i, c := range f.Chunks {
 			chunks[i] = strings.ToLower(c)
 		}
-		present, err := h.Store.UploadChunksPresent(ctx, chunks)
-		if err != nil {
-			h.fail(w, err)
-			return
-		}
-		have := map[string]bool{}
-		for _, c := range present {
-			have[c] = true
-		}
+		// Fetching is the presence check: sentry-cli's first assemble call
+		// (before any upload) sees every chunk missing, the last sees none.
+		parts := make([][]byte, len(chunks))
 		missing := []string{}
-		for _, c := range chunks {
-			if !have[c] {
+		var size int
+		for i, c := range chunks {
+			data, err := h.Store.Blobs.Get(ctx, blob.ChunkKey(c))
+			if errors.Is(err, blob.ErrNotFound) {
 				missing = append(missing, c)
+				continue
 			}
+			if err != nil {
+				h.fail(w, err)
+				return
+			}
+			parts[i] = data
+			size += len(data)
 		}
 		if len(missing) > 0 || len(chunks) == 0 {
 			out[checksum] = assembleResponse{State: "not_found", MissingChunks: missing}
 			continue
-		}
-		parts, err := h.Store.GetUploadChunks(ctx, chunks)
-		if err != nil {
-			h.fail(w, err)
-			return
-		}
-		var size int
-		for _, c := range parts {
-			size += len(c.Data)
 		}
 		if size > symbolicate.MaxUpload {
 			out[checksum] = assembleResponse{State: "error", MissingChunks: []string{}, Detail: "file exceeds 50 MB"}
@@ -148,7 +143,7 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 		}
 		buf := bytes.NewBuffer(make([]byte, 0, size))
 		for _, c := range parts {
-			buf.Write(c.Data)
+			buf.Write(c)
 		}
 		sum := sha1.Sum(buf.Bytes())
 		if hex.EncodeToString(sum[:]) != checksum {
@@ -169,10 +164,13 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
-		if err := h.Store.DeleteUploadChunks(ctx, chunks); err != nil {
-			h.Log.Warn("chunk-upload: chunks not deleted (the retention sweep will)", "err", err)
+		for _, c := range chunks {
+			if err := h.Store.Blobs.Delete(ctx, blob.ChunkKey(c)); err != nil {
+				h.Log.Warn("chunk-upload: chunk not deleted (the lifecycle rule will)", "err", err)
+				break
+			}
 		}
-		dif := sentryDebugFileFrom(sqlc.ListSymbolFilesRow(rows[0]), checksum)
+		dif := sentryDebugFileFrom(rows[0], checksum)
 		out[checksum] = assembleResponse{State: "ok", MissingChunks: []string{}, Dif: &dif}
 	}
 	writeJSON(w, http.StatusOK, out)

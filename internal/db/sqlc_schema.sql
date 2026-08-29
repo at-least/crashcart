@@ -19,9 +19,9 @@ CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPT
 CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT) RETURNS SETOF TIMESTAMPTZ
     LANGUAGE SQL IMMUTABLE AS $$ SELECT b FROM generate_series(from_at, to_at, make_interval(secs => width)) AS b WHERE b < to_at $$;
 
--- sqlc-only mirror of internal/db/schema.sql (no TimescaleDB
--- DDL). Continuous aggregates appear here as plain tables so queries
--- type-check. Keep in sync with schema.sql.
+-- sqlc-only mirror of internal/db/schema.sql (no partitioning DDL). The
+-- stats views appear here as plain tables so queries type-check. Keep in
+-- sync with schema.sql.
 
 CREATE TABLE users (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -82,8 +82,19 @@ CREATE TABLE events (
     fingerprint    UUID,
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    payload        BYTEA NOT NULL,
     symbols        JSONB,
+    payload_ref    TEXT,
+    PRIMARY KEY (project_id, event_id, occurred_at)
+);
+
+
+CREATE TABLE payload_spool (
+    project_id  BIGINT NOT NULL,
+    event_id    UUID NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    data        BYTEA NOT NULL,
+    size        INTEGER NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, event_id, occurred_at)
 );
 
@@ -136,15 +147,8 @@ CREATE TABLE symbol_files (
     debug_id    TEXT,
     filename    TEXT NOT NULL,
     size        BIGINT NOT NULL,
-    data        BYTEA NOT NULL,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename)
-);
-
-CREATE TABLE upload_chunks (
-    sha1       TEXT PRIMARY KEY,
-    data       BYTEA NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE project_usage (
@@ -185,8 +189,20 @@ CREATE TABLE alert_channels (
 );
 
 
--- continuous aggregates (as tables for sqlc)
-CREATE TABLE event_stats_hourly (
+-- stats: dirty keys, rollup tables, and the views (as tables for sqlc)
+CREATE TABLE event_stats_dirty (
+    project_id BIGINT NOT NULL,
+    bucket     TIMESTAMPTZ NOT NULL,
+    gen        BIGINT NOT NULL DEFAULT 1,
+    PRIMARY KEY (project_id, bucket)
+);
+CREATE TABLE session_stats_dirty (
+    project_id BIGINT NOT NULL,
+    bucket     TIMESTAMPTZ NOT NULL,
+    gen        BIGINT NOT NULL DEFAULT 1,
+    PRIMARY KEY (project_id, bucket)
+);
+CREATE TABLE event_stats_hourly_rolled (
     bucket     TIMESTAMPTZ NOT NULL,
     project_id BIGINT NOT NULL,
     release    TEXT NOT NULL,
@@ -194,10 +210,27 @@ CREATE TABLE event_stats_hourly (
     level      event_level NOT NULL,
     events     BIGINT NOT NULL,
     crashes    BIGINT NOT NULL,
-    errors     BIGINT NOT NULL
+    errors     BIGINT NOT NULL,
+    PRIMARY KEY (project_id, bucket, release, platform, level)
+);
+CREATE TABLE issue_stats_hourly_rolled (
+    bucket      TIMESTAMPTZ NOT NULL,
+    project_id  BIGINT NOT NULL,
+    fingerprint UUID NOT NULL,
+    events      BIGINT NOT NULL,
+    PRIMARY KEY (project_id, fingerprint, bucket)
+);
+CREATE TABLE release_health_hourly_rolled (
+    bucket     TIMESTAMPTZ NOT NULL,
+    project_id BIGINT NOT NULL,
+    release    TEXT NOT NULL,
+    total      BIGINT NOT NULL,
+    crashed    BIGINT NOT NULL,
+    errored    BIGINT NOT NULL,
+    PRIMARY KEY (project_id, bucket, release)
 );
 
-CREATE TABLE event_stats_daily (
+CREATE TABLE event_stats_hourly (
     bucket     TIMESTAMPTZ NOT NULL,
     project_id BIGINT NOT NULL,
     release    TEXT NOT NULL,
@@ -219,7 +252,7 @@ CREATE TABLE issue_stats_hourly (
     events      BIGINT NOT NULL
 );
 
-CREATE TABLE release_health_daily (
+CREATE TABLE release_health_hourly (
     bucket     TIMESTAMPTZ NOT NULL,
     project_id BIGINT NOT NULL,
     release    TEXT NOT NULL,

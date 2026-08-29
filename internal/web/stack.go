@@ -63,8 +63,8 @@ func frameLocation(f sentry.Frame) string {
 
 // stacksOf builds the display stacks of an event: the symbolicated frames
 // (events.symbols) replace the primary exception's frames when present.
-func stacksOf(e sqlc.Event) []Stack {
-	ev := parsePayload(e)
+func stacksOf(e sqlc.Event, payload []byte) []Stack {
+	ev := parsePayload(e, payload)
 	if ev == nil {
 		return nil
 	}
@@ -92,12 +92,13 @@ func stacksOf(e sqlc.Event) []Stack {
 	return out
 }
 
-// parsePayload re-parses the stored Sentry event (never rewritten).
-func parsePayload(e sqlc.Event) *sentry.Event {
-	if len(e.Payload) == 0 {
+// parsePayload re-parses the stored Sentry event (never rewritten); nil
+// when the object store has no payload for it.
+func parsePayload(e sqlc.Event, payload []byte) *sentry.Event {
+	if len(payload) == 0 {
 		return nil
 	}
-	return sentry.ParseEvent(string(e.EventID), e.OccurredAt, e.Payload, time.Now().UTC())
+	return sentry.ParseEvent(string(e.EventID), e.OccurredAt, payload, time.Now().UTC())
 }
 
 // KV is one key/value line of a context group.
@@ -173,8 +174,8 @@ func flatten(m map[string]any) []KV {
 }
 
 // crumbsOf decodes the breadcrumbs column, newest first, capped at 30.
-func crumbsOf(e sqlc.Event) []sentry.Breadcrumb {
-	ev := parsePayload(e)
+func crumbsOf(e sqlc.Event, payload []byte) []sentry.Breadcrumb {
+	ev := parsePayload(e, payload)
 	if ev == nil {
 		return nil
 	}

@@ -20,10 +20,10 @@ is it different from Sentry?" Honest answer below, in both directions.
 | | CrashCart | Sentry (SaaS or self-hosted) |
 |---|---|---|
 | Scope | Error tracking and release health, nothing else | Errors, performance tracing, profiling, session replay, logs, uptime, cron monitoring |
-| Users | One viewer password, shared. API keys for automation | Accounts, teams, roles, SSO |
-| Running it | One binary + Postgres. 512 MB of RAM is plenty | Self-hosted needs 16 GB RAM, 4 cores and ~20 services; or the hosted plans |
+| Users | User accounts for the viewer, API keys for automation; no roles | Accounts, teams, roles, SSO |
+| Running it | One binary + Postgres + an S3 bucket. 512 MB of RAM is plenty | Self-hosted needs 16 GB RAM, 4 cores and ~20 services; or the hosted plans |
 | Integrations | Webhooks and Telegram | Slack, Jira, GitHub, PagerDuty and dozens more |
-| Ownership of the data | Your Postgres. No telemetry, nothing leaves the server unless you add an alert channel | Sentry's cloud, or your own self-hosted install |
+| Ownership of the data | Your Postgres and your bucket. No telemetry, nothing leaves the server unless you add an alert channel | Sentry's cloud, or your own self-hosted install |
 | Price | Free and MIT; what your server costs | Per-event plans; self-hosted is free |
 
 Two more things to know before you switch:

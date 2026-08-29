@@ -1,14 +1,16 @@
 -- CrashCart schema, created whole on the first start against an empty
--- database (internal/db.Init); there is no migration history. Requires
--- TimescaleDB (Community build: compression and continuous aggregates).
--- Time-series tables (events, sessions) carry
--- their time in a TIMESTAMPTZ column that is the hypertable dimension; a
--- time window is a range on it. Their unique key includes that column (a
--- hypertable requires it). Hypertables, compression settings and the
--- continuous aggregates follow the tables at the end of this file.
+-- database (internal/db.Init); there is no migration history. Plain
+-- Postgres 14+: no extensions. The time-series tables (events, sessions)
+-- are partitioned by week on their TIMESTAMPTZ time column (a time window
+-- is a range on it; their primary key includes it, as partitioning
+-- requires); internal/retention creates the partitions ahead of time and
+-- drops the expired ones. The statistics are rollup tables kept current by
+-- a dirty-key job (the stats section at the end of this file). Event
+-- payloads, symbol files and upload chunks are not here at all: they live
+-- in the object store (internal/blob), addressed by the row's key.
 
 -- The one definition of "crash": fatal, or an unhandled exception. Used by
--- the continuous aggregates, the spike check and the event filters.
+-- the rollups, the spike check and the event filters.
 -- Enumerations: one definition, sqlc generates the Go constants.
 CREATE TYPE event_level    AS ENUM ('fatal', 'error', 'warning', 'info', 'debug');
 CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnormal');
@@ -22,7 +24,7 @@ CREATE FUNCTION crashcart_is_crash(level event_level, handled BOOLEAN) RETURNS B
     LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
 
 -- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
--- t.Truncate(width): the chart queries fold the hourly aggregates with
+-- t.Truncate(width): the chart queries fold the hourly rollups with
 -- these (4 h / 1 d buckets for longer windows) and gap-fill with
 -- crashcart_buckets, so every bucket of a window comes back from SQL.
 CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPTZ
@@ -80,8 +82,16 @@ CREATE TABLE projects (
 
 -- ── events ─────────────────────────────────────────────────────────────
 
+-- Partitioned by week of occurred_at (internal/retention creates the
+-- partitions ahead and drops expired ones; retention is a DROP TABLE). The
+-- DEFAULT partition catches what no weekly partition covers — a device with
+-- a wrong clock — so an insert never fails for want of a partition; the
+-- partition job moves such rows into a real partition when it creates one.
+-- The payload (the event as the SDK sent it) goes through payload_spool
+-- into a pack of many payloads in the object store; payload_ref says
+-- which and where.
 CREATE TABLE events (
-    occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (time dimension)
+    occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (partition key)
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     event_id       UUID NOT NULL,                    -- Sentry event_id (or a derived one); the dedupe key
     level          event_level NOT NULL,                    -- fatal | error | warning | info | debug
@@ -101,20 +111,41 @@ CREATE TABLE events (
     fingerprint    UUID,                             -- issues.fingerprint (null when nothing to group)
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    payload        BYTEA NOT NULL,                   -- the Sentry event exactly as sent (JSON bytes); never parsed or rewritten by the database
     symbols        JSONB,                            -- symbolicated frames (written once)
+    payload_ref    TEXT,                             -- blob.Ref of the raw event in its pack (NULL: still in payload_spool, or never stored)
     PRIMARY KEY (project_id, event_id, occurred_at)  -- a resent envelope lands on the same key
-);
+) PARTITION BY RANGE (occurred_at);
+CREATE TABLE events_default PARTITION OF events DEFAULT;
 CREATE INDEX events_project_time ON events (project_id, occurred_at DESC, event_id DESC);
 CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, occurred_at DESC);
 CREATE INDEX events_project_user ON events (project_id, user_id, occurred_at DESC) WHERE user_id IS NOT NULL;
 CREATE INDEX events_project_crash ON events (project_id, occurred_at DESC) WHERE crashcart_is_crash(level, handled);
 CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filters are `tags @> {k: v}`
 
+
+-- ── payload spool ──────────────────────────────────────────────────────
+-- The raw payload of a stored event, written in the ingest transaction
+-- (so it is exactly as durable as the event row) and drained a batch at a
+-- time into a pack object in the object store (retention.PackPayloads),
+-- which then sets events.payload_ref and deletes the row. The table only
+-- ever holds the last few seconds of payloads — longer if the object
+-- store is down, which is the point.
+
+CREATE TABLE payload_spool (
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id    UUID NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    data        BYTEA NOT NULL,                      -- the payload, gzipped (as it will sit in the pack)
+    size        INTEGER NOT NULL,                    -- octet_length(data); the pack trigger sums it without touching data
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, event_id, occurred_at)
+);
+CREATE INDEX payload_spool_created ON payload_spool (created_at);
+
 -- ── sessions (release health) ──────────────────────────────────────────
 
 CREATE TABLE sessions (
-    started_at  TIMESTAMPTZ NOT NULL,                -- time dimension
+    started_at  TIMESTAMPTZ NOT NULL,                -- partition key
     project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     sid         TEXT NOT NULL,                       -- SDK session id; aggregate rows get a random one
     release     TEXT NOT NULL,
@@ -122,7 +153,8 @@ CREATE TABLE sessions (
     status      session_status NOT NULL,                       -- ok | exited | crashed | errored | abnormal
     count       INTEGER NOT NULL DEFAULT 1,          -- aggregate session items carry counts
     PRIMARY KEY (project_id, sid, started_at)        -- updates of one session hit the same row
-);
+) PARTITION BY RANGE (started_at);
+CREATE TABLE sessions_default PARTITION OF sessions DEFAULT;
 CREATE INDEX sessions_project_release ON sessions (project_id, release, started_at DESC);
 
 -- ── releases ───────────────────────────────────────────────────────────
@@ -168,6 +200,9 @@ CREATE INDEX issues_project_last_seen ON issues (project_id, last_seen DESC);
 CREATE INDEX issues_project_status ON issues (project_id, status, last_seen DESC);
 
 -- ── symbol files ───────────────────────────────────────────────────────
+-- The bytes are in the object store at blob.SymbolKey(project_id, id);
+-- sentry-cli's upload chunks go straight there too (blob.ChunkKey) and
+-- expire by lifecycle rule.
 
 CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -177,19 +212,10 @@ CREATE TABLE symbol_files (
     debug_id    TEXT,                                -- dSYM UUID / proguard mapping uuid
     filename    TEXT NOT NULL,
     size        BIGINT NOT NULL,
-    data        BYTEA NOT NULL,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename)
 );
 CREATE INDEX symbol_files_debug_id ON symbol_files (project_id, debug_id) WHERE debug_id IS NOT NULL;
-
--- ── upload chunks (sentry-cli chunked upload; assembled into symbol_files) ──
-
-CREATE TABLE upload_chunks (
-    sha1       TEXT PRIMARY KEY,
-    data       BYTEA NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 
 -- ── project usage (daily quota) ────────────────────────────────────────
 -- One row per project and UTC day, bumped in the ingest transaction; the
@@ -257,113 +283,110 @@ CREATE TRIGGER issues_notify_regression AFTER UPDATE OF status ON issues
     FOR EACH ROW WHEN (NEW.status = 'regression' AND OLD.status IS DISTINCT FROM NEW.status)
     EXECUTE FUNCTION crashcart_notify_issue();
 
--- ── hypertables, compression, continuous aggregates ────────────────────
+-- ── statistics: rollup tables, dirty keys, views ───────────────────────
+-- The charts read hourly rollups (one row per project, hour and dimension)
+-- instead of the raw tables. They are kept by a dirty-key job rather than
+-- at ingest: a write to events / sessions marks its (project, hour) dirty
+-- in the same transaction (a hot row per project and hour, no aggregate
+-- row is touched); the views below read the rollup for clean hours and
+-- compute dirty hours live from the raw table, so they are exact at every
+-- moment — including for events that arrive days after they occurred, the
+-- normal case for a crash sent on the next app launch. internal/retention
+-- recomputes dirty hours every minute (all of them, from the raw rows: an
+-- update — a session's status, an event's fingerprint after
+-- symbolication — is handled like an insert) and clears the keys whose
+-- gen did not move meanwhile. Buckets are UTC hour starts; the rollups
+-- keep 400 days, longer than the raw rows.
 
--- Chunk width: the CHUNK_INTERVAL default; internal/retention sets it from the environment at startup.
-SELECT create_hypertable('events', 'occurred_at', chunk_time_interval => INTERVAL '7 days', if_not_exists => true);
-ALTER TABLE events SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'project_id, fingerprint',
-    timescaledb.compress_orderby = 'occurred_at DESC'
+CREATE TABLE event_stats_dirty (
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    bucket     TIMESTAMPTZ NOT NULL,                 -- hour of occurred_at
+    gen        BIGINT NOT NULL DEFAULT 1,            -- bumped on every mark; the job clears a key only at the gen it read
+    PRIMARY KEY (project_id, bucket)
+);
+CREATE TABLE session_stats_dirty (
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    bucket     TIMESTAMPTZ NOT NULL,                 -- hour of started_at
+    gen        BIGINT NOT NULL DEFAULT 1,
+    PRIMARY KEY (project_id, bucket)
 );
 
-SELECT create_hypertable('sessions', 'started_at', chunk_time_interval => INTERVAL '7 days', if_not_exists => true);
-ALTER TABLE sessions SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'project_id, release',
-    timescaledb.compress_orderby = 'started_at DESC'
+CREATE TABLE event_stats_hourly_rolled (
+    bucket     TIMESTAMPTZ NOT NULL,
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    release    TEXT NOT NULL,                        -- '' when the event had none
+    platform   TEXT NOT NULL,
+    level      event_level NOT NULL,
+    events     BIGINT NOT NULL,
+    crashes    BIGINT NOT NULL,
+    errors     BIGINT NOT NULL,
+    PRIMARY KEY (project_id, bucket, release, platform, level)
+);
+CREATE TABLE issue_stats_hourly_rolled (
+    bucket      TIMESTAMPTZ NOT NULL,
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    fingerprint UUID NOT NULL,
+    events      BIGINT NOT NULL,
+    PRIMARY KEY (project_id, fingerprint, bucket)
+);
+CREATE INDEX issue_stats_hourly_rolled_bucket ON issue_stats_hourly_rolled (project_id, bucket);
+CREATE TABLE release_health_hourly_rolled (
+    bucket     TIMESTAMPTZ NOT NULL,
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    release    TEXT NOT NULL,
+    total      BIGINT NOT NULL,
+    crashed    BIGINT NOT NULL,
+    errored    BIGINT NOT NULL,
+    PRIMARY KEY (project_id, bucket, release)
 );
 
--- ── continuous aggregates ──────────────────────────────────────────────
--- Buckets are TIMESTAMPTZ starts (UTC-aligned). Real-time aggregation is
--- on so the newest bucket includes rows not yet materialized.
+-- The live half of each view: the dirty hours, aggregated from the raw
+-- rows. (A dirty key joins its hour of events through the
+-- events_project_time index.)
+CREATE VIEW event_stats_hourly AS
+SELECT r.bucket, r.project_id, r.release, r.platform, r.level, r.events, r.crashes, r.errors
+FROM event_stats_hourly_rolled r
+WHERE NOT EXISTS (SELECT 1 FROM event_stats_dirty d WHERE d.project_id = r.project_id AND d.bucket = r.bucket)
+UNION ALL
+SELECT d.bucket, d.project_id, COALESCE(e.release, ''), COALESCE(e.platform, ''), e.level,
+       count(*)::bigint,
+       count(*) FILTER (WHERE crashcart_is_crash(e.level, e.handled))::bigint,
+       count(*) FILTER (WHERE e.level = 'error' AND e.handled IS NOT false)::bigint
+FROM event_stats_dirty d
+JOIN events e ON e.project_id = d.project_id AND e.occurred_at >= d.bucket AND e.occurred_at < d.bucket + INTERVAL '1 hour'
+GROUP BY d.bucket, d.project_id, 3, 4, e.level;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS event_stats_hourly
-WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-SELECT time_bucket(INTERVAL '1 hour', occurred_at) AS bucket,
-       project_id,
-       COALESCE(release, '')  AS release,
-       COALESCE(platform, '') AS platform,
-       level,
-       count(*)                                                        AS events,
-       count(*) FILTER (WHERE crashcart_is_crash(level, handled))        AS crashes,
-       count(*) FILTER (WHERE level = 'error' AND handled IS NOT false) AS errors
-FROM events
-GROUP BY 1, 2, 3, 4, 5
-WITH NO DATA;
+CREATE VIEW issue_stats_hourly AS
+SELECT r.bucket, r.project_id, r.fingerprint, r.events
+FROM issue_stats_hourly_rolled r
+WHERE NOT EXISTS (SELECT 1 FROM event_stats_dirty d WHERE d.project_id = r.project_id AND d.bucket = r.bucket)
+UNION ALL
+SELECT d.bucket, d.project_id, e.fingerprint, count(*)::bigint
+FROM event_stats_dirty d
+JOIN events e ON e.project_id = d.project_id AND e.occurred_at >= d.bucket AND e.occurred_at < d.bucket + INTERVAL '1 hour'
+WHERE e.fingerprint IS NOT NULL
+GROUP BY d.bucket, d.project_id, e.fingerprint;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS issue_stats_hourly
-WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-SELECT time_bucket(INTERVAL '1 hour', occurred_at) AS bucket,
-       project_id,
-       fingerprint,
-       count(*) AS events
-FROM events
-WHERE fingerprint IS NOT NULL
-GROUP BY 1, 2, 3
-WITH NO DATA;
+CREATE VIEW release_health_hourly AS
+SELECT r.bucket, r.project_id, r.release, r.total, r.crashed, r.errored
+FROM release_health_hourly_rolled r
+WHERE NOT EXISTS (SELECT 1 FROM session_stats_dirty d WHERE d.project_id = r.project_id AND d.bucket = r.bucket)
+UNION ALL
+SELECT d.bucket, d.project_id, s.release,
+       sum(s.count)::bigint,
+       COALESCE(sum(s.count) FILTER (WHERE s.status = 'crashed'), 0)::bigint,
+       COALESCE(sum(s.count) FILTER (WHERE s.status IN ('errored', 'abnormal')), 0)::bigint
+FROM session_stats_dirty d
+JOIN sessions s ON s.project_id = d.project_id AND s.started_at >= d.bucket AND s.started_at < d.bucket + INTERVAL '1 hour'
+GROUP BY d.bucket, d.project_id, s.release;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS release_health_daily
-WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-SELECT time_bucket(INTERVAL '1 day', started_at) AS bucket,
-       project_id,
-       release,
-       sum(count)                                                    AS total,
-       sum(count) FILTER (WHERE status = 'crashed')                  AS crashed,
-       sum(count) FILTER (WHERE status IN ('errored', 'abnormal'))   AS errored
-FROM sessions
-GROUP BY 1, 2, 3
-WITH NO DATA;
-
--- Daily roll-up of the hourly events aggregate (a continuous aggregate on
--- a continuous aggregate): the 30 / 90-day charts read one row per day
--- instead of folding 24 hourly rows. Same dimensions, summed.
-CREATE MATERIALIZED VIEW IF NOT EXISTS event_stats_daily
-WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-SELECT time_bucket(INTERVAL '1 day', bucket) AS bucket,
-       project_id, release, platform, level,
-       sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
-FROM event_stats_hourly
-GROUP BY 1, 2, 3, 4, 5
-WITH NO DATA;
-
--- crashcart_event_stats is the chart queries' one source: the hourly
--- aggregate for bucket widths below a day, the daily roll-up from a day up
--- (a day bucket implies a day-aligned from_at). Inlined into the caller,
--- so the width test is a constant per branch and the planner drops the
--- other one.
+-- crashcart_event_stats is the chart queries' one source: the hourly rows
+-- of a project in a window. Inlined into the caller. (width is the bucket
+-- width the caller folds to; kept in the signature so the queries read
+-- the same whatever the source's granularity.)
 CREATE FUNCTION crashcart_event_stats(pid BIGINT, from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT)
 RETURNS SETOF event_stats_hourly
 LANGUAGE SQL STABLE AS $$
     SELECT bucket, project_id, release, platform, level, events, crashes, errors FROM event_stats_hourly
-    WHERE width < 86400 AND project_id = pid AND bucket >= from_at AND bucket < to_at
-    UNION ALL
-    SELECT bucket, project_id, release, platform, level, events, crashes, errors FROM event_stats_daily
-    WHERE width >= 86400 AND project_id = pid AND bucket >= from_at AND bucket < to_at
+    WHERE project_id = pid AND bucket >= from_at AND bucket < to_at
 $$;
-
--- The aggregates keep 400 days; their older chunks are compressed (policy
--- added by internal/retention). A refresh into a compressed region works,
--- it is just slower — only import / seed do that.
-ALTER MATERIALIZED VIEW event_stats_hourly   SET (timescaledb.compress, timescaledb.compress_segmentby = 'project_id', timescaledb.compress_orderby = 'bucket');
-ALTER MATERIALIZED VIEW event_stats_daily    SET (timescaledb.compress, timescaledb.compress_segmentby = 'project_id', timescaledb.compress_orderby = 'bucket');
-ALTER MATERIALIZED VIEW issue_stats_hourly   SET (timescaledb.compress, timescaledb.compress_segmentby = 'project_id', timescaledb.compress_orderby = 'bucket');
-ALTER MATERIALIZED VIEW release_health_daily SET (timescaledb.compress, timescaledb.compress_segmentby = 'project_id', timescaledb.compress_orderby = 'bucket');
-
--- Refresh: every 5 minutes, re-materialize the last 3 hours / 3 days; the
--- daily roll-up hourly, from the hourly aggregate.
-SELECT add_continuous_aggregate_policy('event_stats_hourly',
-    start_offset => INTERVAL '3 hours', end_offset => INTERVAL '1 minute',
-    schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
-SELECT add_continuous_aggregate_policy('issue_stats_hourly',
-    start_offset => INTERVAL '3 hours', end_offset => INTERVAL '1 minute',
-    schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
-SELECT add_continuous_aggregate_policy('release_health_daily',
-    start_offset => INTERVAL '3 days', end_offset => INTERVAL '1 minute',
-    schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
-SELECT add_continuous_aggregate_policy('event_stats_daily',
-    start_offset => INTERVAL '3 days', end_offset => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour', if_not_exists => true);
-
--- Retention and compression policies are reconciled at startup from
--- RETENTION_DAYS (see internal/retention), not fixed here.

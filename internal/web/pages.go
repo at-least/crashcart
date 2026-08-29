@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -437,7 +438,7 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 	d := IssueData{Issue: is}
 	if ev, err := w.Store.LatestIssueEvent(ctx, sqlc.LatestIssueEventParams{ProjectID: p.ID, Fingerprint: &fp}); err == nil {
 		d.Latest = &ev
-		d.Stacks = stacksOf(ev)
+		d.Stacks = stacksOf(ev, w.payload(ctx, ev))
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		w.fail(rw, r, err)
 		return
@@ -571,6 +572,7 @@ func (w *Web) events(rw http.ResponseWriter, r *http.Request) {
 // EventData feeds the event page.
 type EventData struct {
 	E        sqlc.Event
+	Payload  json.RawMessage // the raw event from the object store; nil when it has none
 	Issue    *sqlc.Issue
 	Stacks   []Stack
 	Crumbs   []sentry.Breadcrumb
@@ -599,8 +601,9 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	d := EventData{E: e, Stacks: stacksOf(e), Crumbs: crumbsOf(e), Tags: tagsMap(e.Tags)}
-	d.Contexts, d.User = payloadContexts(e.Payload)
+	payload := w.payload(ctx, e)
+	d := EventData{E: e, Payload: payload, Stacks: stacksOf(e, payload), Crumbs: crumbsOf(e, payload), Tags: tagsMap(e.Tags)}
+	d.Contexts, d.User = payloadContexts(payload)
 	if e.Fingerprint != nil {
 		if is, err := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: *e.Fingerprint}); err == nil {
 			d.Issue = &is
@@ -612,6 +615,18 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.page(rw, r, pg, func(pg Page) templ.Component { return EventPage(pg, d) })
+}
+
+// payload reads an event's raw payload from the object store; nil when it
+// has none (or the store is unreachable — the page still renders from
+// the columns).
+func (w *Web) payload(ctx context.Context, e sqlc.Event) []byte {
+	b, err := w.Store.Payload(ctx, e)
+	if err != nil {
+		w.Log.Error("event payload", "event", e.EventID, "err", err)
+		return nil
+	}
+	return b
 }
 
 // ── releases ────────────────────────────────────────────────

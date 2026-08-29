@@ -1,9 +1,11 @@
 -- name: UpsertSymbolFile :one
-INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+-- The bytes go to the object store under blob.SymbolKey(project_id, id)
+-- after this returns (a re-upload keeps the id, so the object is replaced).
+INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET
-    debug_id = EXCLUDED.debug_id, size = EXCLUDED.size, data = EXCLUDED.data, uploaded_at = now()
-RETURNING id, project_id, kind, release, debug_id, filename, size, uploaded_at;
+    debug_id = EXCLUDED.debug_id, size = EXCLUDED.size, uploaded_at = now()
+RETURNING *, (xmax = 0) AS created;
 
 -- name: ListSymbolFiles :many
 SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
@@ -22,6 +24,7 @@ SELECT EXISTS (SELECT 1 FROM symbol_files WHERE project_id = $1 AND kind = $2 AN
 DELETE FROM symbol_files WHERE project_id = $1 AND id = $2;
 
 -- name: ExpireSymbolFiles :execrows
+-- The objects expire by the bucket's lifecycle rule on the same schedule.
 DELETE FROM symbol_files WHERE uploaded_at < $1;
 
 -- name: SetSymbolFileRelease :execrows

@@ -3,7 +3,7 @@
 # http://localhost:8080 with no passwords.
 services:
   db:
-    image: timescale/timescaledb:latest-pg16
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: crashcart
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crashcart}
@@ -17,6 +17,24 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # The object store: event payloads and symbol files. Any S3-compatible
+  # bucket works (AWS S3, R2, Backblaze, …) — set S3_* in .env and drop
+  # this service to use one.
+  minio:
+    image: minio/minio
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: crashcart
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-crashcart12}
+    volumes:
+      - blobs:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   crashcart:
     image: ghcr.io/crashcartapp/crashcart:latest
     # To build from source instead: comment out `image:` and uncomment this.
@@ -24,8 +42,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgres://crashcart:${POSTGRES_PASSWORD:-crashcart}@db:5432/crashcart?sslmode=disable
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_BUCKET: ${S3_BUCKET:-crashcart}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-crashcart}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-${MINIO_PASSWORD:-crashcart12}}
+      S3_REGION: ${S3_REGION:-}
       LISTEN_ADDR: ":8080"
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
@@ -44,3 +69,4 @@ services:
 
 volumes:
   pgdata:
+  blobs:

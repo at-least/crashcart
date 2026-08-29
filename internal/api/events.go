@@ -2,12 +2,12 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/crashcartapp/crashcart/internal/sentry"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
@@ -100,20 +100,28 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ev.OccurredAt = ev.OccurredAt.UTC()
-	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(ev.Payload), Breadcrumbs: breadcrumbsOf(ev)})
+	payload, err := h.Store.Payload(r.Context(), ev)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(payload), Breadcrumbs: breadcrumbsOf(ev, payload)})
 }
 
-// eventDetail is the JSON API's event: the row, with the raw payload
-// embedded as JSON (the column holds its bytes) and the breadcrumbs
-// (newest last, at most 20) read from it.
+// eventDetail is the JSON API's event: the row, with the raw payload from
+// the object store embedded as JSON (null when it has none) and the
+// breadcrumbs (newest last, at most 20) read from it.
 type eventDetail struct {
 	sqlc.Event
 	Payload     json.RawMessage     `json:"payload"`
 	Breadcrumbs []sentry.Breadcrumb `json:"breadcrumbs"`
 }
 
-func breadcrumbsOf(ev sqlc.Event) []sentry.Breadcrumb {
-	parsed := sentry.ParseEvent(string(ev.EventID), ev.OccurredAt, ev.Payload, time.Now().UTC())
+func breadcrumbsOf(ev sqlc.Event, payload []byte) []sentry.Breadcrumb {
+	if len(payload) == 0 {
+		return []sentry.Breadcrumb{}
+	}
+	parsed := sentry.ParseEvent(string(ev.EventID), ev.OccurredAt, payload, time.Now().UTC())
 	if parsed == nil || parsed.Breadcrumbs == nil {
 		return []sentry.Breadcrumb{}
 	}

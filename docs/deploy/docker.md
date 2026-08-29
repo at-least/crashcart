@@ -1,12 +1,13 @@
 # Docker Compose on a VPS
 
-CrashCart, Postgres and Caddy (for automatic HTTPS) on one Linux server.
-Every step below has been run as written on a fresh Ubuntu machine.
+CrashCart, Postgres, MinIO and Caddy (for automatic HTTPS) on one Linux
+server.
 
-::: info Storage: TimescaleDB
-The compose file runs the `timescale/timescaledb` image: compressed
-storage and free retention — comfortable at tens of millions of events a
-month. See [The database](./postgres).
+::: info Storage
+The compose file runs Postgres for the rows and MinIO as the S3-compatible
+object store for crash payloads and symbol files. To use a cloud bucket
+instead, set `S3_*` in `.env` and remove the `minio` service. See
+[The database and the object store](./postgres).
 :::
 
 **You need**
@@ -46,10 +47,11 @@ and set these:
 
 ```sh
 POSTGRES_PASSWORD=<long random string>
+MINIO_PASSWORD=<another long random string>
 PUBLIC_URL=https://crashcart.example.com
 ```
 
-Generate the string with `openssl rand -hex 32`. Everything else in the
+Generate the strings with `openssl rand -hex 32`. Everything else in the
 file is optional and explained inline.
 
 ## 4. Add Caddy
@@ -72,6 +74,7 @@ Append this service to `docker-compose.yml` and a `caddy` volume:
 
 volumes:
   pgdata:
+  blobs:
   caddy:
 ```
 
@@ -142,7 +145,8 @@ in `.env`. Android and JavaScript need nothing extra.
 docker compose exec crashcart /crashcart export > backup-$(date +%F).ndjson
 ```
 
-Put that in cron. Restore with `crashcart import < backup.ndjson`. See
+Put that in cron; the file includes the payloads and symbol files from
+MinIO. Restore with `crashcart import < backup.ndjson`. See
 [Operations](./operations#backups).
 
 ## If something doesn't work
@@ -151,6 +155,7 @@ Put that in cron. Restore with `crashcart import < backup.ndjson`. See
 |---|---|
 | `certificate obtained` never appears | The A record must point at this server and ports 80/443 must be open (`sudo ufw status`, cloud firewall). Caddy retries by itself once DNS is right |
 | `/health` returns `503` | Postgres isn't up yet: `docker compose logs db` |
+| The log says `payload pack` errors | MinIO isn't reachable or the credentials changed: `docker compose logs minio`. Nothing is lost: payloads wait in Postgres until the bucket is back |
 | The DSN says `http://localhost:8080` | `PUBLIC_URL` isn't set in `.env`; fix it and `docker compose up -d` |
 | SDK gets `401` | Wrong key in the DSN. `docker compose exec crashcart /crashcart rotate-key shop-ios` prints a fresh one |
 | Large crash reports fail with `413` | Raise `max_size` in the Caddyfile |

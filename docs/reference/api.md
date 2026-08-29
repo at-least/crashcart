@@ -178,7 +178,8 @@ List items are summaries (`event_id`, `occurred_at`, level, message,
 release, environment, platform, user, device, OS, `fingerprint`, tags),
 newest first. The detail (by the Sentry `event_id`) returns the full event
 row: the exception chain with original **and** symbolicated frames,
-breadcrumbs, tags, user, contexts, and the raw payload as received.
+breadcrumbs, tags, user, contexts, and the raw payload as received
+(`null` when the object store has no payload for the event).
 
 
 ## Releases

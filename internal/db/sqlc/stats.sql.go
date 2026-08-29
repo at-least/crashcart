@@ -31,6 +31,18 @@ func (q *Queries) AddProjectUsage(ctx context.Context, arg AddProjectUsageParams
 	return events, err
 }
 
+const countDirtyStats = `-- name: CountDirtyStats :one
+SELECT (SELECT count(*) FROM event_stats_dirty) + (SELECT count(*) FROM session_stats_dirty)
+`
+
+// Hours awaiting rollup (events + sessions); tests and the health check.
+func (q *Queries) CountDirtyStats(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, countDirtyStats)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const crashSpikeInputs = `-- name: CrashSpikeInputs :many
 WITH recent AS (
     SELECT project_id, count(*) AS n FROM events
@@ -94,10 +106,10 @@ func (q *Queries) ExpireProjectUsage(ctx context.Context, day time.Time) (int64,
 
 const latestReleaseHealth = `-- name: LatestReleaseHealth :one
 SELECT e.release,
-       COALESCE((SELECT sum(h.total) FROM release_health_daily h
+       COALESCE((SELECT sum(h.total) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
                     AND h.bucket >= $1::timestamptz AND h.bucket < $2::timestamptz), 0)::bigint AS total,
-       COALESCE((SELECT sum(h.crashed) FROM release_health_daily h
+       COALESCE((SELECT sum(h.crashed) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
                     AND h.bucket >= $1::timestamptz AND h.bucket < $2::timestamptz), 0)::bigint AS crashed
 FROM crashcart_event_stats($3::bigint, $4::timestamptz, $2::timestamptz, $5::bigint) AS e
@@ -124,7 +136,7 @@ type LatestReleaseHealthRow struct {
 // The most recently active release in the window (by events; ties by
 // name) with its session totals over the same window (0 without sessions).
 // hour_from is the event window start aligned to `width`, day_from the
-// day-aligned start for the daily session aggregate.
+// day-aligned start for the session totals.
 func (q *Queries) LatestReleaseHealth(ctx context.Context, arg LatestReleaseHealthParams) (LatestReleaseHealthRow, error) {
 	row := q.db.QueryRow(ctx, latestReleaseHealth,
 		arg.DayFrom,
@@ -179,6 +191,42 @@ func (q *Queries) LevelTotals(ctx context.Context, arg LevelTotalsParams) ([]Lev
 		return nil, err
 	}
 	return items, nil
+}
+
+const markEventStatsDirty = `-- name: MarkEventStatsDirty :exec
+INSERT INTO event_stats_dirty (project_id, bucket)
+SELECT $1::bigint, unnest($2::timestamptz[])
+ON CONFLICT (project_id, bucket) DO UPDATE SET gen = event_stats_dirty.gen + 1
+`
+
+type MarkEventStatsDirtyParams struct {
+	ProjectID int64       `json:"project_id"`
+	Buckets   []time.Time `json:"buckets"`
+}
+
+// Called in the transaction that writes or updates events: the hours
+// touched (distinct, UTC hour starts) are recomputed by the rollup job and
+// read live until then. gen moves so a mark that lands while the job runs
+// is not cleared by it.
+func (q *Queries) MarkEventStatsDirty(ctx context.Context, arg MarkEventStatsDirtyParams) error {
+	_, err := q.db.Exec(ctx, markEventStatsDirty, arg.ProjectID, arg.Buckets)
+	return err
+}
+
+const markSessionStatsDirty = `-- name: MarkSessionStatsDirty :exec
+INSERT INTO session_stats_dirty (project_id, bucket)
+SELECT $1::bigint, unnest($2::timestamptz[])
+ON CONFLICT (project_id, bucket) DO UPDATE SET gen = session_stats_dirty.gen + 1
+`
+
+type MarkSessionStatsDirtyParams struct {
+	ProjectID int64       `json:"project_id"`
+	Buckets   []time.Time `json:"buckets"`
+}
+
+func (q *Queries) MarkSessionStatsDirty(ctx context.Context, arg MarkSessionStatsDirtyParams) error {
+	_, err := q.db.Exec(ctx, markSessionStatsDirty, arg.ProjectID, arg.Buckets)
+	return err
 }
 
 const platformTotals = `-- name: PlatformTotals :many
@@ -398,9 +446,9 @@ type TimelineRow struct {
 
 // Chart queries take a window [from_at, to_at) (from_at bucket-aligned)
 // and a bucket width in seconds. They read crashcart_event_stats (the
-// aggregate that matches the width), fold with crashcart_bucket and
+// hourly rollup, exact for dirty hours), fold with crashcart_bucket and
 // gap-fill with crashcart_buckets, so every bucket of the window comes
-// back, in order. The totals take the width for the same reason.
+// back, in order.
 // Events / crashes per bucket, split into the top `top` releases (by
 // crashes, then events) plus 'other'; every bucket for every series,
 // ordered by bucket, then series rank.

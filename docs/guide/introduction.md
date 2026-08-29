@@ -29,16 +29,17 @@ the Sentry product.
 
 CrashCart is for error tracking. It does not do performance tracing,
 profiling or session replay. If your SDK sends those, they are accepted
-and discarded — no errors, just nothing stored. There are no user
-accounts either: one viewer password and API keys. The full picture is
-in [Compared to Sentry](./compared-to-sentry).
+and discarded — no errors, just nothing stored. Accounts are simple:
+users with a password for the viewer, API keys for tools; no roles. The
+full picture is in [Compared to Sentry](./compared-to-sentry).
 
 ## Where it runs
 
-Any server with Postgres 16+ and TimescaleDB: Docker Compose on a VPS, a
-binary under systemd, Kubernetes, or a managed Tiger Cloud database.
-TimescaleDB compresses events 5–10× after two days and expires old data
-for free. See [The database](/deploy/postgres).
+Any Postgres 14+ — a container, your distro's package, RDS, Neon,
+Supabase — plus an S3-compatible bucket for the raw crash payloads and
+symbol files (the compose file bundles MinIO; any cloud bucket works).
+Docker Compose on a VPS, a binary under systemd, or Kubernetes. See
+[The database and the object store](/deploy/postgres).
 
 ## Next
 

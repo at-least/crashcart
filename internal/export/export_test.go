@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/ingest"
@@ -50,7 +51,11 @@ func fill(t *testing.T, st *store.Store) sqlc.Project {
 		t.Fatal(err)
 	}
 	dbg := "abc-123"
-	if _, err := st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", Release: strPtr("2.4.0"), DebugID: &dbg, Filename: "mapping.txt", Size: 5, Data: []byte("a -> b")}); err != nil {
+	sf, err := st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", Release: strPtr("2.4.0"), DebugID: &dbg, Filename: "mapping.txt", Size: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Blobs.Put(ctx, blob.SymbolKey(p.ID, sf.ID), []byte("a -> b")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: "new_issue", Enabled: true, CooldownMinutes: 30}); err != nil {

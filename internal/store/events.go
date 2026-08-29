@@ -36,13 +36,13 @@ type EventInsert struct {
 	Fingerprint   *sentry.ID
 	Symbolicated  bool
 	Tags          json.RawMessage
-	Payload       []byte // the raw Sentry event JSON
 	Symbols       json.RawMessage
+	PayloadRef    *string // blob.Ref of the raw event (nil: not stored)
 }
 
 const insertEventSQL = `INSERT INTO events (occurred_at, project_id, event_id, level, message, platform, environment, release,
 	device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id,
-	fingerprint, symbolicated, tags, payload, symbols)
+	fingerprint, symbolicated, tags, symbols, payload_ref)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 	ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING`
 
@@ -56,7 +56,7 @@ func InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
 	for _, r := range rows {
 		b.Queue(insertEventSQL, r.OccurredAt, r.ProjectID, r.EventID, r.Level, r.Message, r.Platform, r.Environment, r.Release,
 			r.DeviceID, r.DeviceModel, r.OSVersion, r.Screen, r.ErrorType, r.ErrorLocation, r.Handled, r.SDKName, r.UserID,
-			r.Fingerprint, r.Symbolicated, r.Tags, r.Payload, r.Symbols)
+			r.Fingerprint, r.Symbolicated, r.Tags, r.Symbols, r.PayloadRef)
 	}
 	res := tx.SendBatch(ctx, b)
 	for range rows {

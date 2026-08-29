@@ -69,13 +69,13 @@ func (q *Queries) NewIssuesByRelease(ctx context.Context, arg NewIssuesByRelease
 }
 
 const releaseHealthDailyNN = `-- name: ReleaseHealthDailyNN :many
-SELECT bucket,
+SELECT crashcart_bucket(bucket, 86400)::timestamptz AS bucket,
        COALESCE(sum(total), 0)::bigint   AS total,
        COALESCE(sum(crashed), 0)::bigint AS crashed,
        COALESCE(sum(errored), 0)::bigint AS errored
-FROM release_health_daily
+FROM release_health_hourly
 WHERE project_id = $1 AND release = $2 AND bucket >= $3 AND bucket < $4
-GROUP BY bucket ORDER BY bucket
+GROUP BY 1 ORDER BY 1
 `
 
 type ReleaseHealthDailyNNParams struct {
@@ -127,7 +127,7 @@ SELECT release,
        COALESCE(sum(total), 0)::bigint   AS total,
        COALESCE(sum(crashed), 0)::bigint AS crashed,
        COALESCE(sum(errored), 0)::bigint AS errored
-FROM release_health_daily
+FROM release_health_hourly
 WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
 GROUP BY release
 `
@@ -145,8 +145,7 @@ type ReleaseHealthNNRow struct {
 	Errored int64  `json:"errored"`
 }
 
-// Like ReleaseHealth, but crashed/errored are 0 (not NULL) when no session
-// of that status exists in the window (the cagg's FILTERed sums are NULL).
+// Like ReleaseHealth, with 0 (not NULL) totals when the window is empty.
 func (q *Queries) ReleaseHealthNN(ctx context.Context, arg ReleaseHealthNNParams) ([]ReleaseHealthNNRow, error) {
 	rows, err := q.db.Query(ctx, releaseHealthNN, arg.ProjectID, arg.Bucket, arg.Bucket_2)
 	if err != nil {

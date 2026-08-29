@@ -33,7 +33,7 @@ func TestTagsFilterAndBreakdowns(t *testing.T) {
 		tags, _ := json.Marshal(map[string]string{"build": build, "device_id": fmt.Sprintf("d%d", i)})
 		rows = append(rows, store.EventInsert{
 			OccurredAt: now.Add(-time.Duration(i) * time.Minute), ProjectID: 1, EventID: sentry.DerivedID([]byte(fmt.Sprintf("e%d", i))), Level: "error", Message: "m",
-			Release: &rel, Tags: tags, Payload: []byte("{}"),
+			Release: &rel, Tags: tags,
 		})
 	}
 	tx, err := st.Pool.Begin(ctx)
@@ -68,7 +68,7 @@ func TestTagsFilterAndBreakdowns(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Pool.Exec(ctx, "RESET enable_seqscan")
-	if !strings.Contains(strings.Join(plan, "\n"), "events_tags") {
+	if !strings.Contains(strings.Join(plan, "\n"), "_tags") { // the partition's copy of events_tags
 		t.Errorf("tag filter cannot use the GIN index:\n%s", strings.Join(plan, "\n"))
 	}
 

@@ -1,8 +1,8 @@
 -- Chart queries take a window [from_at, to_at) (from_at bucket-aligned)
 -- and a bucket width in seconds. They read crashcart_event_stats (the
--- aggregate that matches the width), fold with crashcart_bucket and
+-- hourly rollup, exact for dirty hours), fold with crashcart_bucket and
 -- gap-fill with crashcart_buckets, so every bucket of the window comes
--- back, in order. The totals take the width for the same reason.
+-- back, in order.
 
 -- name: Timeline :many
 -- Events / crashes per bucket, split into the top `top` releases (by
@@ -68,12 +68,12 @@ ORDER BY b;
 -- The most recently active release in the window (by events; ties by
 -- name) with its session totals over the same window (0 without sessions).
 -- hour_from is the event window start aligned to `width`, day_from the
--- day-aligned start for the daily session aggregate.
+-- day-aligned start for the session totals.
 SELECT e.release,
-       COALESCE((SELECT sum(h.total) FROM release_health_daily h
+       COALESCE((SELECT sum(h.total) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
                     AND h.bucket >= sqlc.arg(day_from)::timestamptz AND h.bucket < sqlc.arg(to_at)::timestamptz), 0)::bigint AS total,
-       COALESCE((SELECT sum(h.crashed) FROM release_health_daily h
+       COALESCE((SELECT sum(h.crashed) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
                     AND h.bucket >= sqlc.arg(day_from)::timestamptz AND h.bucket < sqlc.arg(to_at)::timestamptz), 0)::bigint AS crashed
 FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(hour_from)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS e
@@ -103,6 +103,24 @@ FROM recent FULL OUTER JOIN baseline USING (project_id);
 SELECT platform, sum(events)::bigint AS events
 FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
 GROUP BY platform ORDER BY events DESC;
+
+-- name: MarkEventStatsDirty :exec
+-- Called in the transaction that writes or updates events: the hours
+-- touched (distinct, UTC hour starts) are recomputed by the rollup job and
+-- read live until then. gen moves so a mark that lands while the job runs
+-- is not cleared by it.
+INSERT INTO event_stats_dirty (project_id, bucket)
+SELECT sqlc.arg(project_id)::bigint, unnest(sqlc.arg(buckets)::timestamptz[])
+ON CONFLICT (project_id, bucket) DO UPDATE SET gen = event_stats_dirty.gen + 1;
+
+-- name: MarkSessionStatsDirty :exec
+INSERT INTO session_stats_dirty (project_id, bucket)
+SELECT sqlc.arg(project_id)::bigint, unnest(sqlc.arg(buckets)::timestamptz[])
+ON CONFLICT (project_id, bucket) DO UPDATE SET gen = session_stats_dirty.gen + 1;
+
+-- name: CountDirtyStats :one
+-- Hours awaiting rollup (events + sessions); tests and the health check.
+SELECT (SELECT count(*) FROM event_stats_dirty) + (SELECT count(*) FROM session_stats_dirty);
 
 -- name: AddProjectUsage :one
 -- Counts n received events against the project's UTC day and returns the

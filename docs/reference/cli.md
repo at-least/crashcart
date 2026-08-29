@@ -26,22 +26,21 @@ With Docker Compose, prefix with `docker compose exec crashcart /crashcart`.
 ## `serve`
 
 Runs everything in one process: HTTP on `LISTEN_ADDR`, `WORKERS` job
-goroutines, the retention scheduler and the crash-spike scheduler
-(`ALERT_INTERVAL`). Migrations run first. This is the default when no
-subcommand is given.
+goroutines, the stats rollup (every minute), the retention sweep (hourly)
+and the crash-spike scheduler (`ALERT_INTERVAL`). The schema is created
+first. This is the default when no subcommand is given.
 
 ## `init`
 
 Creates the schema in an empty database and exits (every command does
 this on start; `init` is for a deploy pipeline step, or to prepare a
-database before `import`). Fails when the database has no TimescaleDB
-Community build (see [The database](/deploy/postgres)).
+database before `import`).
 
 ## `retention`
 
-Reconciles the compression and retention policies and the chunk width with
-the current `COMPRESS_AFTER` / `RETENTION_DAYS` / `CHUNK_INTERVAL` and runs
-one retention sweep. Exits when done — for cron.
+Creates the coming weeks' partitions, sets the bucket's lifecycle rules
+from `RETENTION_DAYS`, runs one retention sweep and rolls the statistics
+up. Exits when done — for cron.
 
 ## `alerts`
 

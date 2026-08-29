@@ -99,7 +99,7 @@ func TestIngestLifecycle(t *testing.T) {
 		t.Fatalf("expected regression: status=%s res=%+v", iss.Status, res)
 	}
 
-	// Sessions land and the release-health aggregate sees them in real time.
+	// Sessions land and the release-health view sees them at once.
 	sess := []byte(`{}` + "\n" + `{"type":"sessions"}` + "\n" +
 		`{"attrs":{"release":"1.1"},"aggregates":[{"started":"` + now.Format(time.RFC3339) + `","exited":9,"crashed":1}]}` + "\n")
 	res, err = in.Ingest(ctx, p, sentry.Parse(sess, now), now)
@@ -107,7 +107,7 @@ func TestIngestLifecycle(t *testing.T) {
 		t.Fatalf("sessions: %+v %v", res, err)
 	}
 	var total, crashed int64
-	st.Pool.QueryRow(ctx, "SELECT sum(total), sum(crashed) FROM release_health_daily WHERE release='1.1'").Scan(&total, &crashed)
+	st.Pool.QueryRow(ctx, "SELECT sum(total), sum(crashed) FROM release_health_hourly WHERE release='1.1'").Scan(&total, &crashed)
 	if total != 10 || crashed != 1 {
 		t.Fatalf("release health = %d/%d", crashed, total)
 	}
@@ -171,7 +171,7 @@ func TestIngestLifecycle(t *testing.T) {
 		}
 	}
 
-	// Hourly stats via the continuous aggregate (real-time).
+	// Hourly stats via the view (the hour is dirty, so computed live).
 	var crashes int64
 	st.Pool.QueryRow(ctx, "SELECT sum(crashes) FROM event_stats_hourly WHERE project_id=$1", p.ID).Scan(&crashes)
 	if crashes != 2 { // only the first 2 were stored (keep_first=2, rate 0); later ones were counted but sampled out

@@ -144,7 +144,11 @@ templ EventBody(pg Page, d EventData) {
 					Copy
 				</button>
 			</div>
-			<pre id="raw-payload" class="code-block mt-2 max-h-[480px]">{ prettyJSON(d.E.Payload) }</pre>
+			if len(d.Payload) == 0 {
+				<p class="text-muted mt-2">The raw payload is no longer available (its pack in the object store has expired).</p>
+			} else {
+				<pre id="raw-payload" class="code-block mt-2 max-h-[480px]">{ prettyJSON(d.Payload) }</pre>
+			}
 		</details>
 	</div>
 }

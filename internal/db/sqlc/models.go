@@ -367,11 +367,17 @@ type Event struct {
 	Fingerprint   *sentry.ID      `json:"fingerprint"`
 	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
-	Payload       []byte          `json:"payload"`
 	Symbols       json.RawMessage `json:"symbols"`
+	PayloadRef    *string         `json:"payload_ref"`
 }
 
-type EventStatsDaily struct {
+type EventStatsDirty struct {
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Gen       int64     `json:"gen"`
+}
+
+type EventStatsHourly struct {
 	Bucket    time.Time  `json:"bucket"`
 	ProjectID int64      `json:"project_id"`
 	Release   string     `json:"release"`
@@ -382,7 +388,7 @@ type EventStatsDaily struct {
 	Errors    int64      `json:"errors"`
 }
 
-type EventStatsHourly struct {
+type EventStatsHourlyRolled struct {
 	Bucket    time.Time  `json:"bucket"`
 	ProjectID int64      `json:"project_id"`
 	Release   string     `json:"release"`
@@ -421,6 +427,13 @@ type IssueStatsHourly struct {
 	Events      int64     `json:"events"`
 }
 
+type IssueStatsHourlyRolled struct {
+	Bucket      time.Time `json:"bucket"`
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
+	Events      int64     `json:"events"`
+}
+
 type Job struct {
 	ID          int64           `json:"id"`
 	Kind        JobKind         `json:"kind"`
@@ -431,6 +444,15 @@ type Job struct {
 	LockedUntil *time.Time      `json:"locked_until"`
 	LastError   *string         `json:"last_error"`
 	CreatedAt   time.Time       `json:"created_at"`
+}
+
+type PayloadSpool struct {
+	ProjectID  int64     `json:"project_id"`
+	EventID    sentry.ID `json:"event_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	Data       []byte    `json:"data"`
+	Size       int32     `json:"size"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type Project struct {
@@ -458,7 +480,16 @@ type Release struct {
 	FirstSeen time.Time `json:"first_seen"`
 }
 
-type ReleaseHealthDaily struct {
+type ReleaseHealthHourly struct {
+	Bucket    time.Time `json:"bucket"`
+	ProjectID int64     `json:"project_id"`
+	Release   string    `json:"release"`
+	Total     int64     `json:"total"`
+	Crashed   int64     `json:"crashed"`
+	Errored   int64     `json:"errored"`
+}
+
+type ReleaseHealthHourlyRolled struct {
 	Bucket    time.Time `json:"bucket"`
 	ProjectID int64     `json:"project_id"`
 	Release   string    `json:"release"`
@@ -477,6 +508,12 @@ type Session struct {
 	Count       int32         `json:"count"`
 }
 
+type SessionStatsDirty struct {
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Gen       int64     `json:"gen"`
+}
+
 type SymbolFile struct {
 	ID         int64      `json:"id"`
 	ProjectID  int64      `json:"project_id"`
@@ -485,14 +522,7 @@ type SymbolFile struct {
 	DebugID    *string    `json:"debug_id"`
 	Filename   string     `json:"filename"`
 	Size       int64      `json:"size"`
-	Data       []byte     `json:"data"`
 	UploadedAt time.Time  `json:"uploaded_at"`
-}
-
-type UploadChunk struct {
-	Sha1      string    `json:"sha1"`
-	Data      []byte    `json:"data"`
-	CreatedAt time.Time `json:"created_at"`
 }
 
 type User struct {
