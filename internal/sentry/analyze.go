@@ -10,38 +10,36 @@ import (
 )
 
 // Fingerprint groups events into issues from a set of frames (symbolicated
-// when available). An SDK-provided fingerprint wins; otherwise the last five
-// frames (closest to the crash point, line numbers stripped) plus platform
-// and error type form the signature. The result is a stable 32-hex-char
-// digest, so it is safe as a primary key and URL segment. "" means the
-// event has nothing to group by (no exception, no SDK fingerprint).
+// when available). An SDK-provided fingerprint wins; then the error type
+// plus the last five code frames (line numbers stripped); message-only
+// events at error/fatal (Go panics, captureMessage) group by normalized
+// text plus stack, like Sentry's message grouping. The result is a stable
+// 32-hex-char digest, safe as a primary key and URL segment. "" means the
+// event has nothing to group by.
 func Fingerprint(e *Event, frames []Frame) string {
-	if e.ErrorType == "" && len(e.SDKFingerprint) == 0 && !groupableMessage(e) {
-		return ""
-	}
 	var sig string
-	if len(e.SDKFingerprint) > 0 {
+	switch {
+	case len(e.SDKFingerprint) > 0:
 		sig = "sdk:" + strings.Join(e.SDKFingerprint, "|")
-	} else if e.ErrorType == "" {
-		// Message events at error/fatal (Go panics, captureMessage("...",
-		// "error")) group by their normalized text plus the stack, like
-		// Sentry's message grouping.
-		sig = "msg:" + e.Platform + ":" + normalizeMessage(e.Message) + ":" + strings.Join(frameSignature(e, frames), "|")
-	} else {
+	case e.ErrorType != "":
 		sig = e.Platform + ":" + e.ErrorType + ":" + strings.Join(frameSignature(e, frames), "|")
+	case groupableMessage(e):
+		sig = "msg:" + e.Platform + ":" + normalizeMessage(e.Message) + ":" + strings.Join(frameSignature(e, frames), "|")
+	default:
+		return ""
 	}
 	sum := sha256.Sum256([]byte(sig))
 	return hex.EncodeToString(sum[:16])
 }
 
 // frameSignature renders the last five code frames (in-app when the SDK
-// marks any, SDK-internal and pseudo frames dropped) as file:function.
-// Unsymbolicated native frames use debug_id+offset, which is stable across
-// runs (ASLR moves the raw address every time).
+// marks any; SDK, runtime and placeholder frames dropped) as
+// file:function. Unsymbolicated native frames use debug_id+offset, which
+// is stable across runs (ASLR moves the raw address every time).
 func frameSignature(e *Event, frames []Frame) []string {
 	var sel, all []Frame
 	for _, f := range frames {
-		if isSDKFrame(f) {
+		if FrameKind(f) != KindCode {
 			continue
 		}
 		all = append(all, f)
@@ -55,28 +53,27 @@ func frameSignature(e *Event, frames []Frame) []string {
 	if len(sel) > 5 {
 		sel = sel[len(sel)-5:]
 	}
-	// Line numbers are normally left out so edits do not split issues; when
-	// the whole stack collapses to one code frame (Dart's async entry
-	// point, a script body) the line is all that tells throw sites apart.
-	keepLine := len(all) <= 1
+	// Line numbers are normally left out so edits do not split issues; they
+	// are kept when the functions cannot tell throw sites apart — a stack
+	// that collapsed to one frame, or all-anonymous frames (Dart's
+	// main.<fn>, a script body).
+	keepLine := len(all) <= 1 || allAnonymous(sel)
+	var images imageTable
 	parts := make([]string, 0, len(sel))
 	for _, f := range sel {
-		file := f.Filename
+		file, _, _ := strings.Cut(f.Filename, "?")
 		if file == "" {
 			file = f.Module
 		}
-		if i := strings.IndexByte(file, '?'); i >= 0 {
-			file = file[:i]
-		}
 		fn := f.Function
 		if fn == "" && f.InstrAddr != "" {
-			fn = e.relativeAddr(f.InstrAddr)
+			if images == nil {
+				images = e.imageTable()
+			}
+			fn = images.relative(f.InstrAddr)
 		}
 		if fn == "" {
 			fn = "?"
-		}
-		if file == "" {
-			file = "?"
 		}
 		if keepLine && f.Lineno > 0 {
 			fn += ":" + strconv.Itoa(f.Lineno)
@@ -86,10 +83,23 @@ func frameSignature(e *Event, frames []Frame) []string {
 	return parts
 }
 
+// allAnonymous: every function is a closure/anonymous placeholder.
+func allAnonymous(frames []Frame) bool {
+	for _, f := range frames {
+		fn := f.Function
+		if fn != "" && !strings.HasSuffix(fn, "<fn>") && !strings.HasSuffix(fn, "<anonymous>") && !strings.HasPrefix(fn, "<") && !strings.Contains(fn, "{closure") {
+			return false
+		}
+	}
+	return len(frames) > 0
+}
+
 // groupableMessage: message-only events worth an issue.
 func groupableMessage(e *Event) bool {
-	return (e.Level == "fatal" || e.Level == "error") && e.Message != "" && e.Message != "(no message)"
+	return (e.Level == "fatal" || e.Level == "error") && e.hasMessage()
 }
+
+func (e *Event) hasMessage() bool { return e.Message != "" && e.Message != noMessage }
 
 var messageNoise = regexp.MustCompile(`0x[0-9a-fA-F]+|[0-9a-fA-F]{8,}|\d+`)
 
@@ -98,29 +108,64 @@ func normalizeMessage(m string) string {
 	return messageNoise.ReplaceAllString(m, "#")
 }
 
-// relativeAddr maps an instruction address to "<debug_id>+<offset>" using
-// debug_meta.images; the raw address is returned when no image contains it.
-func (e *Event) relativeAddr(addr string) string {
-	a, ok := parseHex(addr)
-	if !ok {
-		return addr
-	}
+// imageTable is debug_meta.images with the bases parsed once per event.
+type imageTable []struct {
+	base, end uint64
+	id        string
+}
+
+func (e *Event) imageTable() imageTable {
+	t := make(imageTable, 0, len(e.DebugImages))
 	for _, im := range e.DebugImages {
-		base, ok := parseHex(im.ImageAddr)
-		if !ok || a < base || (im.ImageSize > 0 && a >= base+uint64(im.ImageSize)) {
+		base, ok := ParseHex(im.ImageAddr)
+		if !ok {
 			continue
 		}
 		id := im.DebugID
 		if id == "" {
 			id = baseName(im.CodeFile)
 		}
-		return id + "+0x" + strconv.FormatUint(a-base, 16)
+		end := ^uint64(0)
+		if im.ImageSize > 0 {
+			end = base + uint64(im.ImageSize)
+		}
+		t = append(t, struct {
+			base, end uint64
+			id        string
+		}{base, end, id})
+	}
+	return t
+}
+
+// relative maps an instruction address to "<debug_id>+<offset>"; the raw
+// address is returned when no image contains it.
+func (t imageTable) relative(addr string) string {
+	a, ok := ParseHex(addr)
+	if !ok {
+		return addr
+	}
+	for _, im := range t {
+		if a >= im.base && a < im.end {
+			return im.id + "+0x" + strconv.FormatUint(a-im.base, 16)
+		}
 	}
 	return addr
 }
 
-func parseHex(s string) (uint64, bool) {
-	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+// ImageFor returns the index of the debug image containing addr, or -1.
+func (e *Event) ImageFor(addr uint64) int {
+	for i, im := range e.DebugImages {
+		base, ok := ParseHex(im.ImageAddr)
+		if ok && addr >= base && (im.ImageSize <= 0 || addr < base+uint64(im.ImageSize)) {
+			return i
+		}
+	}
+	return -1
+}
+
+// ParseHex parses an "0x…" (or bare) hexadecimal address.
+func ParseHex(s string) (uint64, bool) {
+	s = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s), "0x"), "0X")
 	if s == "" {
 		return 0, false
 	}
@@ -134,9 +179,9 @@ func parseHex(s string) (uint64, bool) {
 func (e *Event) IssueTitle() string {
 	t := e.ErrorType
 	if t == "" {
-		// A message event (Go panic, captureMessage at error level).
-		if m := strings.TrimSpace(e.Message); m != "" && m != "(no message)" {
-			return truncate(strings.SplitN(m, "\n", 2)[0], 100)
+		if e.hasMessage() { // a message event (Go panic, captureMessage at error level)
+			first, _, _ := strings.Cut(strings.TrimSpace(e.Message), "\n")
+			return truncate(first, 100)
 		}
 		t = "Unknown"
 	}
@@ -144,63 +189,49 @@ func (e *Event) IssueTitle() string {
 		t += " in " + e.Screen
 	}
 	if len(e.Exceptions) > e.Primary {
-		if v := strings.TrimSpace(e.Exceptions[e.Primary].Value); v != "" {
-			if i := strings.IndexByte(v, '\n'); i >= 0 {
-				v = v[:i]
-			}
+		if v, _, _ := strings.Cut(strings.TrimSpace(e.Exceptions[e.Primary].Value), "\n"); v != "" {
 			t += ": " + truncate(v, 80)
 		}
 	}
 	return t
 }
 
-// ErrorLocation is "File.ext:line" of the deepest in-app frame (or the
-// innermost frame overall when nothing is marked in-app); "" without frames.
+// ErrorLocation is "File.ext:line" of the innermost code frame, ranked:
+// in-app with a file and line, then in-app, then any frame with a file and
+// line, then whatever is innermost. "" without usable frames.
 func ErrorLocation(frames []Frame) string {
-	// Innermost in-app frame with a file and line wins; then any in-app
-	// frame; then the innermost frame with a file and line; then whatever
-	// is innermost. Runtime frames (__rustc, std) rarely carry a file.
-	var located, inApp, anyLocated, last *Frame
+	var best *Frame
+	bestRank := -1
 	for i := range frames {
 		f := &frames[i]
-		if isSDKFrame(*f) || isRuntimeFrame(*f) {
+		if FrameKind(*f) != KindCode {
 			continue
 		}
-		last = f
-		hasFile := (f.Filename != "" || f.AbsPath != "") && f.Lineno > 0
-		if hasFile {
-			anyLocated = f
+		rank := 0
+		if (f.Filename != "" || f.AbsPath != "") && f.Lineno > 0 {
+			rank++
 		}
 		if f.IsInApp() {
-			inApp = f
-			if hasFile {
-				located = f
-			}
+			rank += 2
+		}
+		if rank >= bestRank {
+			best, bestRank = f, rank
 		}
 	}
-	root := located
-	for _, c := range []*Frame{inApp, anyLocated, last} {
-		if root == nil {
-			root = c
-		}
+	if best == nil || (best.Function == "" && best.Filename == "" && best.AbsPath == "" && best.Module == "") {
+		return "" // nothing, or an address-only native frame: unknown until symbolicated
 	}
-	if root == nil {
-		return ""
-	}
-	if root.Function == "" && root.Filename == "" && root.AbsPath == "" && root.Module == "" {
-		return "" // address-only native frame: unknown until symbolicated
-	}
-	name := root.Filename
+	name := best.Filename
 	if name == "" {
-		name = root.AbsPath
+		name = best.AbsPath
 	}
 	if name == "" {
-		name = root.Module
+		name = best.Module
 	}
-	if root.Lineno == 0 && root.Function != "" {
-		return baseName(name) + ":" + root.Function
+	if best.Lineno == 0 && best.Function != "" {
+		return baseName(name) + ":" + best.Function
 	}
-	return fmt.Sprintf("%s:%d", baseName(name), root.Lineno)
+	return fmt.Sprintf("%s:%d", baseName(name), best.Lineno)
 }
 
 // NeedsSymbolication reports whether frames carry raw addresses or look
@@ -224,50 +255,82 @@ func (e *Event) NeedsSymbolication() bool {
 	return false
 }
 
-// isSDKFrame reports frames that belong to a Sentry SDK or are stack
-// placeholders rather than code.
-func isSDKFrame(f Frame) bool {
-	// Placeholders such as "<asynchronous suspension>" (Dart puts it in the
-	// file name with no function, some SDKs in the function with no file);
-	// "<anonymous>" with a file:line is real code.
-	pseudo := func(v string) bool { return strings.HasPrefix(v, "<") && strings.HasSuffix(v, ">") }
-	if pseudo(f.Function) && f.Filename == "" && f.AbsPath == "" && f.Lineno == 0 {
-		return true
-	}
-	if f.Function == "" && f.Lineno == 0 && (pseudo(f.Filename) || pseudo(f.AbsPath)) {
-		return true
-	}
-	if f.Function == "" && f.Filename == "" && f.AbsPath == "" && f.Module == "" && f.InstrAddr == "" {
-		return true // an empty frame carries no identity
-	}
-	if f.Module == "java.lang.Thread" && f.Function == "getStackTrace" {
-		return true // the stack-capture call itself (Java message events)
-	}
-	if f.Package == "sentry" || strings.HasPrefix(f.Package, "sentry_") || strings.HasPrefix(f.Package, "sentry-") {
-		return true
-	}
-	if strings.HasPrefix(f.Function, "sentry_") || strings.HasPrefix(f.Function, "sentry::") || strings.HasPrefix(f.Function, "sentry.") || strings.HasPrefix(f.Function, "io.sentry.") {
-		return true // sentry_panic::…, sentry_core::…, sentry.CurrentHub…, io.sentry.Sentry.captureException
-	}
-	for _, p := range []string{f.Filename, f.AbsPath, f.Module} {
-		if strings.HasPrefix(p, "package:sentry") || strings.Contains(p, "/sentry_sdk/") || strings.HasPrefix(p, "io.sentry.") || strings.HasPrefix(p, "Sentry.") ||
-			strings.Contains(p, "/@sentry/") || strings.Contains(p, "/sentry-") || strings.Contains(p, "getsentry/sentry-go") || strings.HasPrefix(p, "sentry_") {
-			return true
-		}
-	}
-	return false
+// Kind classifies a frame for grouping and location purposes.
+type Kind int
+
+const (
+	KindCode        Kind = iota // application or library code
+	KindPlaceholder             // "<asynchronous suspension>", empty frames
+	KindSDK                     // a Sentry SDK's own frames
+	KindRuntime                 // language runtime between the crash and user code
+)
+
+// Noise patterns, matched against the frame fields named in each row.
+// Adding an SDK or runtime means adding a row here and nowhere else.
+var frameNoise = []struct {
+	kind   Kind
+	field  func(Frame) string
+	prefix bool // prefix match; else substring
+	pat    string
+}{
+	{KindSDK, pkg, true, "sentry"}, // sentry, sentry_core, sentry-panic
+	{KindSDK, fn, true, "sentry_"},
+	{KindSDK, fn, true, "sentry::"},
+	{KindSDK, fn, true, "sentry."}, // sentry.CurrentHub… (Go)
+	{KindSDK, fn, true, "io.sentry."},
+	{KindSDK, path, true, "package:sentry"},
+	{KindSDK, path, true, "io.sentry."},
+	{KindSDK, path, true, "Sentry."},
+	{KindSDK, path, true, "sentry_"},
+	{KindSDK, path, false, "/sentry_sdk/"},
+	{KindSDK, path, false, "/@sentry/"},
+	{KindSDK, path, false, "/sentry-"},
+	{KindSDK, path, false, "getsentry/sentry-go"},
+	{KindRuntime, pkg, true, "__rustc"},
+	{KindRuntime, fn, true, "__rustc::"},
+	{KindRuntime, fn, true, "std::panicking::"},
+	{KindRuntime, fn, true, "core::panicking::"},
+	{KindRuntime, fn, true, "runtime."}, // Go
 }
 
-// isRuntimeFrame reports language-runtime frames that sit between the
-// crash and user code (Rust's unwinder, Go's panic machinery).
-func isRuntimeFrame(f Frame) bool {
-	switch f.Package {
-	case "__rustc", "std", "core", "alloc":
-		return true
-	}
-	return strings.HasPrefix(f.Function, "__rustc::") || strings.HasPrefix(f.Function, "std::panicking::") ||
-		strings.HasPrefix(f.Function, "core::panicking::") || f.Function == "gopanic" || strings.HasPrefix(f.Function, "runtime.")
+func pkg(f Frame) string { return f.Package }
+func fn(f Frame) string  { return f.Function }
+func path(f Frame) string {
+	return f.Filename + "\x00" + f.AbsPath + "\x00" + f.Module
 }
+
+// FrameKind classifies one frame. Placeholders are structural (no list):
+// "<…>" names with no file/line, or a frame with no identity at all;
+// "<anonymous>" with a file:line is real code.
+func FrameKind(f Frame) Kind {
+	hasFile := f.Filename != "" || f.AbsPath != ""
+	switch {
+	case isPlaceholder(f.Function) && !hasFile && f.Lineno == 0,
+		f.Function == "" && f.Lineno == 0 && (isPlaceholder(f.Filename) || isPlaceholder(f.AbsPath)),
+		f.Function == "" && !hasFile && f.Module == "" && f.InstrAddr == "":
+		return KindPlaceholder
+	case f.Module == "java.lang.Thread" && f.Function == "getStackTrace", // the stack-capture call itself
+		f.Function == "gopanic",
+		f.Package == "std" || f.Package == "core" || f.Package == "alloc":
+		return KindRuntime
+	}
+	for _, n := range frameNoise {
+		v := n.field(f)
+		if n.prefix {
+			// path joins three fields; a prefix must match at a field start.
+			for _, part := range strings.Split(v, "\x00") {
+				if strings.HasPrefix(part, n.pat) {
+					return n.kind
+				}
+			}
+		} else if strings.Contains(v, n.pat) {
+			return n.kind
+		}
+	}
+	return KindCode
+}
+
+func isPlaceholder(v string) bool { return strings.HasPrefix(v, "<") && strings.HasSuffix(v, ">") }
 
 func baseName(p string) string {
 	if p == "" {

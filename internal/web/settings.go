@@ -5,9 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -233,26 +231,13 @@ func (w *Web) settingsSymbolUpload(rw http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	r.Body = http.MaxBytesReader(rw, r.Body, symbolicate.MaxUpload+1<<20)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(rw, "multipart form with a file is required", http.StatusBadRequest)
-		return
-	}
-	f, hdr, err := r.FormFile("file")
+	name, data, err := symbolicate.ReadMultipartUpload(rw, r)
 	if err != nil {
-		http.Error(rw, "file required", http.StatusBadRequest)
-		return
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		http.Error(rw, "file too large", http.StatusRequestEntityTooLarge)
+		w.fail(rw, r, err)
 		return
 	}
 	release := strings.TrimSpace(r.FormValue("release"))
-	name := path.Base(hdr.Filename)
-	ctx := r.Context()
-	if _, err := w.Symbols.Upload(ctx, p.ID, release, "", name, data); err != nil {
+	if _, err := w.Symbols.Upload(r.Context(), p.ID, release, "", name, data); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

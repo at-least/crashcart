@@ -5,6 +5,7 @@ package symbolicate
 import (
 	"bufio"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -94,15 +95,14 @@ func (m *ProGuardMapping) Expand(f Frame) []Frame {
 	if class == "" {
 		return []Frame{f}
 	}
-	cands, ok := m.Methods[class+"."+f.Function]
-	if !ok || len(cands) == 0 {
-		if cls, ok := m.Classes[class]; ok {
-			out := f
-			out.Module = cls
-			out.Filename = deobfuscatedFile(f.Filename, cls)
-			return []Frame{out}
+	cands := m.Methods[class+"."+f.Function]
+	if len(cands) == 0 {
+		// Unknown method of a known class: rename the class only.
+		cls, ok := m.Classes[class]
+		if !ok {
+			return []Frame{f}
 		}
-		return []Frame{f}
+		cands = []proguardMethod{{ClassName: cls, MethodName: f.Function}}
 	}
 	// Entries whose obfuscated range covers the line, in file order
 	// (innermost first); otherwise the range-less declarations.
@@ -113,15 +113,10 @@ func (m *ProGuardMapping) Expand(f Frame) []Frame {
 		}
 	}
 	if len(chain) == 0 {
-		for _, c := range cands {
-			if !c.HasRange {
-				chain = []proguardMethod{c}
-				break
-			}
-		}
-	}
-	if len(chain) == 0 {
 		chain = cands[:1]
+		if i := slices.IndexFunc(cands, func(c proguardMethod) bool { return !c.HasRange }); i >= 0 {
+			chain = cands[i : i+1]
+		}
 	}
 	own := m.Classes[class]
 	out := make([]Frame, 0, len(chain))
@@ -131,13 +126,13 @@ func (m *ProGuardMapping) Expand(f Frame) []Frame {
 		fr.Module = c.ClassName
 		fr.Function = c.MethodName
 		fr.Lineno = c.origLine(f.Lineno)
+		// The SDK's file name belongs to the class the frame was found in;
+		// a callee inlined from another class gets its own.
+		file := ""
 		if c.ClassName == own {
-			fr.Filename = deobfuscatedFile(f.Filename, c.ClassName)
-		} else {
-			// Inlined from another class: the SDK's file name belongs to
-			// the class the frame was found in, not to this one.
-			fr.Filename = deobfuscatedFile("", c.ClassName)
+			file = f.Filename
 		}
+		fr.Filename = deobfuscatedFile(file, c.ClassName)
 		out = append(out, fr)
 	}
 	return out

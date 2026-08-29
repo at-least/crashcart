@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -351,11 +350,11 @@ func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event) (
 		if f.InstrAddr == "" || f.Function != "" {
 			continue
 		}
-		addr, ok := parseHex(f.InstrAddr)
+		addr, ok := sentry.ParseHex(f.InstrAddr)
 		if !ok {
 			continue
 		}
-		if im := findImage(ev.DebugImages, f, addr); im >= 0 {
+		if im := findImage(ev, f, addr); im >= 0 {
 			byImage[im] = append(byImage[im], lookup{i, addr})
 		}
 	}
@@ -375,7 +374,7 @@ func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event) (
 		if file == nil {
 			continue
 		}
-		base, _ := parseHex(image.ImageAddr)
+		base, _ := sentry.ParseHex(image.ImageAddr)
 		module := baseName(image.CodeFile)
 		if len(lks) > MaxDSYMFrames {
 			lks = lks[len(lks)-MaxDSYMFrames:] // innermost frames matter most
@@ -446,33 +445,15 @@ func (s *Service) dsymFile(ctx context.Context, projectID int64, release string,
 
 // findImage picks the debug image containing addr: by the frame's
 // image_addr first, then by [image_addr, image_addr+image_size).
-func findImage(images []sentry.DebugImage, f sentry.Frame, addr uint64) int {
+func findImage(ev *sentry.Event, f sentry.Frame, addr uint64) int {
 	if f.ImageAddr != "" {
-		for i, im := range images {
+		for i, im := range ev.DebugImages {
 			if im.ImageAddr == f.ImageAddr {
 				return i
 			}
 		}
 	}
-	for i, im := range images {
-		base, ok := parseHex(im.ImageAddr)
-		if !ok || addr < base {
-			continue
-		}
-		if im.ImageSize <= 0 || addr < base+uint64(im.ImageSize) {
-			return i
-		}
-	}
-	return -1
-}
-
-func parseHex(s string) (uint64, bool) {
-	s = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s), "0x"), "0X")
-	if s == "" {
-		return 0, false
-	}
-	v, err := strconv.ParseUint(s, 16, 64)
-	return v, err == nil
+	return ev.ImageFor(addr)
 }
 
 // normalizeDebugID lower-cases and strips the "-<age>" suffix some SDKs add.

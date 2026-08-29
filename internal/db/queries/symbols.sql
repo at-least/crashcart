@@ -23,3 +23,11 @@ DELETE FROM symbol_files WHERE project_id = $1 AND id = $2;
 
 -- name: ExpireSymbolFiles :execrows
 DELETE FROM symbol_files WHERE uploaded_at < $1;
+
+-- name: SetSymbolFileRelease :execrows
+-- Tags a release onto mappings uploaded without one: the one identified by
+-- debug_id, or (when debug_id is null) the project's recent ProGuard uploads.
+UPDATE symbol_files SET release = sqlc.arg(release)
+WHERE project_id = sqlc.arg(project_id) AND release = ''
+  AND ((sqlc.narg(debug_id)::text IS NOT NULL AND debug_id = sqlc.narg(debug_id)::text)
+    OR (sqlc.narg(debug_id)::text IS NULL AND kind = 'proguard' AND uploaded_at > sqlc.arg(since)));

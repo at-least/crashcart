@@ -1,9 +1,6 @@
 package api
 
 import (
-	"errors"
-	"io"
-	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,35 +9,6 @@ import (
 	"github.com/newlix/crashcart/internal/db/sqlc"
 	"github.com/newlix/crashcart/internal/symbolicate"
 )
-
-// MaxSymbolUpload caps one symbol upload request (and one zip entry).
-const MaxSymbolUpload = symbolicate.MaxUpload
-
-// readUpload parses a multipart body (bounded by MaxSymbolUpload) and
-// returns the `file` part.
-func readUpload(w http.ResponseWriter, r *http.Request) (*multipart.FileHeader, []byte, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, MaxSymbolUpload+1<<20)
-	if err := r.ParseMultipartForm(8 << 20); err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			return nil, nil, badRequest("upload exceeds 50 MB")
-		}
-		return nil, nil, badRequest("multipart form expected: " + err.Error())
-	}
-	f, fh, err := r.FormFile("file")
-	if err != nil {
-		return nil, nil, badRequest(`multipart field "file" is required`)
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, MaxSymbolUpload+1))
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(data) > MaxSymbolUpload {
-		return nil, nil, badRequest("upload exceeds 50 MB")
-	}
-	return fh, data, nil
-}
 
 func (h *Handler) listSymbols(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.project(w, r)
@@ -60,13 +28,13 @@ func (h *Handler) uploadSymbols(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	fh, data, err := readUpload(w, r)
+	name, data, err := symbolicate.ReadMultipartUpload(w, r)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	release := strings.TrimSpace(r.FormValue("release"))
-	rows, err := h.Symbols.Upload(r.Context(), p.ID, release, strings.TrimSpace(r.FormValue("kind")), fh.Filename, data)
+	rows, err := h.Symbols.Upload(r.Context(), p.ID, release, strings.TrimSpace(r.FormValue("kind")), name, data)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -138,13 +106,13 @@ func (h *Handler) sentryUploadDSYMs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	fh, data, err := readUpload(w, r)
+	name, data, err := symbolicate.ReadMultipartUpload(w, r)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	release := strings.TrimSpace(r.FormValue("release"))
-	rows, err := h.Symbols.Upload(r.Context(), p.ID, release, "", fh.Filename, data)
+	rows, err := h.Symbols.Upload(r.Context(), p.ID, release, "", name, data)
 	if err != nil {
 		h.fail(w, err)
 		return

@@ -84,6 +84,35 @@ func (q *Queries) ListSymbolFiles(ctx context.Context, projectID int64) ([]ListS
 	return items, nil
 }
 
+const setSymbolFileRelease = `-- name: SetSymbolFileRelease :execrows
+UPDATE symbol_files SET release = $1
+WHERE project_id = $2 AND release = ''
+  AND (($3::text IS NOT NULL AND debug_id = $3::text)
+    OR ($3::text IS NULL AND kind = 'proguard' AND uploaded_at > $4))
+`
+
+type SetSymbolFileReleaseParams struct {
+	Release   string    `json:"release"`
+	ProjectID int64     `json:"project_id"`
+	DebugID   *string   `json:"debug_id"`
+	Since     time.Time `json:"since"`
+}
+
+// Tags a release onto mappings uploaded without one: the one identified by
+// debug_id, or (when debug_id is null) the project's recent ProGuard uploads.
+func (q *Queries) SetSymbolFileRelease(ctx context.Context, arg SetSymbolFileReleaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setSymbolFileRelease,
+		arg.Release,
+		arg.ProjectID,
+		arg.DebugID,
+		arg.Since,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const symbolFileByDebugID = `-- name: SymbolFileByDebugID :one
 SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1
 `

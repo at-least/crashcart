@@ -37,8 +37,9 @@ import (
 
 // Limits on what one request may carry.
 const (
-	MaxBody   = 20 << 20 // 20 MB envelope
-	MaxEvents = 500
+	MaxBody      = 20 << 20 // 20 MB envelope
+	MaxEvents    = 500
+	WriteTimeout = 30 * time.Second // the write outlives a client that hangs up
 )
 
 // Symbolicator resolves frames inline when a mapping is already cached.
@@ -141,12 +142,13 @@ func (in *Ingester) serveEnvelope(w http.ResponseWriter, r *http.Request) {
 	if env.Invalid > 0 {
 		in.Log.Warn("ingest: unparseable event item", "project", p.Slug, "invalid", env.Invalid, "sdk", r.Header.Get("User-Agent"))
 	}
-	res, err := in.Ingest(detached(r), p, env, now)
+	ctx, cancel := detached(r)
+	defer cancel()
+	res, err := in.Ingest(ctx, p, env, now)
 	if err != nil {
 		in.fail(w, err)
 		return
 	}
-	res.Invalid = env.Invalid
 	in.ok(w, res, firstEventID(env))
 }
 
@@ -166,7 +168,9 @@ func (in *Ingester) serveStore(w http.ResponseWriter, r *http.Request) {
 	if ev := sentry.ParseEvent("", now, body, now); ev != nil {
 		env.Events = append(env.Events, ev)
 	}
-	res, err := in.Ingest(detached(r), p, env, now)
+	ctx, cancel := detached(r)
+	defer cancel()
+	res, err := in.Ingest(ctx, p, env, now)
 	if err != nil {
 		in.fail(w, err)
 		return
@@ -177,10 +181,8 @@ func (in *Ingester) serveStore(w http.ResponseWriter, r *http.Request) {
 // detached is the context for the write once the body is in hand: a crashing
 // mobile process closes its connection right after sending, and that must
 // not roll back the transaction (the SDK would resend from its cache).
-func detached(r *http.Request) context.Context {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
-	_ = cancel // bounded by the timeout; nothing to release early
-	return ctx
+func detached(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), WriteTimeout)
 }
 
 // readBody reads the request body, transparently decoding the
@@ -258,25 +260,30 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		return res, nil
 	}
 
-	// 0. Ids are derived from the event's own id, so an envelope the SDK
-	//    resends (after a timeout, or from its crash cache) maps to the same
-	//    rows: those are dropped here, before they could be counted twice.
-	events, dupes, err := in.dedupe(ctx, env.Events)
-	if err != nil {
-		return res, err
-	}
-	res.Duplicates = dupes
+	res.Invalid = env.Invalid
 
 	// 1. Analyze. Inline symbolication when a mapping is cached; the
-	//    fingerprint is computed on the best frames we have.
-	preps := make([]*prepared, 0, len(events))
-	groups := map[string][]*prepared{}
-	var order []string
-	for _, ev := range events {
+	//    fingerprint is computed on the best frames we have. Ids derive
+	//    from the event's own id (see eventPK), with in-envelope slot
+	//    collisions bumped here.
+	preps := make([]*prepared, 0, len(env.Events))
+	seenEvent := map[string]bool{}
+	seenID := map[int64]bool{}
+	for _, ev := range env.Events {
+		if seenEvent[ev.EventID] {
+			res.Duplicates++ // the same event twice in one envelope
+			continue
+		}
+		seenEvent[ev.EventID] = true
 		if in.Cfg.PIIRedact {
 			redact(ev)
 		}
-		pr := &prepared{id: eventPK(ev), ev: ev, frames: ev.Frames()}
+		id := eventPK(ev)
+		for seenID[id] && id%pk.Scale < pk.Scale-1 {
+			id++ // different event, same slot: next slot in the same millisecond
+		}
+		seenID[id] = true
+		pr := &prepared{id: id, ev: ev, frames: ev.Frames()}
 		if in.Symbols != nil && ev.NeedsSymbolication() {
 			if fr, ok := in.Symbols.Inline(ctx, p.ID, ev); ok {
 				pr.frames, pr.symbolicated = fr, true
@@ -285,19 +292,51 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		pr.fingerprint = sentry.Fingerprint(ev, pr.frames)
 		pr.location = sentry.ErrorLocation(pr.frames)
 		preps = append(preps, pr)
-		if pr.fingerprint != "" {
+	}
+
+	// 2. One transaction: drop resends, fold by fingerprint, upsert issues,
+	//    decide sampling, write events, sessions, jobs.
+	var jobs []sqlc.EnqueueJobParams
+	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+		// An envelope the SDK resends (after a timeout, or from its crash
+		// cache) maps to ids already stored: those must not be counted twice.
+		if len(preps) > 0 {
+			ids := make([]int64, len(preps))
+			for i, pr := range preps {
+				ids[i] = pr.id
+			}
+			existing, err := q.ExistingEventIDs(ctx, ids)
+			if err != nil {
+				return fmt.Errorf("dedupe: %w", err)
+			}
+			if len(existing) > 0 {
+				stored := map[int64]bool{}
+				for _, id := range existing {
+					stored[id] = true
+				}
+				kept := preps[:0]
+				for _, pr := range preps {
+					if stored[pr.id] {
+						res.Duplicates++
+					} else {
+						kept = append(kept, pr)
+					}
+				}
+				preps = kept
+			}
+		}
+		groups := map[string][]*prepared{}
+		var order []string
+		for _, pr := range preps {
+			if pr.fingerprint == "" {
+				pr.store = in.Cfg.PIIRedact || p.SampleRate >= 1 || rand.Float64() < p.SampleRate
+				continue
+			}
 			if _, seen := groups[pr.fingerprint]; !seen {
 				order = append(order, pr.fingerprint)
 			}
 			groups[pr.fingerprint] = append(groups[pr.fingerprint], pr)
-		} else {
-			pr.store = in.Cfg.PIIRedact || rand.Float64() < p.SampleRate || p.SampleRate >= 1
 		}
-	}
-
-	// 2. One transaction: issues (folded per fingerprint), sampling, events, sessions, jobs.
-	var jobs []sqlc.EnqueueJobParams
-	err = in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		for _, fp := range order {
 			g := groups[fp]
 			first := g[0]
@@ -328,7 +367,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			if row.Created {
 				res.NewIssues = append(res.NewIssues, fp)
 				jobs = append(jobs, alertJob(p.ID, "new_issue", fp))
-			} else if row.Status == "regression" && row.UpdatedAt.After(now.Add(-time.Second)) && regressedNow(row) {
+			} else if row.Status == "regression" && row.UpdatedAt.After(now.Add(-time.Second)) {
 				res.Regressions = append(res.Regressions, fp)
 				jobs = append(jobs, alertJob(p.ID, "regression", fp))
 			}
@@ -402,66 +441,19 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	return res, err
 }
 
-// regressedNow is true when the upsert flipped the status in this call:
-// the row is a regression and its updated_at is fresh. Callers already
-// checked the timestamp; this exists to keep the intent readable.
-func regressedNow(row sqlc.UpsertIssueRow) bool { return row.Status == "regression" }
-
 // eventPK derives the primary key from the event's own id: the millisecond
 // from its timestamp, the low part from a hash of event_id. Two deliveries
 // of one event collide (and the second is dropped); two different events
 // in the same millisecond collide with the same 1/1000 odds a random low
-// part had. Within one envelope a collision is bumped to the next slot.
-func eventPK(ev *sentry.Event) int64 {
-	h := fnv.New32a()
-	h.Write([]byte(ev.EventID))
-	return pk.Lower(ev.Timestamp) + int64(h.Sum32()%pk.Scale)
-}
+// part had. (An event whose slot was bumped in its envelope is not matched
+// by a later resend — accepted.)
+func eventPK(ev *sentry.Event) int64 { return hashedPK(ev.Timestamp, ev.EventID) }
 
-// dedupe resolves in-envelope id collisions and drops events whose id is
-// already stored.
-func (in *Ingester) dedupe(ctx context.Context, events []*sentry.Event) ([]*sentry.Event, int, error) {
-	if len(events) == 0 {
-		return events, 0, nil
-	}
-	seen := map[int64]string{}
-	ids := make([]int64, 0, len(events))
-	var out []*sentry.Event
-	dupes := 0
-	for _, ev := range events {
-		id := eventPK(ev)
-		for prev, ok := seen[id]; ok && prev != ev.EventID && id%pk.Scale < pk.Scale-1; prev, ok = seen[id] {
-			id++ // different event, same slot: next slot in the same millisecond
-		}
-		if prev, ok := seen[id]; ok && prev == ev.EventID {
-			dupes++ // the same event twice in one envelope
-			continue
-		}
-		seen[id] = ev.EventID
-		ev.Timestamp = pk.Time(id) // keep timestamp and id consistent after a bump
-		ids = append(ids, id)
-		out = append(out, ev)
-	}
-	existing, err := in.Store.ExistingEventIDs(ctx, ids)
-	if err != nil {
-		return nil, 0, fmt.Errorf("dedupe: %w", err)
-	}
-	if len(existing) == 0 {
-		return out, dupes, nil
-	}
-	skip := map[int64]bool{}
-	for _, id := range existing {
-		skip[id] = true
-	}
-	kept := out[:0]
-	for i, ev := range out {
-		if skip[ids[i]] {
-			dupes++
-			continue
-		}
-		kept = append(kept, ev)
-	}
-	return kept, dupes, nil
+// hashedPK is pk.New with the random low part replaced by a hash of key.
+func hashedPK(t time.Time, key string) int64 {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return pk.Lower(t) + int64(h.Sum32()%pk.Scale)
 }
 
 // sessionID makes every update of one session (same sid, same start) land
@@ -471,9 +463,7 @@ func sessionID(s sentry.Session) int64 {
 	if s.SID == "" {
 		return pk.New(s.StartedAt)
 	}
-	h := fnv.New32a()
-	h.Write([]byte(s.SID))
-	return pk.Lower(s.StartedAt) + int64(h.Sum32()%pk.Scale)
+	return hashedPK(s.StartedAt, s.SID)
 }
 
 func alertJob(projectID int64, typ, fp string) sqlc.EnqueueJobParams {

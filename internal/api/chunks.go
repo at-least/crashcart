@@ -188,19 +188,17 @@ func baseURL(cfg config.Config, r *http.Request) string {
 
 // sentryAssociate answers the follow-up `upload-proguard` makes after an
 // upload (the Sentry Gradle plugin passes --app-id/--version): it ties
-// mappings to an app release. CrashCart matches mappings by debug_id from
-// debug_meta, so the association is recorded only as the symbol file's
-// release when it was uploaded without one.
+// mappings to an app release. CrashCart matches mappings by debug_id, so
+// the release is only recorded on the recent uploads for the settings page.
 func (h *Handler) sentryAssociate(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.projectBySlugOrID(w, r, r.PathValue("project"))
 	if !ok {
 		return
 	}
 	var req struct {
-		Checksums []string `json:"checksums"`
-		AppID     string   `json:"appId"`
-		Version   string   `json:"version"`
-		Build     string   `json:"build"`
+		AppID   string `json:"appId"`
+		Version string `json:"version"`
+		Build   string `json:"build"`
 	}
 	if err := readJSON(w, r, &req); err != nil {
 		h.fail(w, err)
@@ -213,21 +211,16 @@ func (h *Handler) sentryAssociate(w http.ResponseWriter, r *http.Request) {
 			release += "+" + req.Build
 		}
 	}
-	if release != "" {
-		if _, err := h.Store.Pool.Exec(r.Context(),
-			"UPDATE symbol_files SET release = $2 WHERE project_id = $1 AND release = '' AND kind = 'proguard' AND uploaded_at > now() - interval '1 hour'",
-			p.ID, release); err != nil {
-			h.fail(w, err)
-			return
-		}
+	if err := h.Symbols.Associate(r.Context(), p.ID, release, ""); err != nil {
+		h.fail(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"associatedDsymFiles": []any{}})
 }
 
 // sentryProguardArtifactRelease is what the Sentry Gradle plugin's bundled
 // sentry-cli calls after a legacy ProGuard upload: {proguard_uuid,
-// release_name}. The uuid already identifies the mapping; the release is
-// recorded on the row for the settings page.
+// release_name}.
 func (h *Handler) sentryProguardArtifactRelease(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.projectBySlugOrID(w, r, r.PathValue("project"))
 	if !ok {
@@ -241,10 +234,8 @@ func (h *Handler) sentryProguardArtifactRelease(w http.ResponseWriter, r *http.R
 		h.fail(w, err)
 		return
 	}
-	if req.UUID != "" && req.Release != "" {
-		if _, err := h.Store.Pool.Exec(r.Context(),
-			"UPDATE symbol_files SET release = $3 WHERE project_id = $1 AND debug_id = $2 AND release = ''",
-			p.ID, strings.ToLower(req.UUID), req.Release); err != nil {
+	if req.UUID != "" {
+		if err := h.Symbols.Associate(r.Context(), p.ID, req.Release, req.UUID); err != nil {
 			h.fail(w, err)
 			return
 		}

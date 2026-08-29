@@ -3,6 +3,8 @@ package symbolicate
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/newlix/crashcart/internal/sentry"
 )
 
 const mappingTxt = `# compiler: R8
@@ -101,10 +103,10 @@ func TestDetectKind(t *testing.T) {
 }
 
 func TestParseHexAndDebugID(t *testing.T) {
-	if v, ok := parseHex("0x1049e2b50"); !ok || v != 0x1049e2b50 {
+	if v, ok := sentry.ParseHex("0x1049e2b50"); !ok || v != 0x1049e2b50 {
 		t.Errorf("parseHex = %x %v", v, ok)
 	}
-	if _, ok := parseHex(""); ok {
+	if _, ok := sentry.ParseHex(""); ok {
 		t.Error("empty should fail")
 	}
 	if got := normalizeDebugID("4A3B4C5D-1234-5678-9ABC-DEF012345678-1"); got != "4a3b4c5d-1234-5678-9abc-def012345678" {

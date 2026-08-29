@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net/http"
 	"path"
 	"regexp"
 	"strings"
@@ -127,19 +129,15 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 }
 
 // classify is DetectKind plus a content check for binaries: an opaque file
-// only counts as a dSYM when it actually parses as Mach-O.
+// only counts as a dSYM when it actually parses as Mach-O (Info.plist,
+// Relocations/*.yml and nested archives inside a dSYM zip are skipped).
 func classify(name string, data []byte) string {
 	k := DetectKind(name, data[:min(len(data), 4096)])
 	if k == KindDSYM || k == "" {
 		if IsMachO(data) {
 			return KindDSYM
 		}
-		if isZip(name, data) {
-			return "" // nested archives are not expanded
-		}
-		if k == KindDSYM && !strings.HasSuffix(strings.ToLower(name), ".zip") {
-			return "" // named like a dSYM but not Mach-O
-		}
+		return ""
 	}
 	return k
 }
@@ -175,4 +173,53 @@ func DebugIDFor(kind, filename string, data []byte) *string {
 
 func isZip(filename string, data []byte) bool {
 	return bytes.HasPrefix(data, []byte("PK\x03\x04")) || strings.HasSuffix(strings.ToLower(filename), ".zip")
+}
+
+// Associate tags a release onto mappings that were uploaded without one
+// (sentry-cli's follow-up after `upload-proguard`). debugID targets one
+// mapping; "" tags the project's ProGuard uploads of the last hour. Cached
+// release lookups are dropped so the newly tagged mapping is found.
+func (s *Service) Associate(ctx context.Context, projectID int64, release, debugID string) error {
+	release = strings.TrimSpace(release)
+	if release == "" {
+		return nil
+	}
+	var id *string
+	if debugID = strings.ToLower(strings.TrimSpace(debugID)); debugID != "" {
+		id = &debugID
+	}
+	if _, err := s.Store.SetSymbolFileRelease(ctx, sqlc.SetSymbolFileReleaseParams{
+		ProjectID: projectID, Release: release, DebugID: id, Since: time.Now().Add(-time.Hour),
+	}); err != nil {
+		return err
+	}
+	s.Invalidate(projectID, release)
+	return nil
+}
+
+// ReadMultipartUpload reads the `file` part of a multipart request, bounded
+// by MaxUpload, for the HTTP handlers that accept symbol uploads. Caller
+// mistakes are UploadError.
+func ReadMultipartUpload(w http.ResponseWriter, r *http.Request) (name string, data []byte, err error) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxUpload+1<<20)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return "", nil, UploadError("upload exceeds 50 MB")
+		}
+		return "", nil, UploadError("multipart form expected: " + err.Error())
+	}
+	f, fh, err := r.FormFile("file")
+	if err != nil {
+		return "", nil, UploadError(`multipart field "file" is required`)
+	}
+	defer f.Close()
+	data, err = io.ReadAll(io.LimitReader(f, MaxUpload+1))
+	if err != nil {
+		return "", nil, err
+	}
+	if len(data) > MaxUpload {
+		return "", nil, UploadError("upload exceeds 50 MB")
+	}
+	return fh.Filename, data, nil
 }

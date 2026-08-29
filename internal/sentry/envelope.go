@@ -111,17 +111,19 @@ func (e *Event) Frames() []Frame {
 
 // threadFrames picks the crashed thread's stack, else the current one's.
 func threadFrames(threads []rawThread) []Frame {
-	for _, pick := range []func(t rawThread) bool{
-		func(t rawThread) bool { return t.Crashed },
-		func(t rawThread) bool { return t.Current },
-	} {
-		for _, t := range threads {
-			if pick(t) && t.Stacktrace != nil && len(t.Stacktrace.Frames) > 0 {
-				return t.Stacktrace.Frames
-			}
+	var current []Frame
+	for _, t := range threads {
+		if t.Stacktrace == nil || len(t.Stacktrace.Frames) == 0 {
+			continue
+		}
+		if t.Crashed {
+			return t.Stacktrace.Frames
+		}
+		if t.Current && current == nil {
+			current = t.Stacktrace.Frames
 		}
 	}
-	return nil
+	return current
 }
 
 // primaryException picks the root cause of a chain and the exception that
@@ -133,17 +135,20 @@ func primaryException(xs []Exception) (root, top int) {
 		return 0, 0
 	}
 	linked := false
-	isParent := map[int]bool{}
 	for _, x := range xs {
 		if x.ExceptionID != nil {
 			linked = true
-		}
-		if x.ParentID != nil {
-			isParent[*x.ParentID] = true
+			break
 		}
 	}
 	if !linked {
 		return 0, len(xs) - 1
+	}
+	isParent := map[int]bool{}
+	for _, x := range xs {
+		if x.ParentID != nil {
+			isParent[*x.ParentID] = true
+		}
 	}
 	root, top = -1, -1
 	for i, x := range xs {
@@ -327,14 +332,14 @@ type rawEvent struct {
 		Message   string `json:"message"`
 		Formatted string `json:"formatted"`
 	} `json:"logentry"`
-	Platform    string          `json:"platform"`
-	Environment string          `json:"environment"`
-	Release     string          `json:"release"`
-	Transaction string          `json:"transaction"`
-	ServerName  string          `json:"server_name"`
-	Tags        json.RawMessage `json:"tags"`
-	Breadcrumbs json.RawMessage `json:"breadcrumbs"`
-	Fingerprint []string        `json:"fingerprint"`
+	Platform    string                  `json:"platform"`
+	Environment string                  `json:"environment"`
+	Release     string                  `json:"release"`
+	Transaction string                  `json:"transaction"`
+	ServerName  string                  `json:"server_name"`
+	Tags        json.RawMessage         `json:"tags"`
+	Breadcrumbs valuesOf[rawBreadcrumb] `json:"breadcrumbs"`
+	Fingerprint []string                `json:"fingerprint"`
 	Contexts    *struct {
 		Device *struct {
 			Model string `json:"model"`
@@ -367,7 +372,10 @@ type rawEvent struct {
 
 var eventIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-const maxMessage = 500
+const (
+	maxMessage = 500
+	noMessage  = "(no message)"
+)
 
 // ParseEvent parses a single event JSON body (envelope item or the legacy
 // /store/ endpoint). Returns nil for anything that is not a JSON object.
@@ -428,19 +436,17 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	if ev.DeviceModel == "" {
 		ev.DeviceModel = re.ServerName
 	}
-	{
-		for _, x := range re.Exception.Values {
-			ex := Exception{Type: x.Type, Value: x.Value}
-			if x.Stacktrace != nil {
-				ex.Frames = x.Stacktrace.Frames
-			}
-			if x.Mechanism != nil {
-				ex.Handled = x.Mechanism.Handled
-				ex.Mechanism = x.Mechanism.Type
-				ex.ExceptionID, ex.ParentID = x.Mechanism.ExceptionID, x.Mechanism.ParentID
-			}
-			ev.Exceptions = append(ev.Exceptions, ex)
+	for _, x := range re.Exception.Values {
+		ex := Exception{Type: x.Type, Value: x.Value}
+		if x.Stacktrace != nil {
+			ex.Frames = x.Stacktrace.Frames
 		}
+		if x.Mechanism != nil {
+			ex.Handled = x.Mechanism.Handled
+			ex.Mechanism = x.Mechanism.Type
+			ex.ExceptionID, ex.ParentID = x.Mechanism.ExceptionID, x.Mechanism.ParentID
+		}
+		ev.Exceptions = append(ev.Exceptions, ex)
 	}
 	// The root cause names the issue; the thrown (outermost) exception
 	// carries the handled flag. A cause without its own stack borrows the
@@ -466,8 +472,7 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 			// crashed thread.
 			ev.Exceptions[root].Frames = threadFrames(re.Threads.Values)
 		}
-	}
-	if len(ev.Exceptions) == 0 {
+	} else {
 		ev.ThreadFrames = threadFrames(re.Threads.Values)
 	}
 	if re.DebugMeta != nil {
@@ -485,7 +490,7 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 		ev.UserID = scalarString(re.User.ID)
 	}
 	ev.Message = truncate(extractMessage(&re, ev.Primary), maxMessage)
-	for _, b := range parseRawBreadcrumbs(re.Breadcrumbs) {
+	for _, b := range lastBreadcrumbs(re.Breadcrumbs.Values) {
 		cat := b.Category
 		if cat == "" {
 			cat = "default"
@@ -556,7 +561,7 @@ func extractMessage(re *rawEvent, primary int) string {
 		}
 		return t + ": " + v.Value
 	}
-	return "(no message)"
+	return noMessage
 }
 
 // parseTags accepts {"k": v} or [["k", v], …]. Values are stringified.
@@ -583,23 +588,10 @@ func parseTags(raw json.RawMessage) map[string]string {
 	return out
 }
 
-// parseRawBreadcrumbs accepts {"values": [...]} or a bare array; keeps the last 20.
-func parseRawBreadcrumbs(raw json.RawMessage) []rawBreadcrumb {
-	if len(raw) == 0 {
-		return nil
-	}
-	var list []rawBreadcrumb
-	if json.Unmarshal(raw, &list) != nil {
-		var wrapped struct {
-			Values []rawBreadcrumb `json:"values"`
-		}
-		if json.Unmarshal(raw, &wrapped) != nil {
-			return nil
-		}
-		list = wrapped.Values
-	}
+// lastBreadcrumbs keeps the newest 20.
+func lastBreadcrumbs(list []rawBreadcrumb) []rawBreadcrumb {
 	if len(list) > 20 {
-		list = list[len(list)-20:]
+		return list[len(list)-20:]
 	}
 	return list
 }
