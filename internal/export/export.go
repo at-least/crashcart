@@ -124,7 +124,6 @@ type eventRow struct {
 	Fingerprint   *string         `json:"fingerprint,omitempty"`
 	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
-	Breadcrumbs   json.RawMessage `json:"breadcrumbs"`
 	Payload       json.RawMessage `json:"payload"`
 	Symbols       json.RawMessage `json:"symbols,omitempty"`
 }
@@ -203,7 +202,7 @@ const (
 	first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
 	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
-	os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs,
+	os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
 	payload, symbols FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at
@@ -255,8 +254,8 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 				Platform: r.Platform, Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID,
 				DeviceModel: r.DeviceModel, OSVersion: r.OsVersion, Screen: r.Screen, ErrorType: r.ErrorType,
 				ErrorLocation: r.ErrorLocation, Handled: r.Handled, SDKName: r.SdkName, UserID: r.UserID,
-				Fingerprint: r.Fingerprint, Symbolicated: r.Symbolicated, Tags: r.Tags, Breadcrumbs: r.Breadcrumbs,
-				Payload: r.Payload, Symbols: r.Symbols,
+				Fingerprint: r.Fingerprint, Symbolicated: r.Symbolicated, Tags: r.Tags,
+				Payload: json.RawMessage(r.Payload), Symbols: r.Symbols,
 			})
 		}); err != nil {
 			return fmt.Errorf("export events: %w", err)
@@ -482,8 +481,8 @@ func (im *importer) line(b []byte) error {
 			Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID, DeviceModel: r.DeviceModel,
 			OSVersion: r.OSVersion, Screen: r.Screen, ErrorType: r.ErrorType, ErrorLocation: r.ErrorLocation,
 			Handled: r.Handled, SDKName: r.SDKName, UserID: r.UserID, Fingerprint: r.Fingerprint,
-			Symbolicated: r.Symbolicated, Tags: orJSON(r.Tags, "{}"), Breadcrumbs: orJSON(r.Breadcrumbs, "[]"),
-			Payload: r.Payload, Symbols: r.Symbols,
+			Symbolicated: r.Symbolicated, Tags: orJSON(r.Tags, "{}"),
+			Payload: []byte(r.Payload), Symbols: r.Symbols,
 		})
 		if len(im.events) >= batchSize {
 			if err := im.flushEvents(); err != nil {

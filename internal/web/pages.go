@@ -581,7 +581,7 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	d := EventData{E: e, Stacks: stacksOf(e), Crumbs: crumbsOf(e.Breadcrumbs), Tags: tagsMap(e.Tags)}
+	d := EventData{E: e, Stacks: stacksOf(e), Crumbs: crumbsOf(e), Tags: tagsMap(e.Tags)}
 	d.Contexts, d.User = payloadContexts(e.Payload)
 	if e.Fingerprint != nil {
 		if is, err := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: *e.Fingerprint}); err == nil {

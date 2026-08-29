@@ -1,8 +1,11 @@
 package api
 
 import (
+	"encoding/json"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -91,5 +94,22 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, ev)
+	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(ev.Payload), Breadcrumbs: breadcrumbsOf(ev)})
+}
+
+// eventDetail is the JSON API's event: the row, with the raw payload
+// embedded as JSON (the column holds its bytes) and the breadcrumbs
+// (newest last, at most 20) read from it.
+type eventDetail struct {
+	sqlc.Event
+	Payload     json.RawMessage     `json:"payload"`
+	Breadcrumbs []sentry.Breadcrumb `json:"breadcrumbs"`
+}
+
+func breadcrumbsOf(ev sqlc.Event) []sentry.Breadcrumb {
+	parsed := sentry.ParseEvent(ev.EventID, ev.OccurredAt, ev.Payload, time.Now().UTC())
+	if parsed == nil || parsed.Breadcrumbs == nil {
+		return []sentry.Breadcrumb{}
+	}
+	return parsed.Breadcrumbs
 }

@@ -354,8 +354,7 @@ type Event struct {
 	Fingerprint   *string         `json:"fingerprint"`
 	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
-	Breadcrumbs   json.RawMessage `json:"breadcrumbs"`
-	Payload       json.RawMessage `json:"payload"`
+	Payload       []byte          `json:"payload"`
 	Symbols       json.RawMessage `json:"symbols"`
 }
 

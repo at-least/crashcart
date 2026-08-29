@@ -56,8 +56,7 @@ CREATE TABLE events (
     fingerprint    TEXT,
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    breadcrumbs    JSONB NOT NULL DEFAULT '[]'::jsonb,
-    payload        JSONB NOT NULL,
+    payload        BYTEA NOT NULL,
     symbols        JSONB,
     PRIMARY KEY (project_id, event_id, occurred_at)
 );

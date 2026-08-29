@@ -173,12 +173,13 @@ func flatten(m map[string]any) []KV {
 }
 
 // crumbsOf decodes the breadcrumbs column, newest first, capped at 30.
-func crumbsOf(raw json.RawMessage) []sentry.Breadcrumb {
-	var list []sentry.Breadcrumb
-	_ = json.Unmarshal(raw, &list)
-	if len(list) > 30 {
-		list = list[len(list)-30:]
+func crumbsOf(e sqlc.Event) []sentry.Breadcrumb {
+	ev := parsePayload(e)
+	if ev == nil {
+		return nil
 	}
+	list := ev.Breadcrumbs
+	// newest first
 	for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
 		list[i], list[j] = list[j], list[i]
 	}

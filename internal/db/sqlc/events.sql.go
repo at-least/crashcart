@@ -42,7 +42,7 @@ func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsPara
 }
 
 const getEvent = `-- name: GetEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs, payload, symbols FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, payload, symbols FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
 `
 
 type GetEventParams struct {
@@ -75,7 +75,6 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 		&i.Fingerprint,
 		&i.Symbolicated,
 		&i.Tags,
-		&i.Breadcrumbs,
 		&i.Payload,
 		&i.Symbols,
 	)

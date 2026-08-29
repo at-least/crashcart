@@ -491,7 +491,6 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			}
 			ev := pr.ev
 			tags, _ := json.Marshal(ev.Tags)
-			crumbs, _ := json.Marshal(nonNil(ev.Breadcrumbs))
 			var symbols json.RawMessage
 			if pr.symbolicated {
 				symbols, _ = json.Marshal(pr.frames)
@@ -503,7 +502,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				Screen: nilIfEmpty(ev.Screen), ErrorType: nilIfEmpty(ev.ErrorType), ErrorLocation: nilIfEmpty(pr.location),
 				Handled: ev.Handled, SDKName: nilIfEmpty(ev.SDKName), UserID: nilIfEmpty(ev.UserID),
 				Fingerprint: nilIfEmpty(pr.fingerprint), Symbolicated: pr.symbolicated,
-				Tags: tags, Breadcrumbs: crumbs, Payload: ev.Raw, Symbols: symbols,
+				Tags: tags, Payload: ev.Raw, Symbols: symbols,
 			})
 			if pr.retry && pr.fingerprint != "" {
 				args, _ := json.Marshal(map[string]any{"event": ev.EventID})

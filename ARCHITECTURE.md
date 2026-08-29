@@ -60,8 +60,11 @@ issue seen on a release different from `resolved_release`.
 events of each issue are always stored; after that `sample_rate` of them;
 `fatal` always. Dropped events still increment `event_count`.
 
-**Symbolicate at ingest, store beside the payload.** `payload` is never
-rewritten (it is TOASTed; rewriting it doubles the write). Symbolicated
+**Symbolicate at ingest, store beside the payload.** `payload` is the
+event's JSON bytes exactly as the SDK sent them (`BYTEA`: the database never
+parses it, nothing queries inside it — everything filterable is a column or
+a `tags` key, extracted at ingest) and is never rewritten (it is TOASTed;
+rewriting it doubles the write). Symbolicated
 frames go in `events.symbols`; `fingerprint` and `error_location` are
 computed on the resolved frames, so the issue is right from the first
 event. ProGuard and source maps resolve in-process (mappings are loaded

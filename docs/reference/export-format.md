@@ -139,14 +139,12 @@ user_id?          str
 fingerprint?      str    references issues.fingerprint in the same project
 symbolicated      bool
 tags              json   object; default {}
-breadcrumbs       json   array;  default []
-payload           json   required; the raw Sentry event object, never rewritten
+payload           json   required; the raw Sentry event object exactly as the SDK sent it
 symbols?          json   symbolicated frames (only when symbolicated)
 ```
 
 Import: insert; conflict on `(project, event_id, occurred_at)` → skip
-(`ON CONFLICT DO NOTHING`). `tags`/`breadcrumbs` missing or `null` →
-defaults. A row without `occurred_at`, `event_id` or `payload` is an error.
+(`ON CONFLICT DO NOTHING`). `tags` missing or `null` → default. A row without `occurred_at`, `event_id` or `payload` is an error.
 
 ### `sessions`
 

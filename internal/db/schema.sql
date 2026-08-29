@@ -67,8 +67,7 @@ CREATE TABLE events (
     fingerprint    TEXT,                             -- issues.fingerprint (null when nothing to group)
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    breadcrumbs    JSONB NOT NULL DEFAULT '[]'::jsonb,
-    payload        JSONB NOT NULL,                   -- the untouched Sentry event; never rewritten
+    payload        BYTEA NOT NULL,                   -- the Sentry event exactly as sent (JSON bytes); never parsed or rewritten by the database
     symbols        JSONB,                            -- symbolicated frames (written once)
     PRIMARY KEY (project_id, event_id, occurred_at)  -- a resent envelope lands on the same key
 );
