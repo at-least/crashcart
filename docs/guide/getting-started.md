@@ -1,35 +1,82 @@
 # Getting started
 
-CrashCart is *Sentry SDK compatible*: any Sentry SDK pointed at a CrashCart
-DSN reports crashes, errors, messages and release-health sessions into it.
+This page takes you from nothing to a crash in the viewer. It uses Docker
+Compose; see [Deploy](/deploy/docker) for production settings and
+[Binary & managed Postgres](/deploy/postgres) for running without Docker.
 
-```
-Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres (+ TimescaleDB)
-Browser    ──GET  /p/{slug}/…  (htmx) ──▶    │
-Scripts    ──GET  /api/projects/… ──────▶    │
-sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   └──▶ symbolicate sidecar (dSYM only, optional)
-```
-
-## Run it
+## 1. Run CrashCart
 
 ```sh
-docker compose up -d                       # TimescaleDB + crashcart on :8080
-docker compose exec crashcart /crashcart project shop "Shop app" ios
-# project shop (id 1)
+git clone https://github.com/crashcartapp/crashcart
+cd crashcart
+docker compose up -d
+```
+
+This starts TimescaleDB and CrashCart on `http://localhost:8080`.
+Migrations run automatically at startup.
+
+## 2. Create a project
+
+A project is one DSN. Create one per app *and* platform:
+
+```sh
+docker compose exec crashcart /crashcart project shop-ios "Shop app (iOS)" ios
+# project shop-ios (id 1)
 # DSN: http://<key>@localhost:8080/1
 ```
 
-## Point an SDK at it
+The platform argument is optional and one of the SDK families (`ios`,
+`android`, `javascript`, `node`, `python`, …). It is a label for the viewer,
+not a filter — see [Projects & DSNs](./projects).
 
-Paste the DSN into the SDK:
+You can also create projects from the viewer's home page.
 
-```swift
-SentrySDK.start { $0.dsn = "http://<key>@localhost:8080/1" }
+## 3. Point an SDK at it
+
+Paste the DSN into the SDK exactly as you would a Sentry DSN:
+
+::: code-group
+
+```swift [iOS]
+SentrySDK.start { options in
+    options.dsn = "http://<key>@localhost:8080/1"
+}
 ```
 
-Open `http://localhost:8080` to browse issues as they arrive.
+```kotlin [Android]
+// AndroidManifest.xml
+<meta-data android:name="io.sentry.dsn" android:value="http://<key>@localhost:8080/1" />
+```
 
-## Next steps
+```js [Browser / Node]
+Sentry.init({ dsn: "http://<key>@localhost:8080/1" });
+```
 
-- [Projects & DSNs](./projects) — how projects, platforms and releases relate.
-- [Export format](../export-format) — the NDJSON interchange contract.
+```python [Python]
+sentry_sdk.init(dsn="http://<key>@localhost:8080/1")
+```
+
+:::
+
+More platforms in [Connect an SDK](./sdks).
+
+## 4. Send something
+
+Throw an error, or use the SDK's `captureMessage`. Then open
+<a href="http://localhost:8080" target="_blank">localhost:8080</a> — the
+event appears as an issue within a second.
+
+No SDK handy? Seed a week of demo data into a project called `demo`:
+
+```sh
+docker compose exec crashcart /crashcart seed
+```
+
+## What next
+
+- [The viewer](./viewer) — overview, issues, events, releases, settings.
+- [Symbolication](./symbolication) — upload ProGuard mappings, source maps
+  or dSYMs so stack traces show real file names and lines.
+- [Alerts](./alerts) — get told about new issues and crash spikes.
+- [Docker Compose in production](/deploy/docker) — API keys, viewer
+  password, public URL, retention.

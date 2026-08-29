@@ -9,28 +9,60 @@ export default defineConfig({
   lastUpdated: true,
   cleanUrls: true,
 
+  head: [
+    ['meta', { property: 'og:title', content: 'CrashCart' }],
+    ['meta', { property: 'og:description', content: 'Open-source, Sentry SDK compatible error tracking. One Go binary, one Postgres.' }],
+  ],
+
   themeConfig: {
-    // https://vitepress.dev/reference/default-theme-config
     nav: [
-      { text: 'Guide', link: '/guide/getting-started' },
-      { text: 'Reference', link: '/export-format' },
+      { text: 'Guide', link: '/guide/introduction', activeMatch: '/guide/' },
+      { text: 'Deploy', link: '/deploy/docker', activeMatch: '/deploy/' },
+      { text: 'Reference', link: '/reference/cli', activeMatch: '/reference/' },
     ],
 
-    sidebar: [
-      {
-        text: 'Guide',
-        items: [
-          { text: 'Getting started', link: '/guide/getting-started' },
-          { text: 'Projects & DSNs', link: '/guide/projects' },
-        ],
-      },
-      {
-        text: 'Reference',
-        items: [
-          { text: 'Export format (NDJSON)', link: '/export-format' },
-        ],
-      },
-    ],
+    sidebar: {
+      '/guide/': [
+        {
+          text: 'Guide',
+          items: [
+            { text: 'Introduction', link: '/guide/introduction' },
+            { text: 'Getting started', link: '/guide/getting-started' },
+            { text: 'Projects & DSNs', link: '/guide/projects' },
+            { text: 'Connect an SDK', link: '/guide/sdks' },
+            { text: 'The viewer', link: '/guide/viewer' },
+            { text: 'Issues & grouping', link: '/guide/issues' },
+            { text: 'Releases & release health', link: '/guide/releases' },
+            { text: 'Symbolication', link: '/guide/symbolication' },
+            { text: 'Alerts', link: '/guide/alerts' },
+          ],
+        },
+      ],
+      '/deploy/': [
+        {
+          text: 'Deploy',
+          items: [
+            { text: 'Docker Compose', link: '/deploy/docker' },
+            { text: 'Binary & managed Postgres', link: '/deploy/postgres' },
+            { text: 'Configuration', link: '/deploy/configuration' },
+            { text: 'Operations', link: '/deploy/operations' },
+            { text: 'Serverless edition', link: '/deploy/serverless' },
+          ],
+        },
+      ],
+      '/reference/': [
+        {
+          text: 'Reference',
+          items: [
+            { text: 'CLI', link: '/reference/cli' },
+            { text: 'HTTP API', link: '/reference/api' },
+            { text: 'Export format', link: '/reference/export-format' },
+            { text: 'SDK compatibility', link: '/reference/sdks' },
+            { text: 'Glossary', link: '/reference/glossary' },
+          ],
+        },
+      ],
+    },
 
     socialLinks: [
       { icon: 'github', link: 'https://github.com/crashcartapp/crashcart' },
@@ -42,5 +74,9 @@ export default defineConfig({
     },
 
     search: { provider: 'local' },
+
+    footer: {
+      message: 'Released under the MIT License.',
+    },
   },
 })
