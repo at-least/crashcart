@@ -63,7 +63,9 @@ it changes underneath:
 TimescaleDB comes with the `timescale/timescaledb` image (what
 [Docker Compose](/deploy/docker) uses), Timescale Cloud, or a
 self-managed Postgres. Managed Postgres — Neon, Supabase, RDS, Cloud SQL
-— does not offer it, and CrashCart falls back to plain Postgres:
+— ships either nothing or the Apache-2 build without compression
+([provider list](/deploy/managed-postgres)), and CrashCart falls back to
+plain Postgres:
 rolled-up stats tables, batched deletes, no compression. Below a few
 million events a month you won't notice. Details and the `TIMESCALE`
 setting: [Postgres options](/deploy/postgres).

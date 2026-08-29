@@ -14,7 +14,10 @@ otherwise. Nothing changes in how you use it. The difference:
 | Matters at | — | Tens of millions of events a month |
 
 Below a few million events a month there is no practical difference.
-Pick whatever Postgres you already have.
+Pick whatever Postgres you already have. Note that most managed hosts
+ship the Apache-2 build of TimescaleDB, which has no compression;
+CrashCart treats it as plain Postgres. Provider by provider:
+[Managed Postgres providers](./managed-postgres).
 
 The choice is made the first time CrashCart starts against a database and
 stays. To switch later, [export and import](./operations#moving-to-another-database)

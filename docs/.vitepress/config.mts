@@ -56,6 +56,7 @@ export default defineConfig({
           items: [
             { text: 'Configuration', link: '/deploy/configuration' },
             { text: 'Postgres options', link: '/deploy/postgres' },
+            { text: 'Managed Postgres providers', link: '/deploy/managed-postgres' },
             { text: 'Operations', link: '/deploy/operations' },
           ],
         },
