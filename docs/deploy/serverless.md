@@ -1,7 +1,7 @@
 # Serverless edition
 
-**crashcart-serverless** (a separate repository) is CrashCart on
-Cloudflare Workers. Same SDK setup, same viewer, same export format.
+[crashcart-serverless](https://github.com/crashcartapp/crashcart-serverless)
+is CrashCart on Cloudflare Workers. Same SDK setup, same viewer, same export format.
 
 ## When to use it
 
@@ -15,7 +15,7 @@ Cloudflare Workers. Same SDK setup, same viewer, same export format.
 ## Deploy
 
 ```sh
-git clone <crashcart-serverless repository>
+git clone https://github.com/crashcartapp/crashcart-serverless
 cd crashcart-serverless
 npm install
 npx wrangler login

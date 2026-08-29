@@ -33,7 +33,7 @@ and discarded — no errors, just nothing stored.
 
 ## Two editions
 
-| | Go edition (this documentation) | Serverless edition |
+| | Go edition (this documentation) | [Serverless edition](https://github.com/crashcartapp/crashcart-serverless) |
 |---|---|---|
 | Runs on | Any server with Postgres | Cloudflare Workers (Free plan is enough for small apps) |
 | Best for | Self-hosting, larger volumes | Small apps, zero servers |
