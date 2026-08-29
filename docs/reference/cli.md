@@ -49,7 +49,7 @@ releases) into the project `slug`, creating it if needed. Default `demo`.
 
 ## `export [slug]`
 
-Streams the database as NDJSON to stdout in the
+Writes everything to stdout as NDJSON in the
 [export format](./export-format): all projects, or just `slug`. Per-table
 row counts go to stderr.
 

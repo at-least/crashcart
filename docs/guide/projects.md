@@ -1,84 +1,61 @@
 # Projects & DSNs
 
-A **project** is one DSN. Any SDK holding that DSN reports into it.
+A **project** is one DSN. Every SDK holding that DSN reports into it.
 
-## Creating projects
+## Creating a project
 
-From the CLI:
+From the viewer's home page, or from the command line:
 
 ```sh
-crashcart project <slug> <name> [platform]
 crashcart project shop-ios "Shop app (iOS)" ios
+# project shop-ios (id 1)
+# DSN: https://<key>@crashcart.example.com/1
 ```
 
-From the [API](/reference/api#projects):
+The last argument is the platform: `ios`, `android`, `flutter`,
+`react-native`, `web`, `backend` or `other`. It is a label shown in the
+viewer, not a filter.
 
-```sh
-curl -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-     -d '{"slug":"shop-ios","name":"Shop app (iOS)","platform":"ios"}' \
-     http://localhost:8080/api/projects
-```
-
-Or from the viewer's home page.
-
-The **slug** is the stable identifier used in viewer URLs (`/p/shop-ios/…`)
-and API paths (`/api/projects/shop-ios/…`), and in the
-[export format](/reference/export-format), which refers to projects by
-slug so a dump loads into any database. The numeric **id** appears only in
-the DSN.
+The **slug** (`shop-ios`) is what you'll see in URLs and use in the CLI and
+API.
 
 ## The DSN
 
 ```
-http://<public_key>@crashcart.example.com/<project_id>
+https://<key>@crashcart.example.com/1
 ```
 
-The key authenticates ingest. Anyone holding it can send events to the
-project — treat it like any client-side credential: fine to ship in an app
-binary, not something to publish in a README.
+Paste it into the SDK exactly as you would a Sentry DSN. The key lets an
+app send events to this project — it is fine to ship inside an app binary,
+but don't publish it.
 
-Set [`PUBLIC_URL`](/deploy/configuration) so the DSN printed by the CLI and
-shown in the viewer uses the address your apps can actually reach.
+If the DSN shows the wrong host (for example `localhost` when CrashCart is
+behind a domain), set [`PUBLIC_URL`](/deploy/configuration).
 
 ### Rotating the key
 
-```sh
-crashcart rotate-key shop-ios
-# project shop-ios: new DSN http://<new-key>@…/1
-```
-
-or **Settings → Rotate key** in the viewer. The old key stops working
-immediately; apps in the field with the old DSN will be rejected until they
-ship a build with the new one.
+**Settings → Rotate key** in the viewer, or `crashcart rotate-key shop-ios`.
+The old key stops working immediately, so apps in the field keep failing
+until they ship a build with the new DSN.
 
 ## One project per platform
 
-Use one project per app *and* platform (`shop-ios`, `shop-android`,
-`shop-web`) rather than one project for the whole app. The `platform`
-argument is a label, not a filter:
+Create one project per app **and** platform — `shop-ios`, `shop-android`,
+`shop-web` — rather than one for the whole app. The "latest release" and
+crash-spike detection are computed per project, and iOS `2.4.1` and
+Android `2.4.1` are different builds with different crash rates. Mixing
+them blurs both numbers.
 
-- Issues never merge across platforms anyway — an iOS stack and an Android
-  stack fingerprint differently.
-- But the overview's **latest release** and the **crash-spike baseline**
-  are computed per project. iOS `2.4.1` and Android `2.4.1` are different
-  builds with different crash rates; mixing them in one project blends those
-  two numbers.
+## Sampling and daily quota
 
-## Sampling and quota
+A single bug can produce millions of identical events. Three settings under
+**Settings → Sampling** keep storage under control without losing the count:
 
-Each project has three knobs, editable under **Settings → Sampling** or via
-`PATCH /api/projects/{slug}`:
-
-| Field | Default | Meaning |
+| Setting | Default | Effect |
 |---|---|---|
-| `sample_keep_first` | `100` | The first *N* events of every issue are always stored |
-| `sample_rate` | `1.0` | After that, this fraction of each issue's events is stored |
-| `daily_quota` | `100000` | Events accepted per UTC day; further envelopes are dropped. `0` = unlimited |
+| Keep first | 100 | The first 100 events of every issue are always stored |
+| Sample rate | 1.0 | After that, this fraction of the issue's events is stored |
+| Daily quota | 100 000 | Events accepted per day for the whole project; `0` = unlimited |
 
-Sampling is **per issue** and **counts stay exact**: a dropped event still
-increments the issue's `event_count`, so the numbers you triage by are
-right, while `stored_count` and storage are bounded. `fatal` events are
-always stored.
-
-See [Issues & grouping](./issues#sampling) for how this interacts with
-grouping.
+The issue's event count stays exact whether or not an event was stored,
+and crashes (`fatal`) are always stored.

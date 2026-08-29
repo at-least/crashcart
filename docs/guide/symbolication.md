@@ -1,23 +1,20 @@
 # Symbolication
 
 Production builds ship obfuscated (Android), minified (JavaScript) or
-stripped (iOS) code. Symbolication maps the frames the SDK reports back to
-source file, function and line.
+stripped (iOS) code. Upload the matching symbol file and CrashCart turns
+`a.b.c.d` into `CartFragment.onResume`, with file names and line numbers.
 
-| Symbol kind | Platforms | How CrashCart resolves it |
+| Symbol file | Platform | Needs |
 |---|---|---|
-| ProGuard / R8 mapping | Android | In-process. Inline at ingest when the mapping is cached, otherwise by the job worker |
-| Source map | JavaScript, React Native | In-process, matched by release |
-| dSYM | iOS, macOS | Optional sidecar container running `llvm-symbolizer`; enable with `SYMBOLICATE_URL` |
-
-Symbolicated frames are stored **beside** the original payload, which is
-never rewritten; the viewer shows both. Symbolication also updates the
-issue [fingerprint](./issues#symbolication-changes-fingerprints) and
-`error_location`.
+| ProGuard / R8 mapping | Android | Nothing extra |
+| Source map | JavaScript, React Native | Nothing extra |
+| dSYM | iOS, macOS | The optional symbolication sidecar |
 
 ## Uploading
 
-### With the API
+**In the viewer**: Settings → Symbols.
+
+**With curl**:
 
 ```sh
 curl -H "Authorization: Bearer $API_KEY" \
@@ -25,53 +22,39 @@ curl -H "Authorization: Bearer $API_KEY" \
      https://crashcart.example.com/api/projects/shop-android/symbols
 ```
 
-`kind` is `proguard`, `sourcemap` or `dsym`; `release` must equal the
-release string the SDK sends. Files also upload from **Settings → Symbols**
-in the viewer.
+`kind` is `proguard`, `sourcemap` or `dsym`. `release` must be the release
+string your SDK sends.
 
-### With sentry-cli
-
-CrashCart implements the debug-file upload endpoints `sentry-cli` uses (the
-chunked upload protocol, plus the legacy `files/dsyms/` route older versions
-fall back to). The organization is ignored; the project is the CrashCart
-slug or numeric id.
+**With sentry-cli**, which most CI setups already use:
 
 ```sh
 export SENTRY_URL=https://crashcart.example.com
 export SENTRY_AUTH_TOKEN=$API_KEY
-export SENTRY_ORG=any
-export SENTRY_PROJECT=shop-ios
+export SENTRY_ORG=any            # ignored
+export SENTRY_PROJECT=shop-ios   # the CrashCart slug
 
 sentry-cli debug-files upload path/to/App.dSYM
-sentry-cli upload-proguard --write-properties sentry-debug-meta.properties mapping.txt
+sentry-cli upload-proguard mapping.txt
 ```
 
-Files uploaded this way carry no release. They are matched by **debug id**
-(`debug_meta.images` in the event: the dSYM's `LC_UUID`, or the id the
-Gradle plugin writes into `sentry-debug-meta.properties`), which is more
-robust than release matching.
+Files uploaded through `sentry-cli` don't need a release — they are matched
+to events by debug id, which is more robust. Make sure
+[`PUBLIC_URL`](/deploy/configuration) is set so `sentry-cli` can reach the
+upload URL from your CI.
 
-Set [`PUBLIC_URL`](/deploy/configuration): the chunk-upload URL CrashCart
-hands back to `sentry-cli` is derived from it and must be reachable from
-where `sentry-cli` runs (your CI).
+## Android
 
-## ProGuard / R8 (Android)
-
-The [Sentry Android Gradle plugin](https://docs.sentry.io/platforms/android/configuration/gradle/)
-uploads the mapping at build time. Point it at CrashCart:
+The Sentry Android Gradle plugin uploads the mapping on every build. Point
+it at CrashCart in `sentry.properties`:
 
 ```properties
-# sentry.properties
 defaults.url=https://crashcart.example.com
 defaults.org=any
 defaults.project=shop-android
 auth.token=<API key>
 ```
 
-The plugin also injects the debug id into the APK, so events and mappings
-match without a release string. Inlined frames from R8 are resolved.
-
-## Source maps (JavaScript, React Native)
+## JavaScript / React Native
 
 Upload each bundle's `.map` under the release the SDK reports:
 
@@ -81,27 +64,20 @@ curl -H "Authorization: Bearer $API_KEY" \
      https://crashcart.example.com/api/projects/shop-web/symbols
 ```
 
-Matching is by release and file name, so keep `release` identical in
-`Sentry.init()` and the upload.
+Keep `release` identical in `Sentry.init()` and the upload.
 
-## dSYM (iOS, macOS)
+## iOS / macOS
 
-dSYM symbolication runs in a sidecar container (`container/symbolicate`,
-Python + `llvm-symbolizer`) because the tooling is heavy and not portable
-into a Go binary.
+dSYM symbolication needs the sidecar container. In `docker-compose.yml`,
+uncomment the `symbolicate` service and set
+`SYMBOLICATE_URL: http://symbolicate:8080` on `crashcart`, then upload
+dSYMs with `sentry-cli debug-files upload`.
 
-Enable it in `docker-compose.yml` by uncommenting the `symbolicate` service
-and setting `SYMBOLICATE_URL: http://symbolicate:8080` on `crashcart`.
-Without the sidecar, iOS crashes are stored and grouped by image + offset;
-they just stay unsymbolicated.
+Without the sidecar, iOS crashes are still collected and grouped — the
+frames just stay as addresses.
 
-Upload with `sentry-cli debug-files upload` (above) or the API with
-`kind=dsym`. For fat binaries the debug id is the arm64 slice's UUID.
+## Already-collected events
 
-## Re-symbolication
-
-Uploading a symbol file re-queues the release's unsymbolicated events from
-the last [`COMPRESS_AFTER`](/deploy/configuration) (48 h by default) — the
-window before TimescaleDB compresses the chunk. Older events are not
-touched; on plain Postgres there is no compression, but the same window
-applies. The job worker processes the queue in the background.
+Uploading a symbol file also symbolicates events from the last 48 hours
+(the [`COMPRESS_AFTER`](/deploy/configuration) setting). Older events keep
+their original frames.

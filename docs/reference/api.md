@@ -175,8 +175,6 @@ platform, user, device, OS, `fingerprint`, tags). The detail returns the
 full event row: the exception chain with original **and** symbolicated
 frames, breadcrumbs, tags, user, contexts, and the raw payload as received.
 
-Event ids encode the event time (`unix_ms × 1000 + random`), so they sort
-chronologically and a time window is an id range.
 
 ## Releases
 
@@ -252,8 +250,8 @@ DELETE /api/projects/{slug}/symbols/{id}
 { "id": 12, "project_id": 1, "kind": "proguard", "release": "2.4.1", "debug_id": "…", "filename": "mapping.txt", "size": 1048576, "uploaded_at": "…" }
 ```
 
-Uploading re-queues the release's unsymbolicated events from the last
-`COMPRESS_AFTER`. See [Symbolication](/guide/symbolication).
+Uploading also symbolicates the release's events from the last
+48 hours. See [Symbolication](/guide/symbolication).
 
 ## Export / import
 
