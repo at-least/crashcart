@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
-	"sort"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
@@ -81,113 +84,33 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tl, err := h.Store.Timeline(ctx, sqlc.TimelineParams{ProjectID: p.ID, Bucket: hlo, Bucket_2: hi})
+	tl, err := h.Store.Timeline(ctx, sqlc.TimelineParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi, Width: 3600, Top: topReleases})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	out.Timeline = foldTimeline(tl, hlo, hi)
+	for _, t := range tl {
+		out.Timeline = append(out.Timeline, timelinePoint{Bucket: t.Bucket.UTC(), Release: t.Release, Crashes: t.Crashes, Events: t.Events})
+	}
 
-	if out.CrashFree, err = h.crashFree(r, p.ID, lo, hi, tl); err != nil {
+	if out.CrashFree, err = h.crashFree(ctx, p.ID, hlo, hi); err != nil {
 		h.fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// foldTimeline keeps the top releases by events and folds the rest into
-// "other"; every hourly bucket in [lo, hi) is emitted for each kept series.
-func foldTimeline(rows []sqlc.TimelineRow, lo, hi time.Time) []timelinePoint {
-	if len(rows) == 0 {
-		return []timelinePoint{}
+// crashFree reports the most recently active release's crash-free rate;
+// nil when it has no sessions in the window.
+func (h *Handler) crashFree(ctx context.Context, projectID int64, hlo, hi time.Time) (*crashFreeOut, error) {
+	lr, err := h.Store.LatestReleaseHealth(ctx, sqlc.LatestReleaseHealthParams{ProjectID: projectID, HourFrom: hlo, DayFrom: hlo.Truncate(24 * time.Hour), ToAt: hi})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && lr.Total == 0) {
+		return nil, nil
 	}
-	byRelease := map[string]int64{}
-	for _, r := range rows {
-		byRelease[r.Release] += r.Events
-	}
-	names := make([]string, 0, len(byRelease))
-	for n := range byRelease {
-		names = append(names, n)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		if byRelease[names[i]] != byRelease[names[j]] {
-			return byRelease[names[i]] > byRelease[names[j]]
-		}
-		return names[i] < names[j]
-	})
-	keep := map[string]bool{}
-	for i, n := range names {
-		if i < topReleases {
-			keep[n] = true
-		}
-	}
-	series := names
-	if len(names) > topReleases {
-		series = append(append([]string{}, names[:topReleases]...), "other")
-	}
-	type key struct {
-		bucket  int64 // unix seconds
-		release string
-	}
-	agg := map[key]*timelinePoint{}
-	for _, r := range rows {
-		rel := r.Release
-		if !keep[rel] {
-			rel = "other"
-		}
-		k := key{r.Bucket.Unix(), rel}
-		pt := agg[k]
-		if pt == nil {
-			pt = &timelinePoint{Bucket: r.Bucket.UTC(), Release: rel}
-			agg[k] = pt
-		}
-		pt.Events += r.Events
-		pt.Crashes += r.Crashes
-	}
-	out := []timelinePoint{}
-	for b := lo.Truncate(time.Hour); b.Before(hi); b = b.Add(time.Hour) {
-		for _, rel := range series {
-			if pt := agg[key{b.Unix(), rel}]; pt != nil {
-				out = append(out, *pt)
-			} else {
-				out = append(out, timelinePoint{Bucket: b, Release: rel})
-			}
-		}
-	}
-	return out
-}
-
-// crashFree picks the most recently active release that has sessions in
-// the window and computes 1 - crashed/total.
-func (h *Handler) crashFree(r *http.Request, projectID int64, lo, hi time.Time, tl []sqlc.TimelineRow) (*crashFreeOut, error) {
-	health, err := h.Store.ReleaseHealthNN(r.Context(), sqlc.ReleaseHealthNNParams{ProjectID: projectID, Bucket: lo.Truncate(24 * time.Hour), Bucket_2: hi})
 	if err != nil {
 		return nil, err
 	}
-	if len(health) == 0 {
-		return nil, nil
-	}
-	// Rank releases by their latest event bucket; releases without events
-	// fall back to name order so the choice is still deterministic.
-	lastSeen := map[string]int64{}
-	for _, t := range tl {
-		if u := t.Bucket.Unix(); u > lastSeen[t.Release] {
-			lastSeen[t.Release] = u
-		}
-	}
-	sort.Slice(health, func(i, j int) bool {
-		a, b := health[i], health[j]
-		if lastSeen[a.Release] != lastSeen[b.Release] {
-			return lastSeen[a.Release] > lastSeen[b.Release]
-		}
-		return a.Release > b.Release
-	})
-	best := health[0]
-	out := &crashFreeOut{Release: best.Release, Sessions: best.Total, Rate: 1}
-	if best.Total > 0 {
-		out.Rate = 1 - float64(best.Crashed)/float64(best.Total)
-	}
-	return out, nil
+	return &crashFreeOut{Release: lr.Release, Sessions: lr.Total, Rate: 1 - float64(lr.Crashed)/float64(lr.Total)}, nil
 }
 
 // crashFreeRate returns 1 - crashed/total, or nil when there are no sessions.

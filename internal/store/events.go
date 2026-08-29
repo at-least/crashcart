@@ -169,8 +169,9 @@ func (f EventFilter) where() (string, []any) {
 		w = append(w, "crashcart_is_crash(level, handled)")
 	}
 	for k, v := range f.Tags {
-		args = append(args, k, v)
-		w = append(w, fmt.Sprintf("tags->>$%d = $%d", len(args)-1, len(args)))
+		// Containment, so the GIN index (jsonb_path_ops) serves it.
+		kv, _ := json.Marshal(map[string]string{k: v})
+		add("tags @> ?::jsonb", kv)
 	}
 	return strings.Join(w, " AND "), args
 }
@@ -253,31 +254,65 @@ var breakdownColumns = map[string]bool{
 	"screen": true, "error_location": true, "level": true, "user_id": true, "sdk_name": true,
 }
 
-// Breakdown returns the top values of column among rows matching f.
+// Breakdown returns the top values of one column among rows matching f.
 func (s *Store) Breakdown(ctx context.Context, f EventFilter, column string, limit int) ([]Breakdown, error) {
-	var expr string
-	switch {
-	case breakdownColumns[column]:
-		expr = column
-	case strings.HasPrefix(column, "tags."):
-		key := strings.TrimPrefix(column, "tags.")
-		expr = "tags->>" + quoteLiteral(key)
-	default:
-		return nil, fmt.Errorf("breakdown: column %q not allowed", column)
+	m, err := s.Breakdowns(ctx, f, []string{column}, limit)
+	if err != nil {
+		return nil, err
 	}
+	return m[column], nil
+}
+
+// Breakdowns returns, per column, its top values among rows matching f —
+// one scan of the events, unpivoted with a LATERAL VALUES and ranked with
+// a window function. Columns are the allowlisted names or "tags.<key>";
+// every requested column is present in the result (possibly empty).
+func (s *Store) Breakdowns(ctx context.Context, f EventFilter, columns []string, limit int) (map[string][]Breakdown, error) {
 	if limit <= 0 {
 		limit = 5
 	}
 	where, args := f.where()
-	sql := fmt.Sprintf("SELECT COALESCE(%s, '') AS v, count(*) FROM events WHERE %s GROUP BY 1 ORDER BY 2 DESC LIMIT %d", expr, where, limit)
-	r, err := s.Pool.Query(ctx, sql, args...)
+	vals := make([]string, 0, len(columns))
+	out := make(map[string][]Breakdown, len(columns))
+	for _, column := range columns {
+		var expr string
+		switch {
+		case breakdownColumns[column]:
+			expr = column
+		case strings.HasPrefix(column, "tags."):
+			args = append(args, strings.TrimPrefix(column, "tags."))
+			expr = fmt.Sprintf("tags->>$%d", len(args))
+		default:
+			return nil, fmt.Errorf("breakdown: column %q not allowed", column)
+		}
+		args = append(args, column)
+		vals = append(vals, fmt.Sprintf("($%d::text, COALESCE(%s, ''))", len(args), expr))
+		out[column] = []Breakdown{}
+	}
+	if len(vals) == 0 {
+		return out, nil
+	}
+	args = append(args, limit)
+	sql := fmt.Sprintf(`SELECT col, v, n FROM (
+		SELECT x.col, x.v, count(*) AS n, row_number() OVER (PARTITION BY x.col ORDER BY count(*) DESC, x.v) AS rn
+		FROM events CROSS JOIN LATERAL (VALUES %s) AS x(col, v)
+		WHERE %s GROUP BY x.col, x.v) t
+		WHERE rn <= $%d ORDER BY col, n DESC, v`, strings.Join(vals, ", "), where, len(args))
+	rows, err := s.Pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(r, pgx.RowToStructByPos[Breakdown])
+	defer rows.Close()
+	for rows.Next() {
+		var col string
+		var b Breakdown
+		if err := rows.Scan(&col, &b.Value, &b.Count); err != nil {
+			return nil, err
+		}
+		out[col] = append(out[col], b)
+	}
+	return out, rows.Err()
 }
-
-func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 // EventDetail is the full row.
 type EventDetail = sqlc.Event

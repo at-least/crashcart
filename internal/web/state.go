@@ -225,6 +225,9 @@ func (s ViewState) Window(now time.Time) Window {
 // Go's Truncate counts from the zero time, which is midnight UTC).
 func (w Window) Bucket(t time.Time) time.Time { return t.UTC().Truncate(w.Width) }
 
+// Seconds is the bucket width for the chart queries.
+func (w Window) Seconds() int64 { return int64(w.Width / time.Second) }
+
 // Buckets lists the bucket starts of the window.
 func (w Window) Buckets() []time.Time {
 	var out []time.Time

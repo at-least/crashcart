@@ -115,25 +115,6 @@ func (q *Queries) LatestIssueEvent(ctx context.Context, arg LatestIssueEventPara
 	return i, err
 }
 
-const latestRelease = `-- name: LatestRelease :one
-SELECT release FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND release <> ''
-GROUP BY release ORDER BY max(bucket) DESC LIMIT 1
-`
-
-type LatestReleaseParams struct {
-	ProjectID int64     `json:"project_id"`
-	Bucket    time.Time `json:"bucket"`
-}
-
-// The release with the most recent activity in the window.
-func (q *Queries) LatestRelease(ctx context.Context, arg LatestReleaseParams) (string, error) {
-	row := q.db.QueryRow(ctx, latestRelease, arg.ProjectID, arg.Bucket)
-	var release string
-	err := row.Scan(&release)
-	return release, err
-}
-
 const listIssuesIntroducedIn = `-- name: ListIssuesIntroducedIn :many
 SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count, first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at FROM issues WHERE project_id = $1 AND first_release = $2
 ORDER BY event_count DESC LIMIT $3

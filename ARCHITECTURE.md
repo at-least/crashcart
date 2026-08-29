@@ -38,7 +38,13 @@ decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events → sessio
 `issue_stats_hourly`, `release_health_daily` are TimescaleDB continuous
 aggregates with real-time aggregation on. They are functions of the raw
 tables: nothing to keep consistent, adding a dimension is a new view with
-history, import never recomputes them.
+history, import never recomputes them. The chart queries fold them into
+buckets of any width (`crashcart_bucket`), gap-fill (`crashcart_buckets`),
+rank the top releases and fold the rest into "other" — all in SQL, so the
+API and the viewer share one query per chart and the Go side only maps
+rows. Issue breakdowns (release / OS / device / environment / `tags.<key>`)
+are one scan with a `LATERAL VALUES` unpivot and a window function. Tag
+filters are containment (`tags @> {k: v}`) on a GIN index.
 
 **Issues are the one stateful table.** Status lifecycle (unresolved → triaged
 → resolved → regression / ignored), first/last release, exact `event_count`

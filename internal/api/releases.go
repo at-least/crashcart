@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
@@ -27,36 +26,13 @@ type releaseOut struct {
 	NewIssues     int64       `json:"new_issues"`
 }
 
-// mergeReleaseStats folds the per-(release, platform) rows into one entry
-// per release, most recently active first.
-func mergeReleaseStats(rows []sqlc.ReleaseStatsRow) []*releaseOut {
-	byRel := map[string]*releaseOut{}
-	order := []*releaseOut{}
-	for _, r := range rows {
-		o := byRel[r.Release]
-		if o == nil {
-			o = &releaseOut{Release: r.Release, Platforms: []string{}, FirstSeen: r.FirstSeen.UTC(), LastSeen: r.LastSeen.UTC()}
-			byRel[r.Release] = o
-			order = append(order, o)
-		}
-		if r.Platform != "" {
-			o.Platforms = append(o.Platforms, r.Platform)
-		}
-		if t := r.FirstSeen.UTC(); t.Before(o.FirstSeen) {
-			o.FirstSeen = t
-		}
-		if t := r.LastSeen.UTC(); t.After(o.LastSeen) {
-			o.LastSeen = t
-		}
-		o.Events += r.Events
-		o.Crashes += r.Crashes
-		o.Errors += r.Errors
+func toReleaseOut(r sqlc.ReleaseStatsRow) *releaseOut {
+	platforms := r.Platforms
+	if platforms == nil {
+		platforms = []string{}
 	}
-	for _, o := range order {
-		sort.Strings(o.Platforms)
-	}
-	sort.SliceStable(order, func(i, j int) bool { return order[i].LastSeen.After(order[j].LastSeen) })
-	return order
+	return &releaseOut{Release: r.Release, Platforms: platforms, FirstSeen: r.FirstSeen.UTC(), LastSeen: r.LastSeen.UTC(),
+		Events: r.Events, Crashes: r.Crashes, Errors: r.Errors}
 }
 
 func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
@@ -85,9 +61,11 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	out := mergeReleaseStats(stats)
+	out := make([]*releaseOut, 0, len(stats))
 	byRel := map[string]*releaseOut{}
-	for _, o := range out {
+	for _, st := range stats {
+		o := toReleaseOut(st)
+		out = append(out, o)
 		byRel[o.Release] = o
 	}
 	for _, hr := range health {
@@ -144,9 +122,9 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var rel *releaseOut
-	for _, o := range mergeReleaseStats(stats) {
-		if o.Release == version {
-			rel = o
+	for _, st := range stats {
+		if st.Release == version {
+			rel = toReleaseOut(st)
 		}
 	}
 	health, err := h.Store.ReleaseHealthDailyNN(ctx, sqlc.ReleaseHealthDailyNNParams{ProjectID: p.ID, Release: version, Bucket: dlo, Bucket_2: hi})
@@ -175,19 +153,14 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	rel.CrashFreeRate = crashFreeRate(rel.Sessions.Total, rel.Sessions.Crashed)
 
-	tl, err := h.Store.ReleaseTimeline(ctx, sqlc.ReleaseTimelineParams{ProjectID: p.ID, Release: version, Bucket: hlo, Bucket_2: hi})
+	tl, err := h.Store.ReleaseTimeline(ctx, sqlc.ReleaseTimelineParams{ProjectID: p.ID, Release: version, FromAt: hlo, ToAt: hi, Width: 3600})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	byBucket := map[int64]sqlc.ReleaseTimelineRow{}
+	timeline := make([]releaseTimelinePoint, 0, len(tl))
 	for _, t := range tl {
-		byBucket[t.Bucket.Unix()] = t
-	}
-	timeline := make([]releaseTimelinePoint, 0, int(hi.Sub(hlo)/time.Hour)+1)
-	for b := hlo; b.Before(hi); b = b.Add(time.Hour) {
-		t := byBucket[b.Unix()]
-		timeline = append(timeline, releaseTimelinePoint{Bucket: b, Events: t.Events, Crashes: t.Crashes})
+		timeline = append(timeline, releaseTimelinePoint{Bucket: t.Bucket.UTC(), Events: t.Events, Crashes: t.Crashes})
 	}
 	introduced, present := []issueOut{}, []issueOut{}
 	for _, i := range issues {

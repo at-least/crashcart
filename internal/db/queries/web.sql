@@ -21,12 +21,6 @@ SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurre
 -- name: OldestIssueEvent :one
 SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at ASC LIMIT 1;
 
--- name: LatestRelease :one
--- The release with the most recent activity in the window.
-SELECT release FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND release <> ''
-GROUP BY release ORDER BY max(bucket) DESC LIMIT 1;
-
 -- name: DistinctReleases :many
 SELECT release FROM event_stats_hourly
 WHERE project_id = $1 AND bucket >= $2 AND release <> ''

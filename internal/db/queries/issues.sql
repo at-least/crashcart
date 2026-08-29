@@ -61,14 +61,31 @@ ORDER BY event_count DESC LIMIT $3;
 DELETE FROM issues WHERE last_seen < $1 AND status IN ('resolved', 'ignored');
 
 -- name: IssueSparklines :many
-SELECT fingerprint, bucket, events FROM issue_stats_hourly
-WHERE project_id = $1 AND fingerprint = ANY($2::text[]) AND bucket >= $3
-ORDER BY fingerprint, bucket;
+-- Per fingerprint, the event counts of every bucket in the window as one
+-- array (gap-filled, in bucket order); see the chart-query note in stats.sql.
+WITH h AS (
+    SELECT fingerprint, crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, sum(events) AS events
+    FROM issue_stats_hourly
+    WHERE project_id = sqlc.arg(project_id)::bigint AND fingerprint = ANY(sqlc.arg(fingerprints)::text[])
+      AND bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
+    GROUP BY 1, 2)
+SELECT f.fingerprint::text AS fingerprint, array_agg(COALESCE(h.events, 0)::bigint ORDER BY b)::bigint[] AS counts
+FROM unnest(sqlc.arg(fingerprints)::text[]) AS f(fingerprint)
+CROSS JOIN crashcart_buckets(sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS b
+LEFT JOIN h ON h.fingerprint = f.fingerprint AND h.bucket = b
+GROUP BY f.fingerprint;
 
 -- name: IssueTimeline :many
-SELECT bucket, events FROM issue_stats_hourly
-WHERE project_id = $1 AND fingerprint = $2 AND bucket >= $3 AND bucket < $4
-ORDER BY bucket;
+WITH h AS (
+    SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, sum(events) AS events
+    FROM issue_stats_hourly
+    WHERE project_id = sqlc.arg(project_id)::bigint AND fingerprint = sqlc.arg(fingerprint)::text
+      AND bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
+    GROUP BY 1)
+SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events
+FROM crashcart_buckets(sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS b
+LEFT JOIN h ON h.bucket = b
+ORDER BY b;
 
 -- name: AddIssueStored :exec
 UPDATE issues SET stored_count = stored_count + $3 WHERE project_id = $1 AND fingerprint = $2;

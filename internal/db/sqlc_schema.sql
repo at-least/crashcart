@@ -1,6 +1,15 @@
 CREATE FUNCTION crashcart_is_crash(level TEXT, handled BOOLEAN) RETURNS BOOLEAN
     LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
 
+-- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
+-- t.Truncate(width): the chart queries fold the hourly aggregates with
+-- these (4 h / 1 d buckets for longer windows) and gap-fill with
+-- crashcart_buckets, so every bucket of a window comes back from SQL.
+CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPTZ
+    LANGUAGE SQL IMMUTABLE AS $$ SELECT to_timestamp(floor(extract(epoch FROM t) / width) * width) $$;
+CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT) RETURNS SETOF TIMESTAMPTZ
+    LANGUAGE SQL IMMUTABLE AS $$ SELECT generate_series(from_at, to_at - make_interval(secs => width), make_interval(secs => width)) $$;
+
 -- sqlc-only mirror of internal/db/migrations (no TimescaleDB DDL).
 -- Continuous aggregates appear here as plain tables so queries type-check.
 -- Keep in sync with the migrations.

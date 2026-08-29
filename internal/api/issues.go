@@ -104,22 +104,17 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		for _, u := range users {
 			byFP[deref(u.Fingerprint)] = u.Users
 		}
-		start := to.Truncate(time.Hour).Add(-(sparklineHours - 1) * time.Hour)
-		sp, err := h.Store.IssueSparklines(r.Context(), sqlc.IssueSparklinesParams{ProjectID: p.ID, Column2: fps, Bucket: start})
+		end := to.Truncate(time.Hour).Add(time.Hour)
+		sp, err := h.Store.IssueSparklines(r.Context(), sqlc.IssueSparklinesParams{
+			ProjectID: p.ID, Fingerprints: fps, FromAt: end.Add(-sparklineHours * time.Hour), ToAt: end, Width: 3600,
+		})
 		if err != nil {
 			h.fail(w, err)
 			return
 		}
 		spark := map[string][]int64{}
 		for _, s := range sp {
-			idx := int(s.Bucket.Sub(start) / time.Hour)
-			if idx < 0 || idx >= sparklineHours {
-				continue
-			}
-			if spark[s.Fingerprint] == nil {
-				spark[s.Fingerprint] = make([]int64, sparklineHours)
-			}
-			spark[s.Fingerprint][idx] += s.Events
+			spark[s.Fingerprint] = s.Counts
 		}
 		for i := range out {
 			out[i].Users = byFP[out[i].Fingerprint]
@@ -172,27 +167,19 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		out.Users = users[0].Users
 	}
 	hlo := from.Truncate(time.Hour)
-	tl, err := h.Store.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: p.ID, Fingerprint: fp, Bucket: hlo, Bucket_2: to})
+	tl, err := h.Store.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: p.ID, Fingerprint: fp, FromAt: hlo, ToAt: to, Width: 3600})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	byBucket := map[int64]int64{}
+	out.Timeline = make([]timelineBucket, 0, len(tl))
 	for _, t := range tl {
-		byBucket[t.Bucket.Unix()] += t.Events
-	}
-	out.Timeline = []timelineBucket{}
-	for b := hlo; b.Before(to); b = b.Add(time.Hour) {
-		out.Timeline = append(out.Timeline, timelineBucket{Bucket: b, Events: byBucket[b.Unix()]})
+		out.Timeline = append(out.Timeline, timelineBucket{Bucket: t.Bucket.UTC(), Events: t.Events})
 	}
 	ef := store.EventFilter{ProjectID: p.ID, Fingerprint: fp, From: from, To: to}
-	for _, col := range breakdownColumns {
-		bd, err := h.Store.Breakdown(ctx, ef, col, 5)
-		if err != nil {
-			h.fail(w, err)
-			return
-		}
-		out.Breakdown[col] = bd
+	if out.Breakdown, err = h.Store.Breakdowns(ctx, ef, breakdownColumns, 5); err != nil {
+		h.fail(w, err)
+		return
 	}
 	rng, err := h.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp})
 	if err != nil {

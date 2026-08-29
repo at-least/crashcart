@@ -12,6 +12,15 @@
 CREATE FUNCTION crashcart_is_crash(level TEXT, handled BOOLEAN) RETURNS BOOLEAN
     LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
 
+-- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
+-- t.Truncate(width): the chart queries fold the hourly aggregates with
+-- these (4 h / 1 d buckets for longer windows) and gap-fill with
+-- crashcart_buckets, so every bucket of a window comes back from SQL.
+CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPTZ
+    LANGUAGE SQL IMMUTABLE AS $$ SELECT to_timestamp(floor(extract(epoch FROM t) / width) * width) $$;
+CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT) RETURNS SETOF TIMESTAMPTZ
+    LANGUAGE SQL IMMUTABLE AS $$ SELECT generate_series(from_at, to_at - make_interval(secs => width), make_interval(secs => width)) $$;
+
 -- ── projects ───────────────────────────────────────────────────────────
 
 CREATE TABLE projects (
@@ -58,6 +67,7 @@ CREATE INDEX events_project_time ON events (project_id, occurred_at DESC, event_
 CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, occurred_at DESC);
 CREATE INDEX events_project_user ON events (project_id, user_id, occurred_at DESC) WHERE user_id IS NOT NULL;
 CREATE INDEX events_project_crash ON events (project_id, occurred_at DESC) WHERE crashcart_is_crash(level, handled);
+CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filters are `tags @> {k: v}`
 
 -- ── sessions (release health) ──────────────────────────────────────────
 

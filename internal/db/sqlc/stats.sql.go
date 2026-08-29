@@ -78,6 +78,49 @@ func (q *Queries) ExpireProjectUsage(ctx context.Context, day time.Time) (int64,
 	return result.RowsAffected(), nil
 }
 
+const latestReleaseHealth = `-- name: LatestReleaseHealth :one
+SELECT e.release,
+       COALESCE((SELECT sum(h.total) FROM release_health_daily h
+                  WHERE h.project_id = e.project_id AND h.release = e.release
+                    AND h.bucket >= $1::timestamptz AND h.bucket < $2::timestamptz), 0)::bigint AS total,
+       COALESCE((SELECT sum(h.crashed) FROM release_health_daily h
+                  WHERE h.project_id = e.project_id AND h.release = e.release
+                    AND h.bucket >= $1::timestamptz AND h.bucket < $2::timestamptz), 0)::bigint AS crashed
+FROM event_stats_hourly e
+WHERE e.project_id = $3::bigint AND e.release <> ''
+  AND e.bucket >= $4::timestamptz AND e.bucket < $2::timestamptz
+GROUP BY e.project_id, e.release
+ORDER BY max(e.bucket) DESC, e.release DESC
+LIMIT 1
+`
+
+type LatestReleaseHealthParams struct {
+	DayFrom   time.Time `json:"day_from"`
+	ToAt      time.Time `json:"to_at"`
+	ProjectID int64     `json:"project_id"`
+	HourFrom  time.Time `json:"hour_from"`
+}
+
+type LatestReleaseHealthRow struct {
+	Release string `json:"release"`
+	Total   int64  `json:"total"`
+	Crashed int64  `json:"crashed"`
+}
+
+// The most recently active release in the window (by events; ties by
+// name) with its session totals over the same window (0 without sessions).
+func (q *Queries) LatestReleaseHealth(ctx context.Context, arg LatestReleaseHealthParams) (LatestReleaseHealthRow, error) {
+	row := q.db.QueryRow(ctx, latestReleaseHealth,
+		arg.DayFrom,
+		arg.ToAt,
+		arg.ProjectID,
+		arg.HourFrom,
+	)
+	var i LatestReleaseHealthRow
+	err := row.Scan(&i.Release, &i.Total, &i.Crashed)
+	return i, err
+}
+
 const levelTotals = `-- name: LevelTotals :many
 SELECT level, sum(events)::bigint AS events
 FROM event_stats_hourly
@@ -172,12 +215,13 @@ func (q *Queries) ProjectUsage(ctx context.Context, arg ProjectUsageParams) (int
 }
 
 const releaseStats = `-- name: ReleaseStats :many
-SELECT release, platform,
+SELECT release,
+       array_remove(array_agg(DISTINCT platform), '')::text[] AS platforms,
        min(bucket)::timestamptz AS first_seen, max(bucket)::timestamptz AS last_seen,
        sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
 FROM event_stats_hourly
 WHERE project_id = $1 AND bucket >= $2 AND bucket < $3 AND release <> ''
-GROUP BY release, platform ORDER BY max(bucket) DESC
+GROUP BY release ORDER BY max(bucket) DESC, release
 `
 
 type ReleaseStatsParams struct {
@@ -188,7 +232,7 @@ type ReleaseStatsParams struct {
 
 type ReleaseStatsRow struct {
 	Release   string    `json:"release"`
-	Platform  string    `json:"platform"`
+	Platforms []string  `json:"platforms"`
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
 	Events    int64     `json:"events"`
@@ -196,7 +240,7 @@ type ReleaseStatsRow struct {
 	Errors    int64     `json:"errors"`
 }
 
-// Every release with activity in the window (plus all-time first/last seen).
+// Every release with activity in the window, most recently active first.
 func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]ReleaseStatsRow, error) {
 	rows, err := q.db.Query(ctx, releaseStats, arg.ProjectID, arg.Bucket, arg.Bucket_2)
 	if err != nil {
@@ -208,7 +252,7 @@ func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]R
 		var i ReleaseStatsRow
 		if err := rows.Scan(
 			&i.Release,
-			&i.Platform,
+			&i.Platforms,
 			&i.FirstSeen,
 			&i.LastSeen,
 			&i.Events,
@@ -226,17 +270,24 @@ func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]R
 }
 
 const releaseTimeline = `-- name: ReleaseTimeline :many
-SELECT bucket, sum(events)::bigint AS events, sum(crashes)::bigint AS crashes
-FROM event_stats_hourly
-WHERE project_id = $1 AND release = $2 AND bucket >= $3 AND bucket < $4
-GROUP BY bucket ORDER BY bucket
+WITH h AS (
+    SELECT crashcart_bucket(bucket, $3::bigint) AS bucket, sum(events) AS events, sum(crashes) AS crashes
+    FROM event_stats_hourly
+    WHERE project_id = $4::bigint AND release = $5::text
+      AND bucket >= $1::timestamptz AND bucket < $2::timestamptz
+    GROUP BY 1)
+SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events, COALESCE(h.crashes, 0)::bigint AS crashes
+FROM crashcart_buckets($1::timestamptz, $2::timestamptz, $3::bigint) AS b
+LEFT JOIN h ON h.bucket = b
+ORDER BY b
 `
 
 type ReleaseTimelineParams struct {
+	FromAt    time.Time `json:"from_at"`
+	ToAt      time.Time `json:"to_at"`
+	Width     int64     `json:"width"`
 	ProjectID int64     `json:"project_id"`
 	Release   string    `json:"release"`
-	Bucket    time.Time `json:"bucket"`
-	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type ReleaseTimelineRow struct {
@@ -247,10 +298,11 @@ type ReleaseTimelineRow struct {
 
 func (q *Queries) ReleaseTimeline(ctx context.Context, arg ReleaseTimelineParams) ([]ReleaseTimelineRow, error) {
 	rows, err := q.db.Query(ctx, releaseTimeline,
+		arg.FromAt,
+		arg.ToAt,
+		arg.Width,
 		arg.ProjectID,
 		arg.Release,
-		arg.Bucket,
-		arg.Bucket_2,
 	)
 	if err != nil {
 		return nil, err
@@ -271,31 +323,62 @@ func (q *Queries) ReleaseTimeline(ctx context.Context, arg ReleaseTimelineParams
 }
 
 const timeline = `-- name: Timeline :many
-SELECT bucket, release, platform,
-       sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
-FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
-GROUP BY bucket, release, platform ORDER BY bucket
+
+WITH s AS (
+    SELECT crashcart_bucket(bucket, $3::bigint) AS bucket, release,
+           sum(events) AS events, sum(crashes) AS crashes
+    FROM event_stats_hourly
+    WHERE project_id = $4::bigint
+      AND bucket >= $1::timestamptz AND bucket < $2::timestamptz
+    GROUP BY 1, 2),
+ranked AS (
+    SELECT release, row_number() OVER (ORDER BY sum(crashes) DESC, sum(events) DESC, release) AS rank
+    FROM s GROUP BY release),
+series AS (
+    SELECT CASE WHEN rank <= $5::bigint THEN release ELSE 'other' END AS series, min(rank) AS rank
+    FROM ranked GROUP BY 1),
+folded AS (
+    SELECT s.bucket, CASE WHEN r.rank <= $5::bigint THEN s.release ELSE 'other' END AS series,
+           sum(s.events) AS events, sum(s.crashes) AS crashes
+    FROM s JOIN ranked r USING (release) GROUP BY 1, 2)
+SELECT b::timestamptz AS bucket, se.series AS release,
+       COALESCE(f.events, 0)::bigint AS events, COALESCE(f.crashes, 0)::bigint AS crashes
+FROM crashcart_buckets($1::timestamptz, $2::timestamptz, $3::bigint) AS b
+CROSS JOIN series se
+LEFT JOIN folded f ON f.bucket = b AND f.series = se.series
+ORDER BY b, se.rank
 `
 
 type TimelineParams struct {
+	FromAt    time.Time `json:"from_at"`
+	ToAt      time.Time `json:"to_at"`
+	Width     int64     `json:"width"`
 	ProjectID int64     `json:"project_id"`
-	Bucket    time.Time `json:"bucket"`
-	Bucket_2  time.Time `json:"bucket_2"`
+	Top       int64     `json:"top"`
 }
 
 type TimelineRow struct {
-	Bucket   time.Time `json:"bucket"`
-	Release  string    `json:"release"`
-	Platform string    `json:"platform"`
-	Events   int64     `json:"events"`
-	Crashes  int64     `json:"crashes"`
-	Errors   int64     `json:"errors"`
+	Bucket  time.Time `json:"bucket"`
+	Release string    `json:"release"`
+	Events  int64     `json:"events"`
+	Crashes int64     `json:"crashes"`
 }
 
-// Hourly buckets over a window, split by release (the top-N is done in Go).
+// Chart queries take a window [from_at, to_at) (from_at bucket-aligned)
+// and a bucket width in seconds; they fold the hourly aggregates with
+// crashcart_bucket and gap-fill with crashcart_buckets, so every bucket
+// of the window comes back, in order.
+// Events / crashes per bucket, split into the top `top` releases (by
+// crashes, then events) plus 'other'; every bucket for every series,
+// ordered by bucket, then series rank.
 func (q *Queries) Timeline(ctx context.Context, arg TimelineParams) ([]TimelineRow, error) {
-	rows, err := q.db.Query(ctx, timeline, arg.ProjectID, arg.Bucket, arg.Bucket_2)
+	rows, err := q.db.Query(ctx, timeline,
+		arg.FromAt,
+		arg.ToAt,
+		arg.Width,
+		arg.ProjectID,
+		arg.Top,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -306,10 +389,8 @@ func (q *Queries) Timeline(ctx context.Context, arg TimelineParams) ([]TimelineR
 		if err := rows.Scan(
 			&i.Bucket,
 			&i.Release,
-			&i.Platform,
 			&i.Events,
 			&i.Crashes,
-			&i.Errors,
 		); err != nil {
 			return nil, err
 		}
