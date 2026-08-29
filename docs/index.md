@@ -11,7 +11,7 @@ hero:
       link: /guide/getting-started
     - theme: alt
       text: View on GitHub
-      link: https://github.com/at-least/crashcart
+      link: https://github.com/shadlessdev/crashcart
 
 features:
   - title: Sentry SDK compatible
