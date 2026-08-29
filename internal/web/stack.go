@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
@@ -98,8 +97,7 @@ func parsePayload(e sqlc.Event) *sentry.Event {
 	if len(e.Payload) == 0 {
 		return nil
 	}
-	t := pk.Time(e.ID)
-	return sentry.ParseEvent(e.EventID, t, e.Payload, time.Now().UTC())
+	return sentry.ParseEvent(e.EventID, e.OccurredAt, e.Payload, time.Now().UTC())
 }
 
 // KV is one key/value line of a context group.

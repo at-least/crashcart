@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/crashcartapp/crashcart/internal/pk"
 )
 
 // now is the render clock (overridable in tests).
@@ -30,17 +28,14 @@ func timeAgo(t, now time.Time) string {
 	return t.UTC().Format("Jan 2")
 }
 
-// idAgo is timeAgo for an event/issue id.
-func idAgo(id int64) string { return timeAgo(pk.Time(id), now()) }
+// ago is timeAgo at the render clock.
+func ago(t time.Time) string { return timeAgo(t, now()) }
 
 // formatTime is "Aug 17 14:03:22 UTC".
 func formatTime(t time.Time) string { return t.UTC().Format("Jan 2 15:04:05") + " UTC" }
 
 // formatDateTime is "2026-08-17 14:03:22 UTC".
 func formatDateTime(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") + " UTC" }
-
-// idTime is formatDateTime for an id.
-func idTime(id int64) string { return formatDateTime(pk.Time(id)) }
 
 // compact renders 1234 as "1.2k", 1234567 as "1.2M".
 func compact(n int64) string {

@@ -15,7 +15,6 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
@@ -82,7 +81,7 @@ func TestIssueWebhookAndCooldown(t *testing.T) {
 	st, p, s, n := setup(t)
 	ctx := context.Background()
 	rel := "1.2.3"
-	id := pk.New(time.Now())
+	id := time.Now().UTC()
 	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 		ProjectID: p.ID, Fingerprint: "abc123", Title: "NullPointerException in CartFragment", Level: "error",
 		EventCount: 3, StoredCount: 3, FirstSeen: id, LastSeen: id, FirstRelease: &rel,
@@ -134,7 +133,7 @@ func TestWebhookFailureIsBestEffort(t *testing.T) {
 	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "webhook", Config: cfg}); err != nil {
 		t.Fatal(err)
 	}
-	id := pk.New(time.Now())
+	id := time.Now().UTC()
 	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: "f", Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, "f"); err != nil {
 		t.Fatalf("channel failures must not fail the job: %v", err)
@@ -154,7 +153,7 @@ func TestTelegram(t *testing.T) {
 	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "telegram", Config: cfg}); err != nil {
 		t.Fatal(err)
 	}
-	id := pk.New(time.Now())
+	id := time.Now().UTC()
 	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: "tg", Title: "Crash in Checkout", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, "tg"); err != nil {
 		t.Fatal(err)
@@ -194,7 +193,7 @@ func TestCheckSpikes(t *testing.T) {
 	fp := "crashfp"
 	for i := 0; i < 12; i++ {
 		rows = append(rows, store.EventInsert{
-			ID: pk.New(time.Now().Add(-time.Duration(i) * time.Second)), ProjectID: p.ID, EventID: fmt.Sprint("e", i), Level: "fatal",
+			OccurredAt: time.Now().UTC().Add(-time.Duration(i) * time.Second), ProjectID: p.ID, EventID: fmt.Sprint("e", i), Level: "fatal",
 			Message: "boom", Handled: &f, Fingerprint: &fp, Tags: []byte("{}"), Breadcrumbs: []byte("[]"), Payload: []byte("{}"),
 		})
 	}

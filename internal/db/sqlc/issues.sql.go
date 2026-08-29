@@ -75,8 +75,8 @@ SELECT count(*) FROM issues WHERE project_id = $1 AND first_seen >= $2
 `
 
 type CountNewIssuesParams struct {
-	ProjectID int64 `json:"project_id"`
-	FirstSeen int64 `json:"first_seen"`
+	ProjectID int64     `json:"project_id"`
+	FirstSeen time.Time `json:"first_seen"`
 }
 
 func (q *Queries) CountNewIssues(ctx context.Context, arg CountNewIssuesParams) (int64, error) {
@@ -104,7 +104,7 @@ const expireIssues = `-- name: ExpireIssues :execrows
 DELETE FROM issues WHERE last_seen < $1 AND status IN ('resolved', 'ignored')
 `
 
-func (q *Queries) ExpireIssues(ctx context.Context, lastSeen int64) (int64, error) {
+func (q *Queries) ExpireIssues(ctx context.Context, lastSeen time.Time) (int64, error) {
 	result, err := q.db.Exec(ctx, expireIssues, lastSeen)
 	if err != nil {
 		return 0, err
@@ -153,15 +153,15 @@ ORDER BY fingerprint, bucket
 `
 
 type IssueSparklinesParams struct {
-	ProjectID int64    `json:"project_id"`
-	Column2   []string `json:"column_2"`
-	Bucket    int64    `json:"bucket"`
+	ProjectID int64     `json:"project_id"`
+	Column2   []string  `json:"column_2"`
+	Bucket    time.Time `json:"bucket"`
 }
 
 type IssueSparklinesRow struct {
-	Fingerprint string `json:"fingerprint"`
-	Bucket      int64  `json:"bucket"`
-	Events      int64  `json:"events"`
+	Fingerprint string    `json:"fingerprint"`
+	Bucket      time.Time `json:"bucket"`
+	Events      int64     `json:"events"`
 }
 
 func (q *Queries) IssueSparklines(ctx context.Context, arg IssueSparklinesParams) ([]IssueSparklinesRow, error) {
@@ -191,15 +191,15 @@ ORDER BY bucket
 `
 
 type IssueTimelineParams struct {
-	ProjectID   int64  `json:"project_id"`
-	Fingerprint string `json:"fingerprint"`
-	Bucket      int64  `json:"bucket"`
-	Bucket_2    int64  `json:"bucket_2"`
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint string    `json:"fingerprint"`
+	Bucket      time.Time `json:"bucket"`
+	Bucket_2    time.Time `json:"bucket_2"`
 }
 
 type IssueTimelineRow struct {
-	Bucket int64 `json:"bucket"`
-	Events int64 `json:"events"`
+	Bucket time.Time `json:"bucket"`
+	Events int64     `json:"events"`
 }
 
 func (q *Queries) IssueTimeline(ctx context.Context, arg IssueTimelineParams) ([]IssueTimelineRow, error) {
@@ -281,9 +281,9 @@ SELECT project_id, fingerprint, title, level, error_type, screen, platform, stat
 `
 
 type ListNewIssuesParams struct {
-	ProjectID int64 `json:"project_id"`
-	FirstSeen int64 `json:"first_seen"`
-	Limit     int32 `json:"limit"`
+	ProjectID int64     `json:"project_id"`
+	FirstSeen time.Time `json:"first_seen"`
+	Limit     int32     `json:"limit"`
 }
 
 func (q *Queries) ListNewIssues(ctx context.Context, arg ListNewIssuesParams) ([]Issue, error) {
@@ -449,18 +449,18 @@ RETURNING project_id, fingerprint, title, level, error_type, screen, platform, s
 `
 
 type UpsertIssueParams struct {
-	ProjectID    int64   `json:"project_id"`
-	Fingerprint  string  `json:"fingerprint"`
-	Title        string  `json:"title"`
-	Level        string  `json:"level"`
-	ErrorType    *string `json:"error_type"`
-	Screen       *string `json:"screen"`
-	Platform     *string `json:"platform"`
-	EventCount   int64   `json:"event_count"`
-	StoredCount  int64   `json:"stored_count"`
-	FirstSeen    int64   `json:"first_seen"`
-	LastSeen     int64   `json:"last_seen"`
-	FirstRelease *string `json:"first_release"`
+	ProjectID    int64     `json:"project_id"`
+	Fingerprint  string    `json:"fingerprint"`
+	Title        string    `json:"title"`
+	Level        string    `json:"level"`
+	ErrorType    *string   `json:"error_type"`
+	Screen       *string   `json:"screen"`
+	Platform     *string   `json:"platform"`
+	EventCount   int64     `json:"event_count"`
+	StoredCount  int64     `json:"stored_count"`
+	FirstSeen    time.Time `json:"first_seen"`
+	LastSeen     time.Time `json:"last_seen"`
+	FirstRelease *string   `json:"first_release"`
 }
 
 type UpsertIssueRow struct {
@@ -474,8 +474,8 @@ type UpsertIssueRow struct {
 	Status          string    `json:"status"`
 	EventCount      int64     `json:"event_count"`
 	StoredCount     int64     `json:"stored_count"`
-	FirstSeen       int64     `json:"first_seen"`
-	LastSeen        int64     `json:"last_seen"`
+	FirstSeen       time.Time `json:"first_seen"`
+	LastSeen        time.Time `json:"last_seen"`
 	FirstRelease    *string   `json:"first_release"`
 	LastRelease     *string   `json:"last_release"`
 	ResolvedRelease *string   `json:"resolved_release"`

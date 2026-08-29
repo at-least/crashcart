@@ -20,6 +20,6 @@ DELETE FROM jobs WHERE attempts >= 8 OR created_at < now() - INTERVAL '7 days';
 
 -- name: UnsymbolicatedEvents :many
 -- Events of a release that still lack symbols (bounded, newest first).
-SELECT id FROM events
+SELECT event_id FROM events
 WHERE project_id = $1 AND release = $2 AND symbolicated = false AND fingerprint IS NOT NULL
-  AND id >= $3 ORDER BY id DESC LIMIT $4;
+  AND occurred_at >= $3 ORDER BY occurred_at DESC LIMIT $4;

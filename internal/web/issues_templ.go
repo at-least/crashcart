@@ -645,9 +645,9 @@ func IssuesTable(pg Page, d IssuesData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var35 string
-				templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(idTime(is.FirstSeen))
+				templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(formatDateTime(is.FirstSeen))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issues.templ`, Line: 138, Col: 58}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issues.templ`, Line: 138, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 				if templ_7745c5c3_Err != nil {
@@ -658,9 +658,9 @@ func IssuesTable(pg Page, d IssuesData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var36 string
-				templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(idAgo(is.FirstSeen))
+				templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(ago(is.FirstSeen))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issues.templ`, Line: 138, Col: 82}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issues.templ`, Line: 138, Col: 88}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 				if templ_7745c5c3_Err != nil {
@@ -671,9 +671,9 @@ func IssuesTable(pg Page, d IssuesData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var37 string
-				templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(idTime(is.LastSeen))
+				templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(formatDateTime(is.LastSeen))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issues.templ`, Line: 139, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issues.templ`, Line: 139, Col: 65}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 				if templ_7745c5c3_Err != nil {
@@ -684,9 +684,9 @@ func IssuesTable(pg Page, d IssuesData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var38 string
-				templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(idAgo(is.LastSeen))
+				templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(ago(is.LastSeen))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issues.templ`, Line: 139, Col: 80}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issues.templ`, Line: 139, Col: 86}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 				if templ_7745c5c3_Err != nil {

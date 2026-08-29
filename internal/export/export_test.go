@@ -176,8 +176,8 @@ func TestRoundTrip(t *testing.T) {
 func TestImportCreatesProjectAndSkipsUnknown(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	in := `{"t":"_meta","format":1,"exported_at":1,"app":"crashcart"}
-{"t":"events","project":"fresh","id":1755684000000123,"event_id":"x","level":"error","message":"m","tags":{},"breadcrumbs":[],"payload":{"a":1}}
+	in := `{"t":"_meta","format":1,"exported_at":"2026-08-20T10:00:00Z","app":"crashcart"}
+{"t":"events","project":"fresh","occurred_at":"2026-08-20T10:00:00.000123Z","event_id":"x","level":"error","message":"m","tags":{},"breadcrumbs":[],"payload":{"a":1}}
 {"t":"widgets","project":"fresh"}
 `
 	rep, err := Import(ctx, st, strings.NewReader(in))

@@ -3,12 +3,9 @@
 -- continuous aggregates) or 0002_plain.sql (plain Postgres: rolled-up
 -- stats tables behind views with a live current hour) — see internal/db.
 --
--- Time-series tables use the microsecond primary key from internal/pk:
--- id = unix_ms × 1000 + random(0..999); a time range is an id range.
-
--- "now" in id units (TimescaleDB policies reason about the integer dimension).
-CREATE OR REPLACE FUNCTION crashcart_now() RETURNS BIGINT
-    LANGUAGE SQL STABLE AS $$ SELECT (extract(epoch FROM now()) * 1000000)::bigint $$;
+-- Time-series tables (events, sessions) carry their time in a TIMESTAMPTZ
+-- column that is the hypertable dimension; a time window is a range on it.
+-- Their unique key includes that column (a hypertable requires it).
 
 -- The one definition of "crash": fatal, or an unhandled exception. Used by
 -- the continuous aggregates, the spike check and the event filters.
@@ -32,9 +29,9 @@ CREATE TABLE projects (
 -- ── events ─────────────────────────────────────────────────────────────
 
 CREATE TABLE events (
-    id             BIGINT PRIMARY KEY,                -- occurred_at µs (pk package)
+    occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (time dimension)
     project_id     BIGINT NOT NULL,
-    event_id       TEXT NOT NULL,                    -- Sentry event_id (or a derived one)
+    event_id       TEXT NOT NULL,                    -- Sentry event_id (or a derived one); the dedupe key
     level          TEXT NOT NULL,                    -- fatal | error | warning | info | debug
     message        TEXT NOT NULL,
     platform       TEXT,
@@ -54,24 +51,27 @@ CREATE TABLE events (
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     breadcrumbs    JSONB NOT NULL DEFAULT '[]'::jsonb,
     payload        JSONB NOT NULL,                   -- the untouched Sentry event; never rewritten
-    symbols        JSONB                             -- symbolicated frames (written once by the worker)
+    symbols        JSONB,                            -- symbolicated frames (written once)
+    PRIMARY KEY (project_id, event_id, occurred_at)  -- a resent envelope lands on the same key
 );
-CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, id DESC);
-CREATE INDEX events_project_user ON events (project_id, user_id, id DESC) WHERE user_id IS NOT NULL;
-CREATE INDEX events_project_id ON events (project_id, id DESC);
-CREATE INDEX events_project_crash ON events (project_id, id DESC) WHERE crashcart_is_crash(level, handled);
+CREATE INDEX events_project_time ON events (project_id, occurred_at DESC, event_id DESC);
+CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, occurred_at DESC);
+CREATE INDEX events_project_user ON events (project_id, user_id, occurred_at DESC) WHERE user_id IS NOT NULL;
+CREATE INDEX events_project_crash ON events (project_id, occurred_at DESC) WHERE crashcart_is_crash(level, handled);
 
 -- ── sessions (release health) ──────────────────────────────────────────
 
 CREATE TABLE sessions (
-    id          BIGINT PRIMARY KEY,                  -- started_at µs
+    started_at  TIMESTAMPTZ NOT NULL,                -- time dimension
     project_id  BIGINT NOT NULL,
+    sid         TEXT NOT NULL,                       -- SDK session id; aggregate rows get a random one
     release     TEXT NOT NULL,
     environment TEXT,
     status      TEXT NOT NULL,                       -- ok | exited | crashed | errored | abnormal
-    count       INTEGER NOT NULL DEFAULT 1           -- aggregate session items carry counts
+    count       INTEGER NOT NULL DEFAULT 1,          -- aggregate session items carry counts
+    PRIMARY KEY (project_id, sid, started_at)        -- updates of one session hit the same row
 );
-CREATE INDEX sessions_project_release ON sessions (project_id, release, id DESC);
+CREATE INDEX sessions_project_release ON sessions (project_id, release, started_at DESC);
 
 -- ── issues (stateful; the only non-hypertable ingest upserts) ──────────
 
@@ -87,8 +87,8 @@ CREATE TABLE issues (
                      CHECK (status IN ('unresolved', 'triaged', 'resolved', 'ignored', 'regression')),
     event_count      BIGINT NOT NULL DEFAULT 0,       -- exact: counts sampled-out events too
     stored_count     BIGINT NOT NULL DEFAULT 0,       -- events actually stored
-    first_seen       BIGINT NOT NULL,                 -- event ids (µs)
-    last_seen        BIGINT NOT NULL,
+    first_seen       TIMESTAMPTZ NOT NULL,
+    last_seen        TIMESTAMPTZ NOT NULL,
     first_release    TEXT,
     last_release     TEXT,
     resolved_release TEXT,                            -- last_release at resolve time (regression detection)
@@ -127,7 +127,7 @@ CREATE TABLE upload_chunks (
 
 CREATE TABLE jobs (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    kind       TEXT NOT NULL,                        -- symbolicate | alert
+    kind       TEXT NOT NULL,                        -- symbolicate | resymbolicate | alert
     project_id BIGINT NOT NULL,
     args       JSONB NOT NULL DEFAULT '{}'::jsonb,
     run_after  TIMESTAMPTZ NOT NULL DEFAULT now(),

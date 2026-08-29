@@ -41,13 +41,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 	routes := map[string]http.HandlerFunc{
 		// projects
-		"GET /api/projects":                 h.listProjects,
-		"POST /api/projects":                h.createProject,
+		"GET /api/projects":                    h.listProjects,
+		"POST /api/projects":                   h.createProject,
 		"POST /api/projects/{slug}/rotate-key": h.rotateKey,
-		"GET /api/projects/{slug}":          h.getProject,
-		"PATCH /api/projects/{slug}":        h.updateProject,
-		"DELETE /api/projects/{slug}":       h.deleteProject,
-		"GET /api/projects/{slug}/overview": h.overview,
+		"GET /api/projects/{slug}":             h.getProject,
+		"PATCH /api/projects/{slug}":           h.updateProject,
+		"DELETE /api/projects/{slug}":          h.deleteProject,
+		"GET /api/projects/{slug}/overview":    h.overview,
 		// issues
 		"GET /api/projects/{slug}/issues":                 h.listIssues,
 		"POST /api/projects/{slug}/issues/bulk":           h.bulkIssues,
@@ -69,12 +69,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"POST /api/projects/{slug}/symbols":        h.uploadSymbols,
 		"DELETE /api/projects/{slug}/symbols/{id}": h.deleteSymbol,
 		// sentry-cli compatibility
-		"GET /api/0/projects/{org}/{project}/files/dsyms/":  h.sentryListDSYMs,
-		"POST /api/0/projects/{org}/{project}/files/dsyms/": h.sentryUploadDSYMs,
-		"POST /api/0/organizations/{org}/chunk-upload/":              h.sentryChunkUploadPost,
-		"GET /api/0/organizations/{org}/chunk-upload/":               h.sentryChunkUploadOptions,
-		"POST /api/0/projects/{org}/{project}/files/difs/assemble/": h.sentryAssemble,
-		"POST /api/0/projects/{org}/{project}/files/dsyms/associate/": h.sentryAssociate,
+		"GET /api/0/projects/{org}/{project}/files/dsyms/":                      h.sentryListDSYMs,
+		"POST /api/0/projects/{org}/{project}/files/dsyms/":                     h.sentryUploadDSYMs,
+		"POST /api/0/organizations/{org}/chunk-upload/":                         h.sentryChunkUploadPost,
+		"GET /api/0/organizations/{org}/chunk-upload/":                          h.sentryChunkUploadOptions,
+		"POST /api/0/projects/{org}/{project}/files/difs/assemble/":             h.sentryAssemble,
+		"POST /api/0/projects/{org}/{project}/files/dsyms/associate/":           h.sentryAssociate,
 		"POST /api/0/projects/{org}/{project}/files/proguard-artifact-releases": h.sentryProguardArtifactRelease,
 		// CORS preflights
 		"OPTIONS /api/projects":  h.preflight,

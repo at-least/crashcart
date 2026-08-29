@@ -2,15 +2,12 @@ package retention
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
@@ -50,27 +47,19 @@ func TestReconcile(t *testing.T) {
 	if n := count(agg); n != 3 {
 		t.Errorf("aggregate retention policies = %d", n)
 	}
-	// The configured windows landed in id units.
-	var raw []byte
-	if err := st.Pool.QueryRow(ctx, `SELECT config FROM timescaledb_information.jobs WHERE proc_name = 'policy_retention' AND hypertable_schema = current_schema() AND hypertable_name = 'events'`).Scan(&raw); err != nil {
-		t.Fatal(err)
+	// The configured windows landed as intervals.
+	window := func(proc, key string) string {
+		var v string
+		if err := st.Pool.QueryRow(ctx, `SELECT (config->>$2)::interval::text FROM timescaledb_information.jobs WHERE proc_name = $1 AND hypertable_schema = current_schema() AND hypertable_name = 'events'`, proc, key).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
 	}
-	var c struct {
-		DropAfter int64 `json:"drop_after"`
+	if got := window("policy_retention", "drop_after"); got != "14 days" {
+		t.Errorf("drop_after = %q, want 14 days", got)
 	}
-	json.Unmarshal(raw, &c)
-	if c.DropAfter != 14*pk.Day {
-		t.Errorf("drop_after = %d, want %d", c.DropAfter, 14*pk.Day)
-	}
-	if err := st.Pool.QueryRow(ctx, `SELECT config FROM timescaledb_information.jobs WHERE proc_name = 'policy_compression' AND hypertable_schema = current_schema() AND hypertable_name = 'events'`).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var cc struct {
-		CompressAfter int64 `json:"compress_after"`
-	}
-	json.Unmarshal(raw, &cc)
-	if cc.CompressAfter != 36*pk.Hour {
-		t.Errorf("compress_after = %d, want %d", cc.CompressAfter, 36*pk.Hour)
+	if got := window("policy_compression", "compress_after"); got != "36:00:00" {
+		t.Errorf("compress_after = %q, want 36:00:00", got)
 	}
 	// Changing the configuration replaces the policies.
 	cfg.RetentionDays = 7
@@ -80,10 +69,8 @@ func TestReconcile(t *testing.T) {
 	if n := count(hyper, "policy_retention"); n != 2 {
 		t.Errorf("after change: retention policies = %d", n)
 	}
-	st.Pool.QueryRow(ctx, `SELECT config FROM timescaledb_information.jobs WHERE proc_name = 'policy_retention' AND hypertable_schema = current_schema() AND hypertable_name = 'events'`).Scan(&raw)
-	json.Unmarshal(raw, &c)
-	if c.DropAfter != 7*pk.Day {
-		t.Errorf("drop_after after change = %d", c.DropAfter)
+	if got := window("policy_retention", "drop_after"); got != "7 days" {
+		t.Errorf("drop_after after change = %q", got)
 	}
 }
 
@@ -92,10 +79,10 @@ func TestSweep(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Config{RetentionDays: 30}
 	now := time.Now()
-	old := pk.Lower(now.Add(-40 * 24 * time.Hour))
-	fresh := pk.Lower(now)
+	old := now.Add(-40 * 24 * time.Hour)
+	fresh := now
 
-	mk := func(fp string, seen int64, status string) {
+	mk := func(fp string, seen time.Time, status string) {
 		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 1, Fingerprint: fp, Title: fp, Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: seen, LastSeen: seen}); err != nil {
 			t.Fatal(err)
 		}
@@ -149,8 +136,8 @@ func TestRefreshAggregates(t *testing.T) {
 	ctx := context.Background()
 	// An event written directly (as import does) two days ago: outside the
 	// policy window, invisible until refreshed.
-	old := pk.Lower(time.Now().Add(-48 * time.Hour))
-	if _, err := st.Pool.Exec(ctx, `INSERT INTO events (id, project_id, event_id, level, message, payload) VALUES ($1, 1, 'e1', 'fatal', 'm', '{}')`, old); err != nil {
+	old := time.Now().Add(-48 * time.Hour)
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, payload) VALUES ($1, 1, 'e1', 'fatal', 'm', '{}')`, old); err != nil {
 		t.Fatal(err)
 	}
 	if err := RefreshAggregates(ctx, st); err != nil {
@@ -173,15 +160,15 @@ func TestRollupPlain(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	// Two crashes in a complete hour, one in the live hour, one session yesterday.
-	insert := func(id int64, level string) {
-		if _, err := st.Pool.Exec(ctx, `INSERT INTO events (id, project_id, event_id, level, message, handled, release, payload) VALUES ($1, 1, $2, $3, 'm', false, '1.0', '{}')`, id, fmt.Sprint(id), level); err != nil {
+	insert := func(at time.Time, eid, level string) {
+		if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, handled, release, payload) VALUES ($1, 1, $2, $3, 'm', false, '1.0', '{}')`, at, eid, level); err != nil {
 			t.Fatal(err)
 		}
 	}
-	insert(pk.Lower(now.Add(-2*time.Hour)), "fatal")
-	insert(pk.Lower(now.Add(-2*time.Hour))+1, "error")
-	insert(pk.Lower(now), "fatal")
-	if _, err := st.Pool.Exec(ctx, `INSERT INTO sessions (id, project_id, release, status, count) VALUES ($1, 1, '1.0', 'crashed', 3)`, pk.Lower(now.Add(-24*time.Hour))); err != nil {
+	insert(now.Add(-2*time.Hour), "e1", "fatal")
+	insert(now.Add(-2*time.Hour), "e2", "error")
+	insert(now, "e3", "fatal")
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO sessions (started_at, project_id, sid, release, status, count) VALUES ($1, 1, 's1', '1.0', 'crashed', 3)`, now.Add(-24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	var live int64
@@ -214,7 +201,7 @@ func TestRollupPlain(t *testing.T) {
 	if total != 3 {
 		t.Fatalf("release health after RollupAll = %d, want 3", total)
 	}
-	// Sweep deletes by id range on plain.
+	// Sweep deletes by time range on plain.
 	cfg := config.Config{RetentionDays: 1}
 	if err := Sweep(ctx, st, cfg, slog.Default()); err != nil {
 		t.Fatal(err)

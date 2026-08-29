@@ -54,7 +54,7 @@ templ EventBody(pg Page, d EventData) {
 			</p>
 		}
 		<div class="meta-grid">
-			@Meta("Time", idTime(d.E.ID), "")
+			@Meta("Time", formatDateTime(d.E.OccurredAt), "")
 			@Meta("Release", deref(d.E.Release), "")
 			@Meta("Device", deref(d.E.DeviceModel), "")
 			@Meta("OS", deref(d.E.OsVersion), "")

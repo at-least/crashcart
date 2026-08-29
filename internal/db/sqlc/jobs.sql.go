@@ -115,37 +115,37 @@ func (q *Queries) RetryJob(ctx context.Context, arg RetryJobParams) error {
 }
 
 const unsymbolicatedEvents = `-- name: UnsymbolicatedEvents :many
-SELECT id FROM events
+SELECT event_id FROM events
 WHERE project_id = $1 AND release = $2 AND symbolicated = false AND fingerprint IS NOT NULL
-  AND id >= $3 ORDER BY id DESC LIMIT $4
+  AND occurred_at >= $3 ORDER BY occurred_at DESC LIMIT $4
 `
 
 type UnsymbolicatedEventsParams struct {
-	ProjectID int64   `json:"project_id"`
-	Release   *string `json:"release"`
-	ID        int64   `json:"id"`
-	Limit     int32   `json:"limit"`
+	ProjectID  int64     `json:"project_id"`
+	Release    *string   `json:"release"`
+	OccurredAt time.Time `json:"occurred_at"`
+	Limit      int32     `json:"limit"`
 }
 
 // Events of a release that still lack symbols (bounded, newest first).
-func (q *Queries) UnsymbolicatedEvents(ctx context.Context, arg UnsymbolicatedEventsParams) ([]int64, error) {
+func (q *Queries) UnsymbolicatedEvents(ctx context.Context, arg UnsymbolicatedEventsParams) ([]string, error) {
 	rows, err := q.db.Query(ctx, unsymbolicatedEvents,
 		arg.ProjectID,
 		arg.Release,
-		arg.ID,
+		arg.OccurredAt,
 		arg.Limit,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []int64{}
+	items := []string{}
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var event_id string
+		if err := rows.Scan(&event_id); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, event_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

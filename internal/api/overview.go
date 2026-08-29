@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 )
 
 // topReleases is how many releases the overview timeline keeps apart;
@@ -54,8 +53,8 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	lo, hi := pk.Lower(from), pk.Upper(to)
-	hlo := pk.Bucket(lo, pk.Hour) // include the bucket containing `from`
+	lo, hi := from, to
+	hlo := lo.Truncate(time.Hour) // include the bucket containing `from`
 	out := overviewOut{From: from, To: to, Levels: map[string]int64{}, Timeline: []timelinePoint{}}
 
 	tot, err := h.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, Bucket: hlo, Bucket_2: hi})
@@ -98,7 +97,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 
 // foldTimeline keeps the top releases by events and folds the rest into
 // "other"; every hourly bucket in [lo, hi) is emitted for each kept series.
-func foldTimeline(rows []sqlc.TimelineRow, lo, hi int64) []timelinePoint {
+func foldTimeline(rows []sqlc.TimelineRow, lo, hi time.Time) []timelinePoint {
 	if len(rows) == 0 {
 		return []timelinePoint{}
 	}
@@ -127,7 +126,7 @@ func foldTimeline(rows []sqlc.TimelineRow, lo, hi int64) []timelinePoint {
 		series = append(append([]string{}, names[:topReleases]...), "other")
 	}
 	type key struct {
-		bucket  int64
+		bucket  int64 // unix seconds
 		release string
 	}
 	agg := map[key]*timelinePoint{}
@@ -136,22 +135,22 @@ func foldTimeline(rows []sqlc.TimelineRow, lo, hi int64) []timelinePoint {
 		if !keep[rel] {
 			rel = "other"
 		}
-		k := key{r.Bucket, rel}
+		k := key{r.Bucket.Unix(), rel}
 		pt := agg[k]
 		if pt == nil {
-			pt = &timelinePoint{Bucket: pk.Time(r.Bucket), Release: rel}
+			pt = &timelinePoint{Bucket: r.Bucket.UTC(), Release: rel}
 			agg[k] = pt
 		}
 		pt.Events += r.Events
 		pt.Crashes += r.Crashes
 	}
 	out := []timelinePoint{}
-	for b := pk.Bucket(lo, pk.Hour); b < hi; b += pk.Hour {
+	for b := lo.Truncate(time.Hour); b.Before(hi); b = b.Add(time.Hour) {
 		for _, rel := range series {
-			if pt := agg[key{b, rel}]; pt != nil {
+			if pt := agg[key{b.Unix(), rel}]; pt != nil {
 				out = append(out, *pt)
 			} else {
-				out = append(out, timelinePoint{Bucket: pk.Time(b), Release: rel})
+				out = append(out, timelinePoint{Bucket: b, Release: rel})
 			}
 		}
 	}
@@ -160,8 +159,8 @@ func foldTimeline(rows []sqlc.TimelineRow, lo, hi int64) []timelinePoint {
 
 // crashFree picks the most recently active release that has sessions in
 // the window and computes 1 - crashed/total.
-func (h *Handler) crashFree(r *http.Request, projectID, lo, hi int64, tl []sqlc.TimelineRow) (*crashFreeOut, error) {
-	health, err := h.Store.ReleaseHealthNN(r.Context(), sqlc.ReleaseHealthNNParams{ProjectID: projectID, Bucket: pk.Bucket(lo, pk.Day), Bucket_2: hi})
+func (h *Handler) crashFree(r *http.Request, projectID int64, lo, hi time.Time, tl []sqlc.TimelineRow) (*crashFreeOut, error) {
+	health, err := h.Store.ReleaseHealthNN(r.Context(), sqlc.ReleaseHealthNNParams{ProjectID: projectID, Bucket: lo.Truncate(24 * time.Hour), Bucket_2: hi})
 	if err != nil {
 		return nil, err
 	}
@@ -172,8 +171,8 @@ func (h *Handler) crashFree(r *http.Request, projectID, lo, hi int64, tl []sqlc.
 	// fall back to name order so the choice is still deterministic.
 	lastSeen := map[string]int64{}
 	for _, t := range tl {
-		if t.Bucket > lastSeen[t.Release] {
-			lastSeen[t.Release] = t.Bucket
+		if u := t.Bucket.Unix(); u > lastSeen[t.Release] {
+			lastSeen[t.Release] = u
 		}
 	}
 	sort.Slice(health, func(i, j int) bool {

@@ -1,9 +1,9 @@
 -- name: InsertSession :exec
--- Updates of one session (same sid → same id, see ingest) overwrite the
--- status, except that a terminal status is never downgraded to 'ok'.
-INSERT INTO sessions (id, project_id, release, environment, status, count)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (id) DO UPDATE SET
+-- Updates of one session (same sid, same start) overwrite the status,
+-- except that a terminal status is never downgraded to 'ok'.
+INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (project_id, sid, started_at) DO UPDATE SET
     status = CASE WHEN sessions.status = 'ok' OR EXCLUDED.status <> 'ok' THEN EXCLUDED.status ELSE sessions.status END;
 
 -- name: ReleaseHealth :many

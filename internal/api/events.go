@@ -2,24 +2,11 @@ package api
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
-
-type eventListItem struct {
-	store.EventRow
-	Time time.Time `json:"time"`
-}
-
-type eventDetailOut struct {
-	sqlc.Event
-	Time time.Time `json:"time"`
-}
 
 // EventFilterFromQuery builds the event filter from query parameters:
 // exact-match columns, `q` (message search), `crash=1`, `before` cursor,
@@ -43,11 +30,11 @@ func EventFilterFromQuery(projectID int64, q map[string][]string) (store.EventFi
 		f.Crash = true
 	}
 	if b := get("before"); b != "" {
-		n, err := strconv.ParseInt(b, 10, 64)
-		if err != nil || n <= 0 {
-			return f, badRequest("before must be an event id")
+		c, ok := store.ParseCursor(b)
+		if !ok {
+			return f, badRequest("before must be a cursor from next_before")
 		}
-		f.Before = n
+		f.Before = c
 	}
 	var err error
 	if f.Limit, err = intParam(q, "limit", 50); err != nil {
@@ -58,7 +45,7 @@ func EventFilterFromQuery(projectID int64, q map[string][]string) (store.EventFi
 		if err != nil {
 			return f, err
 		}
-		f.From, f.To = pk.Lower(from), pk.Upper(to)
+		f.From, f.To = from, to
 	}
 	for k, vs := range q {
 		if key, ok := strings.CutPrefix(k, "tag."); ok && key != "" && len(vs) > 0 && vs[0] != "" {
@@ -86,16 +73,12 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	out := make([]eventListItem, 0, len(rows))
-	for _, e := range rows {
-		out = append(out, eventListItem{EventRow: e, Time: pk.Time(e.ID)})
-	}
-	var next *int64
+	var next *string
 	if more && len(rows) > 0 {
-		id := rows[len(rows)-1].ID
-		next = &id
+		c := store.CursorOf(rows[len(rows)-1]).String()
+		next = &c
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": out, "more": more, "next_before": next})
+	writeJSON(w, http.StatusOK, map[string]any{"events": rows, "more": more, "next_before": next})
 }
 
 func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
@@ -103,17 +86,10 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ref := r.PathValue("id")
-	var ev sqlc.Event
-	var err error
-	if id, perr := strconv.ParseInt(ref, 10, 64); perr == nil {
-		ev, err = h.Store.GetEvent(r.Context(), sqlc.GetEventParams{ProjectID: p.ID, ID: id})
-	} else {
-		ev, err = h.Store.GetEventByEventID(r.Context(), sqlc.GetEventByEventIDParams{ProjectID: p.ID, EventID: ref})
-	}
+	ev, err := h.Store.GetEvent(r.Context(), sqlc.GetEventParams{ProjectID: p.ID, EventID: r.PathValue("id")})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, eventDetailOut{Event: ev, Time: pk.Time(ev.ID)})
+	writeJSON(w, http.StatusOK, ev)
 }

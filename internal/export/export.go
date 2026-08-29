@@ -5,17 +5,18 @@
 //
 // Format (one JSON object per line):
 //
-//	{"t":"_meta","format":1,"exported_at":<unix ms>,"app":"crashcart"}
+//	{"t":"_meta","format":1,"exported_at":"<RFC3339>","app":"crashcart"}
 //	{"t":"projects", ...}   then issues, events, sessions, symbol_files,
 //	                        alert_rules, alert_channels (see Tables)
 //
 // Rows refer to their project by "project": "<slug>" — never by id, so a
-// dump loads into any database. Time-series ids (events, sessions) are
-// integers and are kept; identity ids (projects, symbol_files,
-// alert_channels) are not exported because their natural keys are. TIMESTAMPTZ
-// columns are unix milliseconds, JSONB columns are embedded JSON, BYTEA is
-// base64, NULL columns are omitted. Aggregates, jobs and rate limits are
-// not exported: they recompute or expire.
+// dump loads into any database. Events and sessions carry their natural
+// keys (event_id + occurred_at, sid + started_at); identity ids (projects,
+// symbol_files, alert_channels) are not exported because their natural
+// keys are. TIMESTAMPTZ columns are RFC3339 strings (UTC, nanosecond
+// precision), JSONB columns are embedded JSON, BYTEA is base64, NULL
+// columns are omitted. Aggregates, jobs and rate limits are not exported:
+// they recompute or expire.
 //
 // Import is idempotent: events and sessions are inserted with
 // ON CONFLICT DO NOTHING, everything else is upserted on its natural key
@@ -62,10 +63,10 @@ const batchSize = 500
 // ── row shapes ─────────────────────────────────────────────────────────
 
 type metaRow struct {
-	T          string `json:"t"`
-	Format     int    `json:"format"`
-	ExportedAt int64  `json:"exported_at"`
-	App        string `json:"app"`
+	T          string    `json:"t"`
+	Format     int       `json:"format"`
+	ExportedAt time.Time `json:"exported_at"`
+	App        string    `json:"app"`
 }
 
 type projectRow struct {
@@ -77,7 +78,7 @@ type projectRow struct {
 	SampleKeepFirst int32   `json:"sample_keep_first"`
 	SampleRate      float64 `json:"sample_rate"`
 	DailyQuota      *int32  `json:"daily_quota,omitempty"`
-	CreatedAt       int64   `json:"created_at"`
+	CreatedAt       ts      `json:"created_at"`
 }
 
 type issueRow struct {
@@ -92,19 +93,19 @@ type issueRow struct {
 	Status          string  `json:"status"`
 	EventCount      int64   `json:"event_count"`
 	StoredCount     int64   `json:"stored_count"`
-	FirstSeen       int64   `json:"first_seen"`
-	LastSeen        int64   `json:"last_seen"`
+	FirstSeen       ts      `json:"first_seen"`
+	LastSeen        ts      `json:"last_seen"`
 	FirstRelease    *string `json:"first_release,omitempty"`
 	LastRelease     *string `json:"last_release,omitempty"`
 	ResolvedRelease *string `json:"resolved_release,omitempty"`
-	CreatedAt       int64   `json:"created_at"`
-	UpdatedAt       int64   `json:"updated_at"`
+	CreatedAt       ts      `json:"created_at"`
+	UpdatedAt       ts      `json:"updated_at"`
 }
 
 type eventRow struct {
 	T             string          `json:"t"`
 	Project       string          `json:"project"`
-	ID            int64           `json:"id"`
+	OccurredAt    ts              `json:"occurred_at"`
 	EventID       string          `json:"event_id"`
 	Level         string          `json:"level"`
 	Message       string          `json:"message"`
@@ -131,7 +132,8 @@ type eventRow struct {
 type sessionRow struct {
 	T           string  `json:"t"`
 	Project     string  `json:"project"`
-	ID          int64   `json:"id"`
+	StartedAt   ts      `json:"started_at"`
+	SID         string  `json:"sid"`
 	Release     string  `json:"release"`
 	Environment *string `json:"environment,omitempty"`
 	Status      string  `json:"status"`
@@ -147,7 +149,7 @@ type symbolFileRow struct {
 	Filename   string  `json:"filename"`
 	Size       int64   `json:"size"`
 	Data       []byte  `json:"data"` // base64
-	UploadedAt int64   `json:"uploaded_at"`
+	UploadedAt ts      `json:"uploaded_at"`
 }
 
 type alertRuleRow struct {
@@ -156,7 +158,7 @@ type alertRuleRow struct {
 	Type            string `json:"type"`
 	Enabled         bool   `json:"enabled"`
 	CooldownMinutes int32  `json:"cooldown_minutes"`
-	LastTriggered   *int64 `json:"last_triggered,omitempty"`
+	LastTriggered   *ts    `json:"last_triggered,omitempty"`
 }
 
 type alertChannelRow struct {
@@ -164,8 +166,35 @@ type alertChannelRow struct {
 	Project   string          `json:"project"`
 	Kind      string          `json:"kind"`
 	Config    json.RawMessage `json:"config"`
-	CreatedAt int64           `json:"created_at"`
+	CreatedAt ts              `json:"created_at"`
 }
+
+// ts is a TIMESTAMPTZ in the file: RFC3339 with nanoseconds, UTC. A zero
+// value is omitted-or-missing and becomes "now" on import (tsOrNow).
+type ts struct{ time.Time }
+
+func (t ts) MarshalJSON() ([]byte, error) {
+	return json.Marshal(t.UTC().Format(time.RFC3339Nano))
+}
+
+func (t *ts) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		t.Time = time.Time{}
+		return nil
+	}
+	v, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return err
+	}
+	t.Time = v.UTC()
+	return nil
+}
+
+func at(t time.Time) ts { return ts{t.UTC()} }
 
 // ── export ─────────────────────────────────────────────────────────────
 
@@ -173,10 +202,10 @@ const (
 	selectIssues = `SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, event_count, stored_count,
 	first_seen, last_seen, first_release, last_release, resolved_release, created_at, updated_at
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
-	selectEvents = `SELECT id, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
+	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
 	os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs,
-	payload, symbols FROM events WHERE project_id = $1 ORDER BY id`
-	selectSessions    = `SELECT id, project_id, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY id`
+	payload, symbols FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
+	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at
 	FROM symbol_files WHERE project_id = $1 ORDER BY kind, release, filename`
 	selectAlertRules    = `SELECT project_id, type, enabled, cooldown_minutes, last_triggered FROM alert_rules WHERE project_id = $1 ORDER BY type`
@@ -194,13 +223,13 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	if err != nil {
 		return err
 	}
-	if err := enc.Encode(metaRow{T: "_meta", Format: Format, ExportedAt: time.Now().UnixMilli(), App: "crashcart"}); err != nil {
+	if err := enc.Encode(metaRow{T: "_meta", Format: Format, ExportedAt: time.Now().UTC(), App: "crashcart"}); err != nil {
 		return err
 	}
 	for _, p := range projects {
 		if err := enc.Encode(projectRow{
 			T: "projects", Slug: p.Slug, Name: p.Name, Platform: p.Platform, PublicKey: p.PublicKey,
-			SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: &p.DailyQuota, CreatedAt: ms(p.CreatedAt),
+			SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: &p.DailyQuota, CreatedAt: at(p.CreatedAt),
 		}); err != nil {
 			return err
 		}
@@ -211,9 +240,9 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 			return enc.Encode(issueRow{
 				T: "issues", Project: p.Slug, Fingerprint: r.Fingerprint, Title: r.Title, Level: r.Level,
 				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: r.Status,
-				EventCount: r.EventCount, StoredCount: r.StoredCount, FirstSeen: r.FirstSeen, LastSeen: r.LastSeen,
+				EventCount: r.EventCount, StoredCount: r.StoredCount, FirstSeen: at(r.FirstSeen), LastSeen: at(r.LastSeen),
 				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, ResolvedRelease: r.ResolvedRelease,
-				CreatedAt: ms(r.CreatedAt), UpdatedAt: ms(r.UpdatedAt),
+				CreatedAt: at(r.CreatedAt), UpdatedAt: at(r.UpdatedAt),
 			})
 		}); err != nil {
 			return fmt.Errorf("export issues: %w", err)
@@ -222,7 +251,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := stream(ctx, st, selectEvents, p.ID, func(r sqlc.Event) error {
 			return enc.Encode(eventRow{
-				T: "events", Project: p.Slug, ID: r.ID, EventID: r.EventID, Level: r.Level, Message: r.Message,
+				T: "events", Project: p.Slug, OccurredAt: at(r.OccurredAt), EventID: r.EventID, Level: r.Level, Message: r.Message,
 				Platform: r.Platform, Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID,
 				DeviceModel: r.DeviceModel, OSVersion: r.OsVersion, Screen: r.Screen, ErrorType: r.ErrorType,
 				ErrorLocation: r.ErrorLocation, Handled: r.Handled, SDKName: r.SdkName, UserID: r.UserID,
@@ -235,7 +264,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	for _, p := range projects {
 		if err := stream(ctx, st, selectSessions, p.ID, func(r sqlc.Session) error {
-			return enc.Encode(sessionRow{T: "sessions", Project: p.Slug, ID: r.ID, Release: r.Release, Environment: r.Environment, Status: r.Status, Count: r.Count})
+			return enc.Encode(sessionRow{T: "sessions", Project: p.Slug, StartedAt: at(r.StartedAt), SID: r.Sid, Release: r.Release, Environment: r.Environment, Status: r.Status, Count: r.Count})
 		}); err != nil {
 			return fmt.Errorf("export sessions: %w", err)
 		}
@@ -244,7 +273,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		if err := stream(ctx, st, selectSymbolFiles, p.ID, func(r sqlc.SymbolFile) error {
 			return enc.Encode(symbolFileRow{
 				T: "symbol_files", Project: p.Slug, Kind: r.Kind, Release: r.Release, DebugID: r.DebugID,
-				Filename: r.Filename, Size: r.Size, Data: r.Data, UploadedAt: ms(r.UploadedAt),
+				Filename: r.Filename, Size: r.Size, Data: r.Data, UploadedAt: at(r.UploadedAt),
 			})
 		}); err != nil {
 			return fmt.Errorf("export symbol_files: %w", err)
@@ -252,9 +281,9 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	for _, p := range projects {
 		if err := stream(ctx, st, selectAlertRules, p.ID, func(r sqlc.AlertRule) error {
-			var lt *int64
+			var lt *ts
 			if r.LastTriggered != nil {
-				v := ms(*r.LastTriggered)
+				v := at(*r.LastTriggered)
 				lt = &v
 			}
 			return enc.Encode(alertRuleRow{T: "alert_rules", Project: p.Slug, Type: r.Type, Enabled: r.Enabled, CooldownMinutes: r.CooldownMinutes, LastTriggered: lt})
@@ -264,7 +293,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	for _, p := range projects {
 		if err := stream(ctx, st, selectAlertChannels, p.ID, func(r sqlc.AlertChannel) error {
-			return enc.Encode(alertChannelRow{T: "alert_channels", Project: p.Slug, Kind: r.Kind, Config: r.Config, CreatedAt: ms(r.CreatedAt)})
+			return enc.Encode(alertChannelRow{T: "alert_channels", Project: p.Slug, Kind: r.Kind, Config: r.Config, CreatedAt: at(r.CreatedAt)})
 		}); err != nil {
 			return fmt.Errorf("export alert_channels: %w", err)
 		}
@@ -306,10 +335,6 @@ func stream[T any](ctx context.Context, st *store.Store, sql string, projectID i
 	return rows.Err()
 }
 
-func ms(t time.Time) int64 { return t.UnixMilli() }
-
-func fromMS(v int64) time.Time { return time.UnixMilli(v).UTC() }
-
 // ── import ─────────────────────────────────────────────────────────────
 
 // Report summarizes an import: rows read per table, plus "skipped" for
@@ -333,8 +358,8 @@ const (
 	    event_count = EXCLUDED.event_count, stored_count = EXCLUDED.stored_count, first_seen = EXCLUDED.first_seen,
 	    last_seen = EXCLUDED.last_seen, first_release = EXCLUDED.first_release, last_release = EXCLUDED.last_release,
 	    resolved_release = EXCLUDED.resolved_release, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
-	insertSession = `INSERT INTO sessions (id, project_id, release, environment, status, count) VALUES ($1,$2,$3,$4,$5,$6)
-	ON CONFLICT (id) DO NOTHING`
+	insertSession = `INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count) VALUES ($1,$2,$3,$4,$5,$6,$7)
+	ON CONFLICT (project_id, sid, started_at) DO NOTHING`
 	upsertSymbolFile = `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, uploaded_at)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 	ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET debug_id = EXCLUDED.debug_id, size = EXCLUDED.size,
@@ -434,7 +459,7 @@ func (im *importer) line(b []byte) error {
 			r.Status = "unresolved"
 		}
 		im.batch.Queue(upsertIssue, pid, r.Fingerprint, r.Title, r.Level, r.ErrorType, r.Screen, r.Platform, r.Status,
-			r.EventCount, r.StoredCount, r.FirstSeen, r.LastSeen, r.FirstRelease, r.LastRelease, r.ResolvedRelease,
+			r.EventCount, r.StoredCount, tsOrNow(r.FirstSeen), tsOrNow(r.LastSeen), r.FirstRelease, r.LastRelease, r.ResolvedRelease,
 			tsOrNow(r.CreatedAt), tsOrNow(r.UpdatedAt))
 	case "events":
 		var r eventRow
@@ -445,11 +470,11 @@ func (im *importer) line(b []byte) error {
 		if err != nil {
 			return err
 		}
-		if r.ID == 0 || len(r.Payload) == 0 {
-			return errors.New("events row needs id and payload")
+		if r.OccurredAt.IsZero() || r.EventID == "" || len(r.Payload) == 0 {
+			return errors.New("events row needs occurred_at, event_id and payload")
 		}
 		im.events = append(im.events, store.EventInsert{
-			ID: r.ID, ProjectID: pid, EventID: r.EventID, Level: r.Level, Message: r.Message, Platform: r.Platform,
+			OccurredAt: r.OccurredAt.Time, ProjectID: pid, EventID: r.EventID, Level: r.Level, Message: r.Message, Platform: r.Platform,
 			Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID, DeviceModel: r.DeviceModel,
 			OSVersion: r.OSVersion, Screen: r.Screen, ErrorType: r.ErrorType, ErrorLocation: r.ErrorLocation,
 			Handled: r.Handled, SDKName: r.SDKName, UserID: r.UserID, Fingerprint: r.Fingerprint,
@@ -470,7 +495,10 @@ func (im *importer) line(b []byte) error {
 		if err != nil {
 			return err
 		}
-		im.batch.Queue(insertSession, r.ID, pid, r.Release, r.Environment, r.Status, max(r.Count, 1))
+		if r.StartedAt.IsZero() || r.SID == "" {
+			return errors.New("sessions row needs started_at and sid")
+		}
+		im.batch.Queue(insertSession, r.StartedAt.Time, pid, r.SID, r.Release, r.Environment, r.Status, max(r.Count, 1))
 	case "symbol_files":
 		var r symbolFileRow
 		if err := json.Unmarshal(b, &r); err != nil {
@@ -495,8 +523,7 @@ func (im *importer) line(b []byte) error {
 		}
 		var lt *time.Time
 		if r.LastTriggered != nil {
-			v := fromMS(*r.LastTriggered)
-			lt = &v
+			lt = &r.LastTriggered.Time
 		}
 		im.batch.Queue(upsertAlertRule, pid, r.Type, r.Enabled, r.CooldownMinutes, lt)
 	case "alert_channels":
@@ -580,11 +607,11 @@ func orJSON(v json.RawMessage, def string) json.RawMessage {
 	return v
 }
 
-func tsOrNow(v int64) time.Time {
-	if v == 0 {
+func tsOrNow(v ts) time.Time {
+	if v.IsZero() {
 		return time.Now().UTC()
 	}
-	return fromMS(v)
+	return v.Time
 }
 
 func newKey() string {

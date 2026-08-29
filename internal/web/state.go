@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/pk"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // ViewState is everything a page needs from the URL query. Every navigation
@@ -19,7 +19,7 @@ type ViewState struct {
 	Status string // issues tab: unresolved (default) | triaged | resolved | ignored | regression | all
 	Sort   string // issues sort: last_seen (default) | first_seen | events
 	Offset int    // issues pager
-	Before int64  // events cursor: id < Before
+	Before string // events cursor (store.Cursor.String()): rows after it, newest first
 	// Filters are the event filters (allowlisted keys plus "tag.<key>").
 	Filters map[string]string
 }
@@ -64,8 +64,8 @@ func ParseViewState(slug string, q url.Values) ViewState {
 	if n, err := strconv.Atoi(q.Get("offset")); err == nil && n > 0 {
 		s.Offset = n
 	}
-	if n, err := strconv.ParseInt(q.Get("before"), 10, 64); err == nil && n > 0 {
-		s.Before = n
+	if c, ok := store.ParseCursor(q.Get("before")); ok && !c.IsZero() {
+		s.Before = c.String()
 	}
 	for k := range q {
 		if reserved[k] || !filterKey(k) {
@@ -114,8 +114,8 @@ func (s ViewState) Query() string {
 	if s.Offset > 0 {
 		p.Set("offset", strconv.Itoa(s.Offset))
 	}
-	if s.Before > 0 {
-		p.Set("before", strconv.FormatInt(s.Before, 10))
+	if s.Before != "" {
+		p.Set("before", s.Before)
 	}
 	for _, k := range sortedKeys(s.Filters) {
 		p.Set(k, s.Filters[k])
@@ -155,7 +155,7 @@ func (s ViewState) WithFilter(key, value string) ViewState {
 	} else {
 		n.Filters[key] = value
 	}
-	n.Offset, n.Before = 0, 0
+	n.Offset, n.Before = 0, ""
 	return n
 }
 
@@ -165,7 +165,7 @@ func (s ViewState) WithWin(w string) ViewState {
 	if winDays[w] > 0 {
 		n.Win = w
 	}
-	n.Offset, n.Before = 0, 0
+	n.Offset, n.Before = 0, ""
 	return n
 }
 func (s ViewState) WithStatus(st string) ViewState {
@@ -175,21 +175,31 @@ func (s ViewState) WithStatus(st string) ViewState {
 }
 func (s ViewState) WithSort(so string) ViewState { n := s.clone(); n.Sort, n.Offset = so, 0; return n }
 func (s ViewState) WithOffset(o int) ViewState   { n := s.clone(); n.Offset = max(o, 0); return n }
-func (s ViewState) WithBefore(b int64) ViewState { n := s.clone(); n.Before = max(b, 0); return n }
+func (s ViewState) WithBefore(c store.Cursor) ViewState {
+	n := s.clone()
+	n.Before = c.String()
+	return n
+}
+
+// Cursor is the parsed Before.
+func (s ViewState) Cursor() store.Cursor { c, _ := store.ParseCursor(s.Before); return c }
 
 // Cleared drops all filters and paging.
 func (s ViewState) Cleared() ViewState {
 	n := s.clone()
-	n.Filters, n.Offset, n.Before = map[string]string{}, 0, 0
+	n.Filters, n.Offset, n.Before = map[string]string{}, 0, ""
 	return n
 }
 
-// Window is the resolved id range [From, To) plus the chart bucket width.
+// Window is the resolved time range [From, To) plus the chart bucket
+// width. From is aligned to a bucket start (UTC).
 type Window struct {
-	From, To int64
-	Width    int64 // bucket width in id units
+	From, To time.Time
+	Width    time.Duration
 	Days     int
 }
+
+const day = 24 * time.Hour
 
 // Window resolves the win selector at now.
 func (s ViewState) Window(now time.Time) Window {
@@ -197,35 +207,39 @@ func (s ViewState) Window(now time.Time) Window {
 	if days == 0 {
 		days = 7
 	}
-	w := Window{From: pk.Lower(now.Add(-time.Duration(days) * 24 * time.Hour)), To: pk.Upper(now), Days: days}
+	now = now.UTC()
+	w := Window{From: now.Add(-time.Duration(days) * day), To: now, Days: days}
 	switch {
 	case days <= 1:
-		w.Width = pk.Hour
+		w.Width = time.Hour
 	case days <= 7:
-		w.Width = 6 * pk.Hour
+		w.Width = 6 * time.Hour
 	default:
-		w.Width = pk.Day
+		w.Width = day
 	}
-	w.From = pk.Bucket(w.From, w.Width)
+	w.From = w.Bucket(w.From)
 	return w
 }
 
+// Bucket truncates t to the start of its Width-sized bucket (UTC-aligned;
+// Go's Truncate counts from the zero time, which is midnight UTC).
+func (w Window) Bucket(t time.Time) time.Time { return t.UTC().Truncate(w.Width) }
+
 // Buckets lists the bucket starts of the window.
-func (w Window) Buckets() []int64 {
-	var out []int64
-	for b := w.From; b < w.To; b += w.Width {
+func (w Window) Buckets() []time.Time {
+	var out []time.Time
+	for b := w.From; b.Before(w.To); b = b.Add(w.Width) {
 		out = append(out, b)
 	}
 	return out
 }
 
 // Label formats a bucket start for tooltips.
-func (w Window) Label(bucket int64) string {
-	t := pk.Time(bucket)
-	if w.Width < pk.Day {
-		return t.Format("Jan 2 15:04")
+func (w Window) Label(bucket time.Time) string {
+	if w.Width < day {
+		return bucket.UTC().Format("Jan 2 15:04")
 	}
-	return t.Format("Jan 2")
+	return bucket.UTC().Format("Jan 2")
 }
 
 func sortedKeys(m map[string]string) []string {

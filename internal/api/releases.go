@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 )
 
 type sessionsOut struct {
@@ -36,17 +35,17 @@ func mergeReleaseStats(rows []sqlc.ReleaseStatsRow) []*releaseOut {
 	for _, r := range rows {
 		o := byRel[r.Release]
 		if o == nil {
-			o = &releaseOut{Release: r.Release, Platforms: []string{}, FirstSeen: pk.Time(r.FirstSeen), LastSeen: pk.Time(r.LastSeen)}
+			o = &releaseOut{Release: r.Release, Platforms: []string{}, FirstSeen: r.FirstSeen.UTC(), LastSeen: r.LastSeen.UTC()}
 			byRel[r.Release] = o
 			order = append(order, o)
 		}
 		if r.Platform != "" {
 			o.Platforms = append(o.Platforms, r.Platform)
 		}
-		if t := pk.Time(r.FirstSeen); t.Before(o.FirstSeen) {
+		if t := r.FirstSeen.UTC(); t.Before(o.FirstSeen) {
 			o.FirstSeen = t
 		}
-		if t := pk.Time(r.LastSeen); t.After(o.LastSeen) {
+		if t := r.LastSeen.UTC(); t.After(o.LastSeen) {
 			o.LastSeen = t
 		}
 		o.Events += r.Events
@@ -71,18 +70,17 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	lo, hi := pk.Lower(from), pk.Upper(to)
-	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, Bucket: pk.Bucket(lo, pk.Hour), Bucket_2: hi})
+	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, Bucket: from.Truncate(time.Hour), Bucket_2: to})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	health, err := h.Store.ReleaseHealthNN(ctx, sqlc.ReleaseHealthNNParams{ProjectID: p.ID, Bucket: pk.Bucket(lo, pk.Day), Bucket_2: hi})
+	health, err := h.Store.ReleaseHealthNN(ctx, sqlc.ReleaseHealthNNParams{ProjectID: p.ID, Bucket: from.Truncate(24 * time.Hour), Bucket_2: to})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	fresh, err := h.Store.NewIssuesByRelease(ctx, sqlc.NewIssuesByReleaseParams{ProjectID: p.ID, FirstSeen: lo, FirstSeen_2: hi})
+	fresh, err := h.Store.NewIssuesByRelease(ctx, sqlc.NewIssuesByReleaseParams{ProjectID: p.ID, FirstSeen: from, FirstSeen_2: to})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -137,8 +135,8 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	version := r.PathValue("version")
-	lo, hi := pk.Lower(from), pk.Upper(to)
-	hlo, dlo := pk.Bucket(lo, pk.Hour), pk.Bucket(lo, pk.Day)
+	hi := to
+	hlo, dlo := from.Truncate(time.Hour), from.Truncate(24*time.Hour)
 
 	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, Bucket: hlo, Bucket_2: hi})
 	if err != nil {
@@ -170,7 +168,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	daily := make([]dailyHealth, 0, len(health))
 	for _, d := range health {
-		daily = append(daily, dailyHealth{Day: pk.Time(d.Bucket), Total: d.Total, Crashed: d.Crashed, Errored: d.Errored, CrashFreeRate: crashFreeRate(d.Total, d.Crashed)})
+		daily = append(daily, dailyHealth{Day: d.Bucket.UTC(), Total: d.Total, Crashed: d.Crashed, Errored: d.Errored, CrashFreeRate: crashFreeRate(d.Total, d.Crashed)})
 		rel.Sessions.Total += d.Total
 		rel.Sessions.Crashed += d.Crashed
 		rel.Sessions.Errored += d.Errored
@@ -184,12 +182,12 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	byBucket := map[int64]sqlc.ReleaseTimelineRow{}
 	for _, t := range tl {
-		byBucket[t.Bucket] = t
+		byBucket[t.Bucket.Unix()] = t
 	}
-	timeline := make([]releaseTimelinePoint, 0, (hi-hlo)/pk.Hour+1)
-	for b := hlo; b < hi; b += pk.Hour {
-		t := byBucket[b]
-		timeline = append(timeline, releaseTimelinePoint{Bucket: pk.Time(b), Events: t.Events, Crashes: t.Crashes})
+	timeline := make([]releaseTimelinePoint, 0, int(hi.Sub(hlo)/time.Hour)+1)
+	for b := hlo; b.Before(hi); b = b.Add(time.Hour) {
+		t := byBucket[b.Unix()]
+		timeline = append(timeline, releaseTimelinePoint{Bucket: b, Events: t.Events, Crashes: t.Crashes})
 	}
 	introduced, present := []issueOut{}, []issueOut{}
 	for _, i := range issues {

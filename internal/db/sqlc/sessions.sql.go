@@ -7,30 +7,33 @@ package sqlc
 
 import (
 	"context"
+	"time"
 )
 
 const insertSession = `-- name: InsertSession :exec
-INSERT INTO sessions (id, project_id, release, environment, status, count)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (id) DO UPDATE SET
+INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (project_id, sid, started_at) DO UPDATE SET
     status = CASE WHEN sessions.status = 'ok' OR EXCLUDED.status <> 'ok' THEN EXCLUDED.status ELSE sessions.status END
 `
 
 type InsertSessionParams struct {
-	ID          int64   `json:"id"`
-	ProjectID   int64   `json:"project_id"`
-	Release     string  `json:"release"`
-	Environment *string `json:"environment"`
-	Status      string  `json:"status"`
-	Count       int32   `json:"count"`
+	StartedAt   time.Time `json:"started_at"`
+	ProjectID   int64     `json:"project_id"`
+	Sid         string    `json:"sid"`
+	Release     string    `json:"release"`
+	Environment *string   `json:"environment"`
+	Status      string    `json:"status"`
+	Count       int32     `json:"count"`
 }
 
-// Updates of one session (same sid → same id, see ingest) overwrite the
-// status, except that a terminal status is never downgraded to 'ok'.
+// Updates of one session (same sid, same start) overwrite the status,
+// except that a terminal status is never downgraded to 'ok'.
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
 	_, err := q.db.Exec(ctx, insertSession,
-		arg.ID,
+		arg.StartedAt,
 		arg.ProjectID,
+		arg.Sid,
 		arg.Release,
 		arg.Environment,
 		arg.Status,
@@ -50,9 +53,9 @@ GROUP BY release
 `
 
 type ReleaseHealthParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
-	Bucket_2  int64 `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type ReleaseHealthRow struct {
@@ -96,17 +99,17 @@ GROUP BY bucket ORDER BY bucket
 `
 
 type ReleaseHealthDailyParams struct {
-	ProjectID int64  `json:"project_id"`
-	Release   string `json:"release"`
-	Bucket    int64  `json:"bucket"`
-	Bucket_2  int64  `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Release   string    `json:"release"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type ReleaseHealthDailyRow struct {
-	Bucket  int64 `json:"bucket"`
-	Total   int64 `json:"total"`
-	Crashed int64 `json:"crashed"`
-	Errored int64 `json:"errored"`
+	Bucket  time.Time `json:"bucket"`
+	Total   int64     `json:"total"`
+	Crashed int64     `json:"crashed"`
+	Errored int64     `json:"errored"`
 }
 
 func (q *Queries) ReleaseHealthDaily(ctx context.Context, arg ReleaseHealthDailyParams) ([]ReleaseHealthDailyRow, error) {

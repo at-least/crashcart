@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
@@ -16,8 +15,7 @@ const sparklineHours = 7 * 24
 // issueStatuses is the lifecycle allowlist.
 var issueStatuses = map[string]bool{"unresolved": true, "triaged": true, "resolved": true, "ignored": true, "regression": true}
 
-// issueOut is the JSON shape of an issue. first_seen / last_seen are
-// times; *_id carry the raw event ids for cursors.
+// issueOut is the JSON shape of an issue.
 type issueOut struct {
 	Fingerprint     string    `json:"fingerprint"`
 	Title           string    `json:"title"`
@@ -30,8 +28,6 @@ type issueOut struct {
 	StoredCount     int64     `json:"stored_count"`
 	FirstSeen       time.Time `json:"first_seen"`
 	LastSeen        time.Time `json:"last_seen"`
-	FirstSeenID     int64     `json:"first_seen_id"`
-	LastSeenID      int64     `json:"last_seen_id"`
 	FirstRelease    *string   `json:"first_release"`
 	LastRelease     *string   `json:"last_release"`
 	ResolvedRelease *string   `json:"resolved_release"`
@@ -45,7 +41,7 @@ func toIssueOut(i sqlc.Issue) issueOut {
 	return issueOut{
 		Fingerprint: i.Fingerprint, Title: i.Title, Level: i.Level, ErrorType: i.ErrorType, Screen: i.Screen,
 		Platform: i.Platform, Status: i.Status, EventCount: i.EventCount, StoredCount: i.StoredCount,
-		FirstSeen: pk.Time(i.FirstSeen), LastSeen: pk.Time(i.LastSeen), FirstSeenID: i.FirstSeen, LastSeenID: i.LastSeen,
+		FirstSeen: i.FirstSeen.UTC(), LastSeen: i.LastSeen.UTC(),
 		FirstRelease: i.FirstRelease, LastRelease: i.LastRelease, ResolvedRelease: i.ResolvedRelease,
 		CreatedAt: i.CreatedAt.UTC(), UpdatedAt: i.UpdatedAt.UTC(),
 	}
@@ -67,10 +63,9 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	lo, hi := pk.Lower(from), pk.Upper(to)
 	f := store.IssueFilter{
 		ProjectID: p.ID, Status: q.Get("status"), Level: q.Get("level"), Release: q.Get("release"),
-		Query: q.Get("q"), Sort: q.Get("sort"), From: lo, To: hi,
+		Query: q.Get("q"), Sort: q.Get("sort"), From: from, To: to,
 	}
 	if f.Status != "" && !issueStatuses[f.Status] {
 		writeErr(w, http.StatusBadRequest, "invalid status")
@@ -100,7 +95,7 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		fps = append(fps, i.Fingerprint)
 	}
 	if len(fps) > 0 {
-		users, err := h.Store.IssueUsers(r.Context(), sqlc.IssueUsersParams{ProjectID: p.ID, Column2: fps, ID: lo, ID_2: hi})
+		users, err := h.Store.IssueUsers(r.Context(), sqlc.IssueUsersParams{ProjectID: p.ID, Column2: fps, OccurredAt: from, OccurredAt_2: to})
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -109,7 +104,7 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		for _, u := range users {
 			byFP[deref(u.Fingerprint)] = u.Users
 		}
-		start := pk.Bucket(pk.Lower(to), pk.Hour) - (sparklineHours-1)*pk.Hour
+		start := to.Truncate(time.Hour).Add(-(sparklineHours - 1) * time.Hour)
 		sp, err := h.Store.IssueSparklines(r.Context(), sqlc.IssueSparklinesParams{ProjectID: p.ID, Column2: fps, Bucket: start})
 		if err != nil {
 			h.fail(w, err)
@@ -117,7 +112,7 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		spark := map[string][]int64{}
 		for _, s := range sp {
-			idx := (s.Bucket - start) / pk.Hour
+			idx := int(s.Bucket.Sub(start) / time.Hour)
 			if idx < 0 || idx >= sparklineHours {
 				continue
 			}
@@ -142,8 +137,8 @@ type issueDetailOut struct {
 	issueOut
 	Timeline      []timelineBucket             `json:"timeline"`
 	Breakdown     map[string][]store.Breakdown `json:"breakdown"`
-	LatestEventID int64                        `json:"latest_event_id"`
-	OldestEventID int64                        `json:"oldest_event_id"`
+	LatestEventID string                       `json:"latest_event_id"`
+	OldestEventID string                       `json:"oldest_event_id"`
 }
 
 // breakdownColumns are the dimensions the issue detail reports.
@@ -166,10 +161,9 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	lo, hi := pk.Lower(from), pk.Upper(to)
 	out := issueDetailOut{issueOut: toIssueOut(issue), Breakdown: map[string][]store.Breakdown{}}
 
-	users, err := h.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []string{fp}, ID: lo, ID_2: hi})
+	users, err := h.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []string{fp}, OccurredAt: from, OccurredAt_2: to})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -177,21 +171,21 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 	if len(users) > 0 {
 		out.Users = users[0].Users
 	}
-	hlo := pk.Bucket(lo, pk.Hour)
-	tl, err := h.Store.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: p.ID, Fingerprint: fp, Bucket: hlo, Bucket_2: hi})
+	hlo := from.Truncate(time.Hour)
+	tl, err := h.Store.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: p.ID, Fingerprint: fp, Bucket: hlo, Bucket_2: to})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	byBucket := map[int64]int64{}
 	for _, t := range tl {
-		byBucket[t.Bucket] += t.Events
+		byBucket[t.Bucket.Unix()] += t.Events
 	}
 	out.Timeline = []timelineBucket{}
-	for b := hlo; b < hi; b += pk.Hour {
-		out.Timeline = append(out.Timeline, timelineBucket{Bucket: pk.Time(b), Events: byBucket[b]})
+	for b := hlo; b.Before(to); b = b.Add(time.Hour) {
+		out.Timeline = append(out.Timeline, timelineBucket{Bucket: b, Events: byBucket[b.Unix()]})
 	}
-	ef := store.EventFilter{ProjectID: p.ID, Fingerprint: fp, From: lo, To: hi}
+	ef := store.EventFilter{ProjectID: p.ID, Fingerprint: fp, From: from, To: to}
 	for _, col := range breakdownColumns {
 		bd, err := h.Store.Breakdown(ctx, ef, col, 5)
 		if err != nil {
@@ -200,7 +194,7 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Breakdown[col] = bd
 	}
-	rng, err := h.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Column2: fp})
+	rng, err := h.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp})
 	if err != nil {
 		h.fail(w, err)
 		return

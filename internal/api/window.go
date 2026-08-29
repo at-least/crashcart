@@ -15,8 +15,7 @@ const (
 // ParseWindow reads the time window of a request: `days=N` (default 7,
 // max 90) ending now, or explicit `from` / `to` RFC3339 bounds (`to` is
 // exclusive and defaults to now; `from` defaults to `to` minus days). The
-// span may not exceed MaxDays. Both bounds are returned in UTC; convert
-// with pk.Lower(from) / pk.Upper(to) for id ranges.
+// span may not exceed MaxDays. Both bounds are returned in UTC.
 func ParseWindow(q url.Values) (from, to time.Time, err error) {
 	return parseWindowAt(q, time.Now())
 }

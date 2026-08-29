@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"time"
 )
 
 const countRegressions = `-- name: CountRegressions :one
@@ -14,8 +15,8 @@ SELECT count(*) FROM issues WHERE project_id = $1 AND status = 'regression' AND 
 `
 
 type CountRegressionsParams struct {
-	ProjectID int64 `json:"project_id"`
-	LastSeen  int64 `json:"last_seen"`
+	ProjectID int64     `json:"project_id"`
+	LastSeen  time.Time `json:"last_seen"`
 }
 
 // Issues currently in 'regression' that were seen in the window.
@@ -24,29 +25,6 @@ func (q *Queries) CountRegressions(ctx context.Context, arg CountRegressionsPara
 	var count int64
 	err := row.Scan(&count)
 	return count, err
-}
-
-const issueEventRange = `-- name: IssueEventRange :one
-SELECT COALESCE(max(id), 0)::bigint AS latest, COALESCE(min(id), 0)::bigint AS oldest
-FROM events WHERE project_id = $1 AND fingerprint = $2::text
-`
-
-type IssueEventRangeParams struct {
-	ProjectID int64  `json:"project_id"`
-	Column2   string `json:"column_2"`
-}
-
-type IssueEventRangeRow struct {
-	Latest int64 `json:"latest"`
-	Oldest int64 `json:"oldest"`
-}
-
-// Latest and oldest stored event id of an issue (0 when none are stored).
-func (q *Queries) IssueEventRange(ctx context.Context, arg IssueEventRangeParams) (IssueEventRangeRow, error) {
-	row := q.db.QueryRow(ctx, issueEventRange, arg.ProjectID, arg.Column2)
-	var i IssueEventRangeRow
-	err := row.Scan(&i.Latest, &i.Oldest)
-	return i, err
 }
 
 const newIssuesByRelease = `-- name: NewIssuesByRelease :many
@@ -58,9 +36,9 @@ GROUP BY first_release
 `
 
 type NewIssuesByReleaseParams struct {
-	ProjectID   int64 `json:"project_id"`
-	FirstSeen   int64 `json:"first_seen"`
-	FirstSeen_2 int64 `json:"first_seen_2"`
+	ProjectID   int64     `json:"project_id"`
+	FirstSeen   time.Time `json:"first_seen"`
+	FirstSeen_2 time.Time `json:"first_seen_2"`
 }
 
 type NewIssuesByReleaseRow struct {
@@ -101,17 +79,17 @@ GROUP BY bucket ORDER BY bucket
 `
 
 type ReleaseHealthDailyNNParams struct {
-	ProjectID int64  `json:"project_id"`
-	Release   string `json:"release"`
-	Bucket    int64  `json:"bucket"`
-	Bucket_2  int64  `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Release   string    `json:"release"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type ReleaseHealthDailyNNRow struct {
-	Bucket  int64 `json:"bucket"`
-	Total   int64 `json:"total"`
-	Crashed int64 `json:"crashed"`
-	Errored int64 `json:"errored"`
+	Bucket  time.Time `json:"bucket"`
+	Total   int64     `json:"total"`
+	Crashed int64     `json:"crashed"`
+	Errored int64     `json:"errored"`
 }
 
 func (q *Queries) ReleaseHealthDailyNN(ctx context.Context, arg ReleaseHealthDailyNNParams) ([]ReleaseHealthDailyNNRow, error) {
@@ -155,9 +133,9 @@ GROUP BY release
 `
 
 type ReleaseHealthNNParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
-	Bucket_2  int64 `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type ReleaseHealthNNRow struct {

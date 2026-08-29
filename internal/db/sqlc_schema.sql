@@ -18,7 +18,7 @@ CREATE TABLE projects (
 );
 
 CREATE TABLE events (
-    id             BIGINT PRIMARY KEY,
+    occurred_at    TIMESTAMPTZ NOT NULL,
     project_id     BIGINT NOT NULL,
     event_id       TEXT NOT NULL,
     level          TEXT NOT NULL,
@@ -40,16 +40,19 @@ CREATE TABLE events (
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     breadcrumbs    JSONB NOT NULL DEFAULT '[]'::jsonb,
     payload        JSONB NOT NULL,
-    symbols        JSONB
+    symbols        JSONB,
+    PRIMARY KEY (project_id, event_id, occurred_at)
 );
 
 CREATE TABLE sessions (
-    id          BIGINT PRIMARY KEY,
+    started_at  TIMESTAMPTZ NOT NULL,
     project_id  BIGINT NOT NULL,
+    sid         TEXT NOT NULL,
     release     TEXT NOT NULL,
     environment TEXT,
     status      TEXT NOT NULL,
-    count       INTEGER NOT NULL DEFAULT 1
+    count       INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (project_id, sid, started_at)
 );
 
 CREATE TABLE issues (
@@ -63,8 +66,8 @@ CREATE TABLE issues (
     status           TEXT NOT NULL DEFAULT 'unresolved',
     event_count      BIGINT NOT NULL DEFAULT 0,
     stored_count     BIGINT NOT NULL DEFAULT 0,
-    first_seen       BIGINT NOT NULL,
-    last_seen        BIGINT NOT NULL,
+    first_seen       TIMESTAMPTZ NOT NULL,
+    last_seen        TIMESTAMPTZ NOT NULL,
     first_release    TEXT,
     last_release     TEXT,
     resolved_release TEXT,
@@ -129,7 +132,7 @@ CREATE TABLE rate_limits (
 
 -- continuous aggregates (as tables for sqlc)
 CREATE TABLE event_stats_hourly (
-    bucket     BIGINT NOT NULL,
+    bucket     TIMESTAMPTZ NOT NULL,
     project_id BIGINT NOT NULL,
     release    TEXT NOT NULL,
     platform   TEXT NOT NULL,
@@ -140,14 +143,14 @@ CREATE TABLE event_stats_hourly (
 );
 
 CREATE TABLE issue_stats_hourly (
-    bucket      BIGINT NOT NULL,
+    bucket      TIMESTAMPTZ NOT NULL,
     project_id  BIGINT NOT NULL,
     fingerprint TEXT NOT NULL,
     events      BIGINT NOT NULL
 );
 
 CREATE TABLE release_health_daily (
-    bucket     BIGINT NOT NULL,
+    bucket     TIMESTAMPTZ NOT NULL,
     project_id BIGINT NOT NULL,
     release    TEXT NOT NULL,
     total      BIGINT NOT NULL,

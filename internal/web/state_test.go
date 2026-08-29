@@ -4,14 +4,12 @@ import (
 	"net/url"
 	"testing"
 	"time"
-
-	"github.com/crashcartapp/crashcart/internal/pk"
 )
 
 func TestViewStateRoundTrip(t *testing.T) {
-	q, _ := url.ParseQuery("win=24h&status=resolved&sort=events&offset=50&before=123456&level=fatal&release=1.2&tag.build=42&bogus=1&search_col=error_type&search_q=NPE&crash=1")
+	q, _ := url.ParseQuery("win=24h&status=resolved&sort=events&offset=50&before=2026-08-29T10%3A00%3A00Z_e1&level=fatal&release=1.2&tag.build=42&bogus=1&search_col=error_type&search_q=NPE&crash=1")
 	s := ParseViewState("app", q)
-	if s.Slug != "app" || s.Win != "24h" || s.Status != "resolved" || s.Sort != "events" || s.Offset != 50 || s.Before != 123456 {
+	if s.Slug != "app" || s.Win != "24h" || s.Status != "resolved" || s.Sort != "events" || s.Offset != 50 || s.Before != "2026-08-29T10:00:00Z_e1" {
 		t.Errorf("state = %+v", s)
 	}
 	if s.Filters["level"] != "fatal" || s.Filters["release"] != "1.2" || s.Filters["tag.build"] != "42" || s.Filters["error_type"] != "NPE" || s.Filters["crash"] != "1" {
@@ -20,7 +18,7 @@ func TestViewStateRoundTrip(t *testing.T) {
 	if _, ok := s.Filters["bogus"]; ok {
 		t.Error("unknown params are not filters")
 	}
-	want := "/p/app/issues?before=123456&crash=1&error_type=NPE&level=fatal&offset=50&release=1.2&sort=events&status=resolved&tag.build=42&win=24h"
+	want := "/p/app/issues?before=2026-08-29T10%3A00%3A00Z_e1&crash=1&error_type=NPE&level=fatal&offset=50&release=1.2&sort=events&status=resolved&tag.build=42&win=24h"
 	if got := s.Href("/issues"); got != want {
 		t.Errorf("href = %s\nwant %s", got, want)
 	}
@@ -36,7 +34,7 @@ func TestViewStateRoundTrip(t *testing.T) {
 	}
 	// With* return copies and reset paging.
 	n := s.WithFilter("level", "")
-	if n.Offset != 0 || n.Before != 0 || n.Filters["level"] != "" || s.Filters["level"] != "fatal" {
+	if n.Offset != 0 || n.Before != "" || n.Filters["level"] != "" || s.Filters["level"] != "fatal" {
 		t.Error("WithFilter must copy and reset paging")
 	}
 	if s.WithWin("bogus").Win != "24h" || s.WithWin("90d").Win != "90d" {
@@ -53,20 +51,20 @@ func TestViewStateRoundTrip(t *testing.T) {
 func TestWindow(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 30, 0, 0, time.UTC)
 	w := ViewState{Win: "24h"}.Window(now)
-	if w.Width != pk.Hour || w.To != pk.Upper(now) || w.From != pk.Bucket(pk.Lower(now.Add(-24*time.Hour)), pk.Hour) || w.Days != 1 {
+	if w.Width != time.Hour || !w.To.Equal(now) || !w.From.Equal(now.Add(-24*time.Hour).Truncate(time.Hour)) || w.Days != 1 {
 		t.Errorf("24h = %+v", w)
 	}
 	if n := len(w.Buckets()); n != 25 {
 		t.Errorf("24h buckets = %d", n)
 	}
 	w = ViewState{Win: "30d"}.Window(now)
-	if w.Width != pk.Day || w.Days != 30 || len(w.Buckets()) != 31 {
+	if w.Width != day || w.Days != 30 || len(w.Buckets()) != 31 || w.From.Hour() != 0 {
 		t.Errorf("30d = %+v (%d buckets)", w, len(w.Buckets()))
 	}
-	if w.Label(w.From) != pk.Time(w.From).Format("Jan 2") {
+	if w.Label(w.From) != w.From.Format("Jan 2") {
 		t.Errorf("label = %s", w.Label(w.From))
 	}
-	if d := (ViewState{}).Window(now); d.Days != 7 || d.Width != 6*pk.Hour {
+	if d := (ViewState{}).Window(now); d.Days != 7 || d.Width != 6*time.Hour || d.From.Hour()%6 != 0 {
 		t.Errorf("default = %+v", d)
 	}
 }

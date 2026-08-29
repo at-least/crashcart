@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -283,7 +284,7 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 
 	// issue detail
 	d := e.get("/api/projects/demo/issues/"+fp, 200)
-	if d["users"] != float64(2) || d["latest_event_id"].(float64) <= 0 || d["oldest_event_id"].(float64) >= d["latest_event_id"].(float64) {
+	if d["users"] != float64(2) || d["latest_event_id"] == "" || d["oldest_event_id"] == "" || d["oldest_event_id"] == d["latest_event_id"] {
 		t.Errorf("detail = %v", d)
 	}
 	bd := d["breakdown"].(map[string]any)
@@ -336,7 +337,7 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	if page["more"] != true || page["next_before"] == nil {
 		t.Fatalf("page 1 = %v", page)
 	}
-	next := e.get(fmt.Sprintf("/api/projects/demo/events?limit=3&before=%d", int64(page["next_before"].(float64))), 200)
+	next := e.get("/api/projects/demo/events?limit=3&before="+url.QueryEscape(page["next_before"].(string)), 200)
 	if len(next["events"].([]any)) != 1 || next["more"] != false {
 		t.Errorf("page 2 = %v", next)
 	}
@@ -348,8 +349,7 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	if _, ok := item["payload"]; ok {
 		t.Error("list must not include payload")
 	}
-	id := int64(item["id"].(float64))
-	det := e.get(fmt.Sprintf("/api/projects/demo/events/%d", id), 200)
+	det := e.get("/api/projects/demo/events/"+item["event_id"].(string), 200)
 	payload, ok := det["payload"].(map[string]any)
 	if !ok || payload["event_id"] != det["event_id"] {
 		t.Errorf("payload not an object: %v", det["payload"])
@@ -357,8 +357,8 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	if _, ok := det["breadcrumbs"].([]any); !ok {
 		t.Errorf("breadcrumbs = %v", det["breadcrumbs"])
 	}
-	if _, err := time.Parse(time.RFC3339, det["time"].(string)); err != nil {
-		t.Errorf("time = %v", det["time"])
+	if _, err := time.Parse(time.RFC3339, det["occurred_at"].(string)); err != nil {
+		t.Errorf("occurred_at = %v", det["occurred_at"])
 	}
 	byEID := e.get("/api/projects/demo/events/e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1", 200)
 	if byEID["event_id"] != "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1" || byEID["level"] != "fatal" {

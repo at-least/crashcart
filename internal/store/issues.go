@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -11,15 +12,15 @@ import (
 )
 
 // IssueFilter is the optional WHERE / ORDER of ListIssues. Zero values are
-// ignored. From/To bound last_seen (id units); Sort must be one of
+// ignored. From/To bound last_seen; Sort must be one of
 // last_seen, first_seen, events (default last_seen), always descending.
 type IssueFilter struct {
 	ProjectID int64
 	Status    string
 	Level     string
-	Release   string // first_release = r OR last_release = r
-	Query     string // title / error_type ILIKE %q%
-	From, To  int64  // last_seen range [From, To); 0 = unbounded
+	Release   string    // first_release = r OR last_release = r
+	Query     string    // title / error_type ILIKE %q%
+	From, To  time.Time // last_seen range [From, To); zero = unbounded
 	Sort      string
 	Limit     int
 	Offset    int
@@ -56,10 +57,10 @@ func (f IssueFilter) where() (string, []any) {
 		n := strconv.Itoa(len(args))
 		w = append(w, "(title ILIKE $"+n+" OR error_type ILIKE $"+n+")")
 	}
-	if f.From > 0 {
+	if !f.From.IsZero() {
 		add("last_seen >= ?", f.From)
 	}
-	if f.To > 0 {
+	if !f.To.IsZero() {
 		add("last_seen < ?", f.To)
 	}
 	return strings.Join(w, " AND "), args

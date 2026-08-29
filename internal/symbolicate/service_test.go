@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
@@ -29,8 +28,8 @@ func newProject(t *testing.T, st *store.Store) sqlc.Project {
 }
 
 // storeEvent writes one unsymbolicated event plus its issue the way ingest
-// does, from a raw Sentry payload. Returns the event id and fingerprint.
-func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (int64, string) {
+// does, from a raw Sentry payload. Returns the event_id and fingerprint.
+func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -39,16 +38,17 @@ func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (int6
 		t.Fatal("bad payload")
 	}
 	fp := sentry.Fingerprint(ev, ev.Frames())
-	id := pk.New(ev.Timestamp)
+	id := ev.EventID
+	at := ev.Timestamp.UTC()
 	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		if _, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 			ProjectID: p.ID, Fingerprint: fp, Title: ev.IssueTitle(), Level: ev.Level, EventCount: 1, StoredCount: 1,
-			FirstSeen: id, LastSeen: id, FirstRelease: nilIfEmpty(ev.Release), Platform: nilIfEmpty(ev.Platform),
+			FirstSeen: at, LastSeen: at, FirstRelease: nilIfEmpty(ev.Release), Platform: nilIfEmpty(ev.Platform),
 		}); err != nil {
 			return err
 		}
 		return store.InsertEvents(ctx, tx, []store.EventInsert{{
-			ID: id, ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message, Platform: nilIfEmpty(ev.Platform),
+			OccurredAt: at, ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message, Platform: nilIfEmpty(ev.Platform),
 			Release: nilIfEmpty(ev.Release), ErrorType: nilIfEmpty(ev.ErrorType), Fingerprint: &fp,
 			Tags: []byte("{}"), Breadcrumbs: []byte("[]"), Payload: ev.Raw,
 		}})
@@ -57,6 +57,14 @@ func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (int6
 		t.Fatal(err)
 	}
 	return id, fp
+}
+
+func storeEventAt(t *testing.T, st *store.Store, p sqlc.Project, raw string) (string, time.Time) {
+	t.Helper()
+	now := time.Now().UTC()
+	ev := sentry.ParseEvent("", now, []byte(raw), now)
+	id, _ := storeEvent(t, st, p, raw)
+	return id, ev.Timestamp.UTC()
 }
 
 func upload(t *testing.T, st *store.Store, p sqlc.Project, kind, release, debugID, filename string, data []byte) {
@@ -92,7 +100,7 @@ func TestEventProGuard(t *testing.T) {
 	if err := svc.Event(ctx, p.ID, id); err != nil {
 		t.Fatal(err)
 	}
-	row, _ := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, ID: id})
+	row, _ := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 	if row.Symbolicated {
 		t.Fatal("should not be symbolicated without a mapping")
 	}
@@ -113,7 +121,7 @@ func TestEventProGuard(t *testing.T) {
 	if err := svc.Event(ctx, p.ID, id); err != nil {
 		t.Fatal(err)
 	}
-	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, ID: id})
+	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +137,7 @@ func TestEventProGuard(t *testing.T) {
 	}
 	// Issue moved: new one exists with count 1, old one is gone.
 	ni, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: *row.Fingerprint})
-	if err != nil || ni.EventCount != 1 || ni.StoredCount != 1 || ni.FirstSeen != id {
+	if err != nil || ni.EventCount != 1 || ni.StoredCount != 1 || !ni.FirstSeen.Equal(row.OccurredAt) {
 		t.Errorf("new issue = %+v %v", ni, err)
 	}
 	if _, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: oldFP}); !errors.Is(err, pgx.ErrNoRows) {
@@ -140,7 +148,7 @@ func TestEventProGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Missing event is not an error.
-	if err := svc.Event(ctx, p.ID, id+1); err != nil {
+	if err := svc.Event(ctx, p.ID, id+"-missing"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -150,12 +158,10 @@ func TestReleaseSourceMap(t *testing.T) {
 	ctx := context.Background()
 	p := newProject(t, st)
 	svc := &Service{Store: st}
-	raw := fmt.Sprintf(`{"platform":"javascript","release":"web-7","timestamp":%d,"exception":{"values":[{"type":"TypeError","value":"x is undefined","stacktrace":{"frames":[{"filename":"https://app.example.com/static/bundle.min.js","function":"t","lineno":1,"colno":13,"in_app":true}]}}]}}`, time.Now().Unix())
-	id1, _ := storeEvent(t, st, p, raw)
-	id2, _ := storeEvent(t, st, p, raw)
-	if id1 == id2 {
-		t.Skip("id collision")
-	}
+	raw := fmt.Sprintf(`{"event_id":"%s","platform":"javascript","release":"web-7","timestamp":%d,"exception":{"values":[{"type":"TypeError","value":"x is undefined","stacktrace":{"frames":[{"filename":"https://app.example.com/static/bundle.min.js","function":"t","lineno":1,"colno":13,"in_app":true}]}}]}}`, "%s", time.Now().Unix())
+	id1, _ := storeEvent(t, st, p, fmt.Sprintf(raw, "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"))
+	id2, _ := storeEvent(t, st, p, fmt.Sprintf(raw, "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"))
+	raw = fmt.Sprintf(raw, "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3")
 	// Negative-cache the release first, as ingest would have.
 	now := time.Now().UTC()
 	svc.Inline(ctx, p.ID, sentry.ParseEvent("", now, []byte(raw), now))
@@ -164,16 +170,16 @@ func TestReleaseSourceMap(t *testing.T) {
 	if err := svc.Release(ctx, p.ID, "web-7"); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []int64{id1, id2} {
-		row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, ID: id})
+	for _, id := range []string{id1, id2} {
+		row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !row.Symbolicated || row.ErrorLocation == nil || *row.ErrorLocation != "a.js:3" {
-			t.Errorf("event %d: symbolicated=%v location=%v", id, row.Symbolicated, row.ErrorLocation)
+			t.Errorf("event %s: symbolicated=%v location=%v", id, row.Symbolicated, row.ErrorLocation)
 		}
 	}
-	left, _ := st.UnsymbolicatedEvents(ctx, sqlc.UnsymbolicatedEventsParams{ProjectID: p.ID, Release: ptr("web-7"), ID: 0, Limit: 10})
+	left, _ := st.UnsymbolicatedEvents(ctx, sqlc.UnsymbolicatedEventsParams{ProjectID: p.ID, Release: ptr("web-7"), OccurredAt: time.Time{}, Limit: 10})
 	if len(left) != 0 {
 		t.Errorf("unsymbolicated left: %v", left)
 	}
@@ -228,7 +234,7 @@ func TestEventDSYM(t *testing.T) {
 	if addrs[0].Address != "0xe2b50" || addrs[0].Module != "App" || addrs[1].Address != "0xe3000" {
 		t.Errorf("addresses = %+v", addrs)
 	}
-	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, ID: id})
+	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +269,7 @@ func TestEventDSYMSidecarErrorRetries(t *testing.T) {
 	if err := svc.Event(ctx, p.ID, id); err == nil {
 		t.Fatal("sidecar failure must surface as an error so the job retries")
 	}
-	row, _ := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, ID: id})
+	row, _ := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
 	if row.Symbolicated {
 		t.Fatal("must stay unsymbolicated")
 	}

@@ -13,13 +13,14 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"log/slog"
-	"math/rand/v2"
+	mrand "math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,7 +32,6 @@ import (
 	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
@@ -99,7 +99,7 @@ func (in *Ingester) checkQuota(ctx context.Context, p sqlc.Project, n int, now t
 	stale := now.Sub(qc.refreshed) > time.Minute
 	in.mu.Unlock()
 	if stale {
-		total, err := in.Store.EventsSince(ctx, sqlc.EventsSinceParams{ProjectID: p.ID, Bucket: pk.Lower(day)})
+		total, err := in.Store.EventsSince(ctx, sqlc.EventsSinceParams{ProjectID: p.ID, Bucket: day})
 		if err != nil {
 			return err
 		}
@@ -316,7 +316,6 @@ func (in *Ingester) fail(w http.ResponseWriter, err error) {
 
 // prepared is one event after analysis, before the write.
 type prepared struct {
-	id           int64
 	ev           *sentry.Event
 	frames       []sentry.Frame // symbolicated when inline succeeded
 	symbolicated bool
@@ -343,12 +342,9 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	}
 
 	// 1. Analyze. Inline symbolication when a mapping is cached; the
-	//    fingerprint is computed on the best frames we have. Ids derive
-	//    from the event's own id (see eventPK), with in-envelope slot
-	//    collisions bumped here.
+	//    fingerprint is computed on the best frames we have.
 	preps := make([]*prepared, 0, len(env.Events))
 	seenEvent := map[string]bool{}
-	seenID := map[int64]bool{}
 	for _, ev := range env.Events {
 		if seenEvent[ev.EventID] {
 			res.Duplicates++ // the same event twice in one envelope
@@ -362,12 +358,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			res.Mismatched++
 			in.warnMismatch(p, ev, fam)
 		}
-		id := eventPK(ev)
-		for seenID[id] && id%pk.Scale < pk.Scale-1 {
-			id++ // different event, same slot: next slot in the same millisecond
-		}
-		seenID[id] = true
-		pr := &prepared{id: id, ev: ev, frames: ev.Frames()}
+		pr := &prepared{ev: ev, frames: ev.Frames()}
 		if in.Symbols != nil && ev.NeedsSymbolication() {
 			if fr, ok := in.Symbols.Inline(ctx, p.ID, ev); ok {
 				pr.frames, pr.symbolicated = fr, true
@@ -383,24 +374,25 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	var jobs []sqlc.EnqueueJobParams
 	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		// An envelope the SDK resends (after a timeout, or from its crash
-		// cache) maps to ids already stored: those must not be counted twice.
+		// cache) carries event_ids already stored: those must not be
+		// counted twice.
 		if len(preps) > 0 {
-			ids := make([]int64, len(preps))
+			ids := make([]string, len(preps))
 			for i, pr := range preps {
-				ids[i] = pr.id
+				ids[i] = pr.ev.EventID
 			}
-			existing, err := q.ExistingEventIDs(ctx, ids)
+			existing, err := q.ExistingEventIDs(ctx, sqlc.ExistingEventIDsParams{ProjectID: p.ID, Column2: ids})
 			if err != nil {
 				return fmt.Errorf("dedupe: %w", err)
 			}
 			if len(existing) > 0 {
-				stored := map[int64]bool{}
+				stored := map[string]bool{}
 				for _, id := range existing {
 					stored[id] = true
 				}
 				kept := preps[:0]
 				for _, pr := range preps {
-					if stored[pr.id] {
+					if stored[pr.ev.EventID] {
 						res.Duplicates++
 					} else {
 						kept = append(kept, pr)
@@ -413,7 +405,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		var order []string
 		for _, pr := range preps {
 			if pr.fingerprint == "" {
-				pr.store = in.Cfg.PIIRedact || p.SampleRate >= 1 || rand.Float64() < p.SampleRate
+				pr.store = in.Cfg.PIIRedact || p.SampleRate >= 1 || mrand.Float64() < p.SampleRate
 				continue
 			}
 			if _, seen := groups[pr.fingerprint]; !seen {
@@ -424,16 +416,16 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		for _, fp := range order {
 			g := groups[fp]
 			first := g[0]
-			var minID, maxID int64
+			var minAt, maxAt time.Time
 			var lastRelease *string
 			level := "error"
 			for _, pr := range g {
-				id := pk.Lower(pr.ev.Timestamp)
-				if minID == 0 || id < minID {
-					minID = id
+				at := pr.ev.Timestamp.UTC()
+				if minAt.IsZero() || at.Before(minAt) {
+					minAt = at
 				}
-				if id >= maxID {
-					maxID = id
+				if !at.Before(maxAt) {
+					maxAt = at
 					lastRelease = nilIfEmpty(pr.ev.Release)
 				}
 				if pr.ev.Level == "fatal" {
@@ -443,7 +435,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			row, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: level,
 				ErrorType: nilIfEmpty(first.ev.ErrorType), Screen: nilIfEmpty(first.ev.Screen), Platform: nilIfEmpty(first.ev.Platform),
-				EventCount: int64(len(g)), StoredCount: 0, FirstSeen: minID, LastSeen: maxID, FirstRelease: lastRelease,
+				EventCount: int64(len(g)), StoredCount: 0, FirstSeen: minAt, LastSeen: maxAt, FirstRelease: lastRelease,
 			})
 			if err != nil {
 				return fmt.Errorf("upsert issue: %w", err)
@@ -460,7 +452,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			stored := int64(0)
 			for i, pr := range g {
 				seq := prev + int64(i) + 1
-				pr.store = pr.ev.Level == "fatal" || seq <= int64(p.SampleKeepFirst) || p.SampleRate >= 1 || rand.Float64() < p.SampleRate
+				pr.store = pr.ev.Level == "fatal" || seq <= int64(p.SampleKeepFirst) || p.SampleRate >= 1 || mrand.Float64() < p.SampleRate
 				if pr.store {
 					stored++
 				}
@@ -479,7 +471,6 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				continue
 			}
 			ev := pr.ev
-			id := pr.id
 			tags, _ := json.Marshal(ev.Tags)
 			crumbs, _ := json.Marshal(nonNil(ev.Breadcrumbs))
 			var symbols json.RawMessage
@@ -487,7 +478,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				symbols, _ = json.Marshal(pr.frames)
 			}
 			rows = append(rows, store.EventInsert{
-				ID: id, ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message,
+				OccurredAt: ev.Timestamp.UTC(), ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message,
 				Platform: nilIfEmpty(ev.Platform), Environment: nilIfEmpty(ev.Environment), Release: nilIfEmpty(ev.Release),
 				DeviceID: nilIfEmpty(ev.DeviceID()), DeviceModel: nilIfEmpty(ev.DeviceModel), OSVersion: nilIfEmpty(ev.OSVersion),
 				Screen: nilIfEmpty(ev.Screen), ErrorType: nilIfEmpty(ev.ErrorType), ErrorLocation: nilIfEmpty(pr.location),
@@ -496,7 +487,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				Tags: tags, Breadcrumbs: crumbs, Payload: ev.Raw, Symbols: symbols,
 			})
 			if !pr.symbolicated && ev.NeedsSymbolication() && pr.fingerprint != "" {
-				args, _ := json.Marshal(map[string]any{"event": id})
+				args, _ := json.Marshal(map[string]any{"event": ev.EventID})
 				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
 			}
 		}
@@ -507,7 +498,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 
 		for _, s := range env.Sessions {
 			if err := q.InsertSession(ctx, sqlc.InsertSessionParams{
-				ID: sessionID(s), ProjectID: p.ID, Release: s.Release, Environment: nilIfEmpty(s.Environment),
+				StartedAt: s.StartedAt.UTC(), ProjectID: p.ID, Sid: sessionID(s), Release: s.Release, Environment: nilIfEmpty(s.Environment),
 				Status: s.Status, Count: int32(max(s.Count, 1)),
 			}); err != nil {
 				return fmt.Errorf("insert session: %w", err)
@@ -544,29 +535,16 @@ func (in *Ingester) warnMismatch(p sqlc.Project, ev *sentry.Event, family string
 	}
 }
 
-// eventPK derives the primary key from the event's own id: the millisecond
-// from its timestamp, the low part from a hash of event_id. Two deliveries
-// of one event collide (and the second is dropped); two different events
-// in the same millisecond collide with the same 1/1000 odds a random low
-// part had. (An event whose slot was bumped in its envelope is not matched
-// by a later resend — accepted.)
-func eventPK(ev *sentry.Event) int64 { return hashedPK(ev.Timestamp, ev.EventID) }
-
-// hashedPK is pk.New with the random low part replaced by a hash of key.
-func hashedPK(t time.Time, key string) int64 {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return pk.Lower(t) + int64(h.Sum32()%pk.Scale)
-}
-
-// sessionID makes every update of one session (same sid, same start) land
-// on the same row: the random low part of the id is replaced by a hash of
-// the sid, so the upsert in InsertSession dedupes ok → exited/crashed.
-func sessionID(s sentry.Session) int64 {
-	if s.SID == "" {
-		return pk.New(s.StartedAt)
+// sessionID keys a session row: the SDK's sid (so status updates of one
+// session land on the same row), or a random one for aggregate rows,
+// which are counts and never updated.
+func sessionID(s sentry.Session) string {
+	if s.SID != "" {
+		return s.SID
 	}
-	return hashedPK(s.StartedAt, s.SID)
+	var b [16]byte
+	rand.Read(b[:])
+	return "agg-" + hex.EncodeToString(b[:])
 }
 
 func alertJob(projectID int64, typ, fp string) sqlc.EnqueueJobParams {

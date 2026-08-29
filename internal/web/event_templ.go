@@ -229,7 +229,7 @@ func EventBody(pg Page, d EventData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = Meta("Time", idTime(d.E.ID), "").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Meta("Time", formatDateTime(d.E.OccurredAt), "").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

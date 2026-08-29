@@ -135,8 +135,8 @@ templ IssuesTable(pg Page, d IssuesData) {
 								</td>
 								<td class="num" title={ i64(is.EventCount) + " events (" + i64(is.StoredCount) + " stored)" }>{ compact(is.EventCount) }</td>
 								<td class="num">{ compact(d.Users[is.Fingerprint]) }</td>
-								<td class="cell-time" title={ idTime(is.FirstSeen) }>{ idAgo(is.FirstSeen) }</td>
-								<td class="cell-time" title={ idTime(is.LastSeen) }>{ idAgo(is.LastSeen) }</td>
+								<td class="cell-time" title={ formatDateTime(is.FirstSeen) }>{ ago(is.FirstSeen) }</td>
+								<td class="cell-time" title={ formatDateTime(is.LastSeen) }>{ ago(is.LastSeen) }</td>
 								<td class="mono-cell">{ releaseSpan(is) }</td>
 							</tr>
 						}

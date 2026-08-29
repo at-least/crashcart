@@ -1,6 +1,9 @@
 package web
 
-import "net/url"
+import (
+	"net/url"
+	"time"
+)
 
 func releaseHref(pg Page, v string) string { return pg.S.Persist().Href("/releases/" + url.PathEscape(v)) }
 
@@ -45,11 +48,11 @@ templ Releases(pg Page, rows []ReleaseRow) {
 	}
 }
 
-func seenAgo(id int64) string {
-	if id == 0 {
+func seenAgo(t time.Time) string {
+	if t.IsZero() {
 		return "—"
 	}
-	return idAgo(id)
+	return ago(t)
 }
 
 func healthKey(total, crashed int64) string {

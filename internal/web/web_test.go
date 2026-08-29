@@ -272,7 +272,7 @@ func TestStream(t *testing.T) {
 	defer func() { streamPoll, streamKeepAlive = 5*time.Second, 15*time.Second }()
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
-	req := httptest.NewRequest("GET", "/p/shop/stream?since=1", nil).WithContext(ctx)
+	req := httptest.NewRequest("GET", "/p/shop/stream?since=2000-01-01T00%3A00%3A00Z", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() { mux.ServeHTTP(rec, req); close(done) }()

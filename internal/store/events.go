@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -14,7 +15,7 @@ import (
 
 // EventInsert is one row for InsertEvents.
 type EventInsert struct {
-	ID            int64
+	OccurredAt    time.Time
 	ProjectID     int64
 	EventID       string
 	Level         string
@@ -39,13 +40,13 @@ type EventInsert struct {
 	Symbols       json.RawMessage
 }
 
-const insertEventSQL = `INSERT INTO events (id, project_id, event_id, level, message, platform, environment, release,
+const insertEventSQL = `INSERT INTO events (occurred_at, project_id, event_id, level, message, platform, environment, release,
 	device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id,
 	fingerprint, symbolicated, tags, breadcrumbs, payload, symbols)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
-	ON CONFLICT (id) DO NOTHING`
+	ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING`
 
-// InsertEvents writes a batch in one round trip (pipelined). Duplicate ids
+// InsertEvents writes a batch in one round trip (pipelined). Duplicate keys
 // are skipped, so re-delivery is safe.
 func InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
 	if len(rows) == 0 {
@@ -53,7 +54,7 @@ func InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
 	}
 	b := &pgx.Batch{}
 	for _, r := range rows {
-		b.Queue(insertEventSQL, r.ID, r.ProjectID, r.EventID, r.Level, r.Message, r.Platform, r.Environment, r.Release,
+		b.Queue(insertEventSQL, r.OccurredAt, r.ProjectID, r.EventID, r.Level, r.Message, r.Platform, r.Environment, r.Release,
 			r.DeviceID, r.DeviceModel, r.OSVersion, r.Screen, r.ErrorType, r.ErrorLocation, r.Handled, r.SDKName, r.UserID,
 			r.Fingerprint, r.Symbolicated, r.Tags, r.Breadcrumbs, r.Payload, r.Symbols)
 	}
@@ -70,7 +71,7 @@ func InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
 // EventFilter is the optional WHERE of ListEvents. Zero values are ignored.
 type EventFilter struct {
 	ProjectID   int64
-	From, To    int64 // id range [From, To); 0 = unbounded
+	From, To    time.Time // occurred_at range [From, To); zero = unbounded
 	Level       string
 	Release     string
 	Environment string
@@ -86,7 +87,7 @@ type EventFilter struct {
 	Query       string            // message ILIKE %q%
 	Tags        map[string]string // tags->>k = v
 	Crash       bool              // fatal or unhandled only
-	Before      int64             // cursor: id < Before
+	Before      Cursor            // keyset cursor: rows after it in newest-first order
 	Limit       int
 }
 
@@ -105,14 +106,15 @@ func (f EventFilter) where() (string, []any) {
 		w = append(w, strings.ReplaceAll(cond, "?", "$"+strconv.Itoa(len(args))))
 	}
 	add("project_id = ?", f.ProjectID)
-	if f.From > 0 {
-		add("id >= ?", f.From)
+	if !f.From.IsZero() {
+		add("occurred_at >= ?", f.From)
 	}
-	if f.To > 0 {
-		add("id < ?", f.To)
+	if !f.To.IsZero() {
+		add("occurred_at < ?", f.To)
 	}
-	if f.Before > 0 {
-		add("id < ?", f.Before)
+	if !f.Before.IsZero() {
+		args = append(args, f.Before.At, f.Before.EventID)
+		w = append(w, fmt.Sprintf("(occurred_at, event_id) < ($%d, $%d)", len(args)-1, len(args)))
 	}
 	for col, v := range map[string]string{
 		"level": f.Level, "release": f.Release, "environment": f.Environment, "platform": f.Platform,
@@ -141,12 +143,12 @@ func escapeLike(s string) string {
 	return r.Replace(s)
 }
 
-const eventListColumns = `id, project_id, event_id, level, message, platform, environment, release, device_id,
+const eventListColumns = `occurred_at, project_id, event_id, level, message, platform, environment, release, device_id,
 	device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags`
 
 // EventRow is the list projection (no payload / breadcrumbs / symbols).
 type EventRow struct {
-	ID            int64           `json:"id"`
+	OccurredAt    time.Time       `json:"occurred_at"`
 	ProjectID     int64           `json:"project_id"`
 	EventID       string          `json:"event_id"`
 	Level         string          `json:"level"`
@@ -179,7 +181,7 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) (rows []EventRow,
 		limit = 500
 	}
 	where, args := f.where()
-	sql := "SELECT " + eventListColumns + " FROM events WHERE " + where + " ORDER BY id DESC LIMIT " + strconv.Itoa(limit+1)
+	sql := "SELECT " + eventListColumns + " FROM events WHERE " + where + " ORDER BY occurred_at DESC, event_id DESC LIMIT " + strconv.Itoa(limit+1)
 	r, err := s.Pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, false, err

@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -20,7 +21,7 @@ func TestListIssuesDB(t *testing.T) {
 	for i, fp := range []string{"a", "b", "c"} {
 		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 			ProjectID: p.ID, Fingerprint: fp, Title: "Issue " + fp, Level: "error", EventCount: int64(3 - i),
-			FirstSeen: int64(100 + i), LastSeen: int64(200 + i), FirstRelease: &rel,
+			FirstSeen: time.Unix(int64(100+i), 0), LastSeen: time.Unix(int64(200+i), 0), FirstRelease: &rel,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -36,7 +37,7 @@ func TestListIssuesDB(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].Fingerprint != "a" {
 		t.Errorf("last_seen desc offset 2: %v %v", rows, err)
 	}
-	_, total, err = st.ListIssues(ctx, store.IssueFilter{ProjectID: p.ID, Query: "issue b", Release: "1.0", From: 150})
+	_, total, err = st.ListIssues(ctx, store.IssueFilter{ProjectID: p.ID, Query: "issue b", Release: "1.0", From: time.Unix(150, 0)})
 	if err != nil || total != 1 {
 		t.Errorf("filters: total=%d err=%v", total, err)
 	}

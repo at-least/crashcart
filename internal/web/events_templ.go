@@ -439,9 +439,9 @@ func Events(pg Page, d EventsData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var20 string
-				templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10)))
+				templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(pg.S.Persist().Href("/events/" + e.EventID))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 106, Col: 106}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 106, Col: 88}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 				if templ_7745c5c3_Err != nil {
@@ -452,9 +452,9 @@ func Events(pg Page, d EventsData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var21 string
-				templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(idTime(e.ID))
+				templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(formatDateTime(e.OccurredAt))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 107, Col: 49}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 107, Col: 65}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 				if templ_7745c5c3_Err != nil {
@@ -465,9 +465,9 @@ func Events(pg Page, d EventsData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var22 templ.SafeURL
-				templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10))))
+				templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.Persist().Href("/events/" + e.EventID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 107, Col: 126}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 107, Col: 124}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 				if templ_7745c5c3_Err != nil {
@@ -478,9 +478,9 @@ func Events(pg Page, d EventsData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var23 string
-				templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(idAgo(e.ID))
+				templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(ago(e.OccurredAt))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 107, Col: 142}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 107, Col: 146}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 				if templ_7745c5c3_Err != nil {
@@ -561,9 +561,9 @@ func Events(pg Page, d EventsData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var28 templ.SafeURL
-				templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10))))
+				templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.Persist().Href("/events/" + e.EventID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 117, Col: 94}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 117, Col: 76}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 				if templ_7745c5c3_Err != nil {
@@ -576,7 +576,7 @@ func Events(pg Page, d EventsData) templ.Component {
 				var templ_7745c5c3_Var29 string
 				templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(e.Message)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 117, Col: 108}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 117, Col: 90}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 				if templ_7745c5c3_Err != nil {
@@ -837,15 +837,15 @@ func Events(pg Page, d EventsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if pg.S.Before > 0 {
+		if pg.S.Before != "" {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "<a class=\"card-link\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var44 templ.SafeURL
-			templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.WithBefore(0).Href("/events")))
+			templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.WithBefore(store.Cursor{}).Href("/events")))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 162, Col: 69}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 162, Col: 82}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 			if templ_7745c5c3_Err != nil {
@@ -880,9 +880,9 @@ func Events(pg Page, d EventsData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var46 templ.SafeURL
-			templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.WithBefore(d.Events[len(d.Events)-1].ID).Href("/events")))
+			templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinURLErrs(u(pg.S.WithBefore(store.CursorOf(d.Events[len(d.Events)-1])).Href("/events")))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 168, Col: 134}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/events.templ`, Line: 168, Col: 147}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 			if templ_7745c5c3_Err != nil {

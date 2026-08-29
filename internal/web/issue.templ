@@ -1,6 +1,10 @@
 package web
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/crashcartapp/crashcart/internal/store"
+)
 
 func issueEventsHref(pg Page, fp string) string {
 	return pg.S.Persist().WithFilter("fingerprint", fp).Href("/events")
@@ -59,8 +63,8 @@ templ IssuePage(pg Page, d IssueData) {
 			<dl class="issue-stats">
 				<div><dt>Events</dt><dd title={ i64(d.Issue.EventCount) }>{ compact(d.Issue.EventCount) }</dd></div>
 				<div><dt>Users ({ pg.S.Win })</dt><dd>{ compact(d.Users) }</dd></div>
-				<div><dt>First seen</dt><dd title={ idTime(d.Issue.FirstSeen) }>{ idAgo(d.Issue.FirstSeen) }</dd></div>
-				<div><dt>Last seen</dt><dd title={ idTime(d.Issue.LastSeen) }>{ idAgo(d.Issue.LastSeen) }</dd></div>
+				<div><dt>First seen</dt><dd title={ formatDateTime(d.Issue.FirstSeen) }>{ ago(d.Issue.FirstSeen) }</dd></div>
+				<div><dt>Last seen</dt><dd title={ formatDateTime(d.Issue.LastSeen) }>{ ago(d.Issue.LastSeen) }</dd></div>
 				<div><dt>Release</dt><dd class="font-mono">{ releaseSpan(d.Issue) }</dd></div>
 			</dl>
 		</div>
@@ -71,11 +75,11 @@ templ IssuePage(pg Page, d IssueData) {
 				<header data-slot="card-header">
 					<h2 class="stat-title">Latest event</h2>
 					<div data-slot="card-action" class="flex gap-2">
-						if d.OldestID > 0 {
-							<a class="card-link" href={ u(pg.S.Persist().Href("/events/" + strconv.FormatInt(d.OldestID, 10))) }>Oldest</a>
+						if d.OldestID != "" {
+							<a class="card-link" href={ u(pg.S.Persist().Href("/events/" + d.OldestID)) }>Oldest</a>
 						}
-						if d.LatestID > 0 {
-							<a class="card-link" href={ u(pg.S.Persist().Href("/events/" + strconv.FormatInt(d.LatestID, 10))) }>Latest</a>
+						if d.LatestID != "" {
+							<a class="card-link" href={ u(pg.S.Persist().Href("/events/" + d.LatestID)) }>Latest</a>
 						}
 					</div>
 				</header>
@@ -84,7 +88,7 @@ templ IssuePage(pg Page, d IssueData) {
 						<p class="card-empty">No stored event (all sampled out).</p>
 					} else {
 						<p class="event-line">
-							<span class="cell-time">{ idTime(d.Latest.ID) }</span>
+							<span class="cell-time">{ formatDateTime(d.Latest.OccurredAt) }</span>
 							{ " · " }
 							<span class="font-mono text-xs">{ orDash(deref(d.Latest.Release)) }</span>
 							{ " · " }
@@ -124,8 +128,8 @@ templ IssuePage(pg Page, d IssueData) {
 							</thead>
 							<tbody>
 								for _, e := range d.Events {
-									<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10)) } tabindex="0">
-										<td class="cell-time"><a href={ u(pg.S.Persist().Href("/events/" + strconv.FormatInt(e.ID, 10))) }>{ idTime(e.ID) }</a></td>
+									<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + e.EventID) } tabindex="0">
+										<td class="cell-time"><a href={ u(pg.S.Persist().Href("/events/" + e.EventID)) }>{ formatDateTime(e.OccurredAt) }</a></td>
 										<td class="mono-cell">{ orDash(deref(e.UserID)) }</td>
 										<td class="mono-cell">{ orDash(deref(e.Release)) }</td>
 										<td class="mono-cell">{ orDash(deref(e.DeviceModel)) }</td>
@@ -137,12 +141,12 @@ templ IssuePage(pg Page, d IssueData) {
 					}
 					<nav class="pager px-4" aria-label="Event pages">
 						<span>
-							if pg.S.Before > 0 {
-								<a class="card-link" href={ u(pg.S.WithBefore(0).Href("/issues/" + d.Issue.Fingerprint)) }>Newest</a>
+							if pg.S.Before != "" {
+								<a class="card-link" href={ u(pg.S.WithBefore(store.Cursor{}).Href("/issues/" + d.Issue.Fingerprint)) }>Newest</a>
 							}
 						</span>
 						if d.More && len(d.Events) > 0 {
-							<a data-slot="button" data-variant="outline" data-size="sm" href={ u(pg.S.WithBefore(d.Events[len(d.Events)-1].ID).Href("/issues/" + d.Issue.Fingerprint)) }>Older</a>
+							<a data-slot="button" data-variant="outline" data-size="sm" href={ u(pg.S.WithBefore(store.CursorOf(d.Events[len(d.Events)-1])).Href("/issues/" + d.Issue.Fingerprint)) }>Older</a>
 						}
 					</nav>
 				</section>

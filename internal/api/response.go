@@ -6,8 +6,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/crashcartapp/crashcart/internal/symbolicate"
+	"github.com/jackc/pgx/v5"
 )
 
 // maxJSONBody bounds JSON request bodies.

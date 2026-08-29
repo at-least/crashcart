@@ -26,7 +26,7 @@ type AlertRule struct {
 }
 
 type Event struct {
-	ID            int64           `json:"id"`
+	OccurredAt    time.Time       `json:"occurred_at"`
 	ProjectID     int64           `json:"project_id"`
 	EventID       string          `json:"event_id"`
 	Level         string          `json:"level"`
@@ -52,14 +52,14 @@ type Event struct {
 }
 
 type EventStatsHourly struct {
-	Bucket    int64  `json:"bucket"`
-	ProjectID int64  `json:"project_id"`
-	Release   string `json:"release"`
-	Platform  string `json:"platform"`
-	Level     string `json:"level"`
-	Events    int64  `json:"events"`
-	Crashes   int64  `json:"crashes"`
-	Errors    int64  `json:"errors"`
+	Bucket    time.Time `json:"bucket"`
+	ProjectID int64     `json:"project_id"`
+	Release   string    `json:"release"`
+	Platform  string    `json:"platform"`
+	Level     string    `json:"level"`
+	Events    int64     `json:"events"`
+	Crashes   int64     `json:"crashes"`
+	Errors    int64     `json:"errors"`
 }
 
 type Issue struct {
@@ -73,8 +73,8 @@ type Issue struct {
 	Status          string    `json:"status"`
 	EventCount      int64     `json:"event_count"`
 	StoredCount     int64     `json:"stored_count"`
-	FirstSeen       int64     `json:"first_seen"`
-	LastSeen        int64     `json:"last_seen"`
+	FirstSeen       time.Time `json:"first_seen"`
+	LastSeen        time.Time `json:"last_seen"`
 	FirstRelease    *string   `json:"first_release"`
 	LastRelease     *string   `json:"last_release"`
 	ResolvedRelease *string   `json:"resolved_release"`
@@ -83,10 +83,10 @@ type Issue struct {
 }
 
 type IssueStatsHourly struct {
-	Bucket      int64  `json:"bucket"`
-	ProjectID   int64  `json:"project_id"`
-	Fingerprint string `json:"fingerprint"`
-	Events      int64  `json:"events"`
+	Bucket      time.Time `json:"bucket"`
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint string    `json:"fingerprint"`
+	Events      int64     `json:"events"`
 }
 
 type Job struct {
@@ -119,21 +119,22 @@ type RateLimit struct {
 }
 
 type ReleaseHealthDaily struct {
-	Bucket    int64  `json:"bucket"`
-	ProjectID int64  `json:"project_id"`
-	Release   string `json:"release"`
-	Total     int64  `json:"total"`
-	Crashed   int64  `json:"crashed"`
-	Errored   int64  `json:"errored"`
+	Bucket    time.Time `json:"bucket"`
+	ProjectID int64     `json:"project_id"`
+	Release   string    `json:"release"`
+	Total     int64     `json:"total"`
+	Crashed   int64     `json:"crashed"`
+	Errored   int64     `json:"errored"`
 }
 
 type Session struct {
-	ID          int64   `json:"id"`
-	ProjectID   int64   `json:"project_id"`
-	Release     string  `json:"release"`
-	Environment *string `json:"environment"`
-	Status      string  `json:"status"`
-	Count       int32   `json:"count"`
+	StartedAt   time.Time `json:"started_at"`
+	ProjectID   int64     `json:"project_id"`
+	Sid         string    `json:"sid"`
+	Release     string    `json:"release"`
+	Environment *string   `json:"environment"`
+	Status      string    `json:"status"`
+	Count       int32     `json:"count"`
 }
 
 type SymbolFile struct {

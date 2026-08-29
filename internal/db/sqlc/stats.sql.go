@@ -7,22 +7,23 @@ package sqlc
 
 import (
 	"context"
+	"time"
 )
 
 const crashSpikeInputs = `-- name: CrashSpikeInputs :one
 SELECT (SELECT count(*) FROM events e
-         WHERE e.project_id = $1::bigint AND e.id >= $2::bigint
+         WHERE e.project_id = $1::bigint AND e.occurred_at >= $2::timestamptz
            AND crashcart_is_crash(e.level, e.handled))::bigint AS recent,
        COALESCE((SELECT sum(h.crashes) FROM event_stats_hourly h
                   WHERE h.project_id = $1::bigint
-                    AND h.bucket >= $3::bigint AND h.bucket < $4::bigint), 0)::bigint AS baseline
+                    AND h.bucket >= $3::timestamptz AND h.bucket < $4::timestamptz), 0)::bigint AS baseline
 `
 
 type CrashSpikeInputsParams struct {
-	ProjectID    int64 `json:"project_id"`
-	RecentFrom   int64 `json:"recent_from"`
-	BaselineFrom int64 `json:"baseline_from"`
-	BaselineTo   int64 `json:"baseline_to"`
+	ProjectID    int64     `json:"project_id"`
+	RecentFrom   time.Time `json:"recent_from"`
+	BaselineFrom time.Time `json:"baseline_from"`
+	BaselineTo   time.Time `json:"baseline_to"`
 }
 
 type CrashSpikeInputsRow struct {
@@ -49,8 +50,8 @@ SELECT COALESCE(sum(events), 0)::bigint FROM event_stats_hourly WHERE project_id
 `
 
 type EventsSinceParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
 }
 
 // Events received since a bucket (daily quota accounting; real-time aggregate).
@@ -69,9 +70,9 @@ GROUP BY level
 `
 
 type LevelTotalsParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
-	Bucket_2  int64 `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type LevelTotalsRow struct {
@@ -107,9 +108,9 @@ GROUP BY platform ORDER BY events DESC
 `
 
 type PlatformTotalsParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
-	Bucket_2  int64 `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type PlatformTotalsRow struct {
@@ -140,7 +141,7 @@ func (q *Queries) PlatformTotals(ctx context.Context, arg PlatformTotalsParams) 
 
 const releaseStats = `-- name: ReleaseStats :many
 SELECT release, platform,
-       min(bucket)::bigint AS first_seen, max(bucket)::bigint AS last_seen,
+       min(bucket)::timestamptz AS first_seen, max(bucket)::timestamptz AS last_seen,
        sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
 FROM event_stats_hourly
 WHERE project_id = $1 AND bucket >= $2 AND bucket < $3 AND release <> ''
@@ -148,19 +149,19 @@ GROUP BY release, platform ORDER BY max(bucket) DESC
 `
 
 type ReleaseStatsParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
-	Bucket_2  int64 `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type ReleaseStatsRow struct {
-	Release   string `json:"release"`
-	Platform  string `json:"platform"`
-	FirstSeen int64  `json:"first_seen"`
-	LastSeen  int64  `json:"last_seen"`
-	Events    int64  `json:"events"`
-	Crashes   int64  `json:"crashes"`
-	Errors    int64  `json:"errors"`
+	Release   string    `json:"release"`
+	Platform  string    `json:"platform"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+	Events    int64     `json:"events"`
+	Crashes   int64     `json:"crashes"`
+	Errors    int64     `json:"errors"`
 }
 
 // Every release with activity in the window (plus all-time first/last seen).
@@ -200,16 +201,16 @@ GROUP BY bucket ORDER BY bucket
 `
 
 type ReleaseTimelineParams struct {
-	ProjectID int64  `json:"project_id"`
-	Release   string `json:"release"`
-	Bucket    int64  `json:"bucket"`
-	Bucket_2  int64  `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Release   string    `json:"release"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type ReleaseTimelineRow struct {
-	Bucket  int64 `json:"bucket"`
-	Events  int64 `json:"events"`
-	Crashes int64 `json:"crashes"`
+	Bucket  time.Time `json:"bucket"`
+	Events  int64     `json:"events"`
+	Crashes int64     `json:"crashes"`
 }
 
 func (q *Queries) ReleaseTimeline(ctx context.Context, arg ReleaseTimelineParams) ([]ReleaseTimelineRow, error) {
@@ -246,18 +247,18 @@ GROUP BY bucket, release, platform ORDER BY bucket
 `
 
 type TimelineParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
-	Bucket_2  int64 `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type TimelineRow struct {
-	Bucket   int64  `json:"bucket"`
-	Release  string `json:"release"`
-	Platform string `json:"platform"`
-	Events   int64  `json:"events"`
-	Crashes  int64  `json:"crashes"`
-	Errors   int64  `json:"errors"`
+	Bucket   time.Time `json:"bucket"`
+	Release  string    `json:"release"`
+	Platform string    `json:"platform"`
+	Events   int64     `json:"events"`
+	Crashes  int64     `json:"crashes"`
+	Errors   int64     `json:"errors"`
 }
 
 // Hourly buckets over a window, split by release (the top-N is done in Go).
@@ -297,9 +298,9 @@ WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
 `
 
 type TotalsParams struct {
-	ProjectID int64 `json:"project_id"`
-	Bucket    int64 `json:"bucket"`
-	Bucket_2  int64 `json:"bucket_2"`
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Bucket_2  time.Time `json:"bucket_2"`
 }
 
 type TotalsRow struct {

@@ -16,10 +16,10 @@ SELECT * FROM issues WHERE project_id = $1 AND last_release = $2 AND status NOT 
 ORDER BY event_count DESC LIMIT $3;
 
 -- name: LatestIssueEvent :one
-SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY id DESC LIMIT 1;
+SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at DESC LIMIT 1;
 
 -- name: OldestIssueEvent :one
-SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY id ASC LIMIT 1;
+SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at ASC LIMIT 1;
 
 -- name: LatestRelease :one
 -- The release with the most recent activity in the window.

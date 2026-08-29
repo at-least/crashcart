@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
@@ -43,11 +42,11 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 	cards := make([]PortalCard, 0, len(projects))
 	for _, p := range projects {
 		c := PortalCard{P: p, CrashFree: "n/a"}
-		if t, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, Bucket: pk.Lower(n.Add(-24 * time.Hour)), Bucket_2: pk.Upper(n)}); err == nil {
+		if t, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, Bucket: n.Add(-day).Truncate(time.Hour), Bucket_2: n}); err == nil {
 			c.Crashes24h = t.Crashes
 		}
 		c.LatestRelease, c.CrashFree = w.latestHealth(ctx, p.ID, n, 30)
-		c.Received, c.Mismatch = w.receivedPlatforms(ctx, p, pk.Lower(n.Add(-7*24*time.Hour)), pk.Upper(n))
+		c.Received, c.Mismatch = w.receivedPlatforms(ctx, p, n.Add(-7*day).Truncate(time.Hour), n)
 		counts, _ := w.Store.CountIssuesByStatus(ctx, p.ID)
 		for _, row := range counts {
 			if row.Status == "unresolved" || row.Status == "triaged" || row.Status == "regression" {
@@ -63,7 +62,7 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 // window (most events first) and whether any is not what the project
 // declares. The aggregate only has the raw platform, so the family is
 // derived without the SDK name — close enough for a warning.
-func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, from, to int64) ([]string, bool) {
+func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, from, to time.Time) ([]string, bool) {
 	rows, err := w.Store.PlatformTotals(ctx, sqlc.PlatformTotalsParams{ProjectID: p.ID, Bucket: from, Bucket_2: to})
 	if err != nil {
 		return nil, false
@@ -94,13 +93,13 @@ func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, from, to in
 // latestHealth finds the release with the most recent activity in the last
 // days and its crash-free session rate over the same span.
 func (w *Web) latestHealth(ctx context.Context, projectID int64, n time.Time, days int) (release, rate string) {
-	from := pk.Lower(n.Add(-time.Duration(days) * 24 * time.Hour))
+	from := n.Add(-time.Duration(days) * day).Truncate(day)
 	rel, err := w.Store.LatestRelease(ctx, sqlc.LatestReleaseParams{ProjectID: projectID, Bucket: from})
 	if err != nil || rel == "" {
 		return "", "n/a"
 	}
 	rate = "n/a"
-	if health, err := w.Store.ReleaseHealth(ctx, sqlc.ReleaseHealthParams{ProjectID: projectID, Bucket: from, Bucket_2: pk.Upper(n)}); err == nil {
+	if health, err := w.Store.ReleaseHealth(ctx, sqlc.ReleaseHealthParams{ProjectID: projectID, Bucket: from, Bucket_2: n}); err == nil {
 		for _, h := range health {
 			if h.Release == rel {
 				rate = crashFree(h.Total, h.Crashed)
@@ -147,7 +146,7 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 	var d OverviewData
 	d.Received, d.Mismatch = w.receivedPlatforms(ctx, p, win.From, win.To)
 	if p.DailyQuota > 0 {
-		d.Today, _ = w.Store.EventsSince(ctx, sqlc.EventsSinceParams{ProjectID: p.ID, Bucket: pk.Lower(n.UTC().Truncate(24 * time.Hour))})
+		d.Today, _ = w.Store.EventsSince(ctx, sqlc.EventsSinceParams{ProjectID: p.ID, Bucket: n.UTC().Truncate(day)})
 		d.QuotaReached = d.Today >= int64(p.DailyQuota)
 	}
 	d.LatestRelease, d.CrashFree = w.latestHealth(ctx, p.ID, n, win.Days)
@@ -167,7 +166,7 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Chart = crashChart(rows, win)
-	if d.New, err = w.Store.ListNewIssues(ctx, sqlc.ListNewIssuesParams{ProjectID: p.ID, FirstSeen: pk.Lower(n.Add(-24 * time.Hour)), Limit: 5}); err != nil {
+	if d.New, err = w.Store.ListNewIssues(ctx, sqlc.ListNewIssuesParams{ProjectID: p.ID, FirstSeen: n.Add(-day), Limit: 5}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -183,7 +182,7 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 // streamInfo builds the SSE URL (since = now) and the regression baseline.
 func (w *Web) streamInfo(ctx context.Context, projectID int64, s ViewState, n time.Time) (string, int64) {
 	reg, _ := w.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: projectID})
-	return s.Base() + "/stream?since=" + strconv.FormatInt(pk.Upper(n), 10), reg
+	return s.Base() + "/stream?since=" + url.QueryEscape(n.UTC().Format(time.RFC3339Nano)), reg
 }
 
 // seriesColors is the palette for stacked-by-release charts.
@@ -192,7 +191,7 @@ var seriesTokens = []string{"series-1", "series-2", "series-3", "series-4", "ser
 // crashChart stacks crashes per bucket by release: top 5 releases + other.
 func crashChart(rows []sqlc.TimelineRow, win Window) ChartData {
 	totals := map[string]int64{}
-	perBucket := map[int64]map[string]int64{}
+	perBucket := map[int64]map[string]int64{} // by bucket start (unix seconds)
 	var any bool
 	for _, r := range rows {
 		if r.Crashes == 0 {
@@ -204,7 +203,7 @@ func crashChart(rows []sqlc.TimelineRow, win Window) ChartData {
 			rel = "(no release)"
 		}
 		totals[rel] += r.Crashes
-		b := pk.Bucket(r.Bucket, win.Width)
+		b := win.Bucket(r.Bucket).Unix()
 		if perBucket[b] == nil {
 			perBucket[b] = map[string]int64{}
 		}
@@ -242,7 +241,7 @@ func crashChart(rows []sqlc.TimelineRow, win Window) ChartData {
 	c := ChartData{Series: series, Empty: !any}
 	for _, b := range win.Buckets() {
 		bk := Bucket{Label: win.Label(b), Values: make([]int64, len(series))}
-		for rel, v := range perBucket[b] {
+		for rel, v := range perBucket[b.Unix()] {
 			if i, ok := idx[rel]; ok {
 				bk.Values[i] += v
 			} else if other {
@@ -257,11 +256,12 @@ func crashChart(rows []sqlc.TimelineRow, win Window) ChartData {
 	return c
 }
 
-// singleChart folds (bucket, value) rows into one series over the window.
+// singleChart folds (bucket start unix seconds → value) into one series
+// over the window.
 func singleChart(name, token string, points map[int64]int64, win Window) ChartData {
 	c := ChartData{Series: []Series{{Name: name, Token: token}}, Empty: true}
 	for _, b := range win.Buckets() {
-		v := points[b]
+		v := points[b.Unix()]
 		if v > 0 {
 			c.Empty = false
 		}
@@ -330,7 +330,7 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 		fps = append(fps, is.Fingerprint)
 	}
 	if len(fps) > 0 {
-		users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: fps, ID: win.From, ID_2: win.To})
+		users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: fps, OccurredAt: win.From, OccurredAt_2: win.To})
 		if err != nil {
 			return d, err
 		}
@@ -345,14 +345,14 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 		}
 		d.Sparks = sparks
 	}
-	d.Releases, _ = w.Store.DistinctReleases(ctx, sqlc.DistinctReleasesParams{ProjectID: p.ID, Bucket: pk.Lower(n.Add(-90 * 24 * time.Hour))})
+	d.Releases, _ = w.Store.DistinctReleases(ctx, sqlc.DistinctReleasesParams{ProjectID: p.ID, Bucket: n.Add(-90 * day)})
 	return d, nil
 }
 
 // sparklines renders 7 days of hourly counts (folded to 4 h points) per issue.
 func (w *Web) sparklines(ctx context.Context, projectID int64, fps []string, n time.Time) (map[string]string, error) {
-	const width = 4 * pk.Hour
-	since := pk.Bucket(pk.Lower(n.Add(-7*24*time.Hour)), width)
+	const width = 4 * time.Hour
+	since := n.UTC().Add(-7 * day).Truncate(width)
 	rows, err := w.Store.IssueSparklines(ctx, sqlc.IssueSparklinesParams{ProjectID: projectID, Column2: fps, Bucket: since})
 	if err != nil {
 		return nil, err
@@ -363,7 +363,7 @@ func (w *Web) sparklines(ctx context.Context, projectID int64, fps []string, n t
 		per[fp] = make([]int64, points)
 	}
 	for _, r := range rows {
-		i := int((r.Bucket - since) / width)
+		i := int(r.Bucket.Sub(since) / width)
 		if i >= 0 && i < points {
 			per[r.Fingerprint][i] += r.Events
 		}
@@ -427,8 +427,8 @@ type IssueData struct {
 	Chart      ChartData
 	Events     []store.EventRow
 	More       bool
-	LatestID   int64
-	OldestID   int64
+	LatestID   string // event_id of the newest / oldest stored event ("" when none)
+	OldestID   string
 }
 
 var breakdownColumns = [][2]string{{"release", "Release"}, {"os_version", "OS version"}, {"device_model", "Device"}, {"environment", "Environment"}}
@@ -460,10 +460,10 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	if nb, err := w.Store.IssueNeighbors(ctx, sqlc.IssueNeighborsParams{ProjectID: p.ID, Fingerprint: &fp}); err == nil {
+	if nb, err := w.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp}); err == nil {
 		d.LatestID, d.OldestID = nb.Latest, nb.Oldest
 	}
-	if users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []string{fp}, ID: win.From, ID_2: win.To}); err == nil && len(users) > 0 {
+	if users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []string{fp}, OccurredAt: win.From, OccurredAt_2: win.To}); err == nil && len(users) > 0 {
 		d.Users = users[0].Users
 	}
 	bf := store.EventFilter{ProjectID: p.ID, Fingerprint: fp, From: win.From, To: win.To}
@@ -486,14 +486,14 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 	}
 	points := map[int64]int64{}
 	for _, r := range rows {
-		points[pk.Bucket(r.Bucket, win.Width)] += r.Events
+		points[win.Bucket(r.Bucket).Unix()] += r.Events
 	}
 	token := "level-error"
 	if is.Level == "fatal" {
 		token = "level-fatal"
 	}
 	d.Chart = singleChart("events", token, points, win)
-	d.Events, d.More, err = w.Store.ListEvents(ctx, store.EventFilter{ProjectID: p.ID, Fingerprint: fp, Before: s.Before, Limit: 25})
+	d.Events, d.More, err = w.Store.ListEvents(ctx, store.EventFilter{ProjectID: p.ID, Fingerprint: fp, Before: s.Cursor(), Limit: 25})
 	if err != nil {
 		w.fail(rw, r, err)
 		return
@@ -542,7 +542,7 @@ const eventsPage = 50
 
 // eventFilter maps the URL state onto the store filter.
 func eventFilter(p sqlc.Project, s ViewState, win Window) store.EventFilter {
-	f := store.EventFilter{ProjectID: p.ID, From: win.From, To: win.To, Before: s.Before, Limit: eventsPage,
+	f := store.EventFilter{ProjectID: p.ID, From: win.From, To: win.To, Before: s.Cursor(), Limit: eventsPage,
 		Level: s.Filters["level"], Release: s.Filters["release"], Environment: s.Filters["environment"], Platform: s.Filters["platform"],
 		ErrorType: s.Filters["error_type"], UserID: s.Filters["user_id"], DeviceID: s.Filters["device_id"], DeviceModel: s.Filters["device_model"],
 		OSVersion: s.Filters["os_version"], Screen: s.Filters["screen"], Fingerprint: s.Filters["fingerprint"], Location: s.Filters["error_location"],
@@ -594,13 +594,8 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.NotFound(rw, r)
-		return
-	}
 	ctx := r.Context()
-	e, err := w.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, ID: id})
+	e, err := w.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: r.PathValue("id")})
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.NotFound(rw, r)
 		return
@@ -633,7 +628,7 @@ type ReleaseRow struct {
 	TotalSessions       int64 // all releases in the window (adoption denominator)
 	Crashes, Events     int64
 	NewIssues           int64
-	FirstSeen, LastSeen int64
+	FirstSeen, LastSeen time.Time // zero when the release has sessions but no events
 }
 
 func (r ReleaseRow) Adoption() string  { return percent(r.Sessions, r.TotalSessions) }
@@ -682,10 +677,10 @@ func (w *Web) releaseRows(ctx context.Context, p sqlc.Project, win Window) ([]Re
 		if st.Platform != "" && !strings.Contains(r.Platform, st.Platform) {
 			r.Platform = strings.TrimPrefix(r.Platform+", "+st.Platform, ", ")
 		}
-		if st.FirstSeen < r.FirstSeen {
+		if st.FirstSeen.Before(r.FirstSeen) {
 			r.FirstSeen = st.FirstSeen
 		}
-		if st.LastSeen > r.LastSeen {
+		if st.LastSeen.After(r.LastSeen) {
 			r.LastSeen = st.LastSeen
 		}
 	}
@@ -695,7 +690,7 @@ func (w *Web) releaseRows(ctx context.Context, p sqlc.Project, win Window) ([]Re
 			rows = append(rows, ReleaseRow{Release: rel, Sessions: h.Total, Crashed: h.Crashed, TotalSessions: total, NewIssues: im[rel]})
 		}
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].LastSeen > rows[j].LastSeen })
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].LastSeen.After(rows[j].LastSeen) })
 	return rows, nil
 }
 
@@ -743,7 +738,7 @@ func (w *Web) release(rw http.ResponseWriter, r *http.Request) {
 			d.Row = row
 		}
 	}
-	dayFrom := pk.Bucket(win.From, pk.Day)
+	dayFrom := win.From.Truncate(day)
 	daily, err := w.Store.ReleaseHealthDaily(ctx, sqlc.ReleaseHealthDailyParams{ProjectID: p.ID, Release: version, Bucket: dayFrom, Bucket_2: win.To})
 	if err != nil {
 		w.fail(rw, r, err)
@@ -751,11 +746,11 @@ func (w *Web) release(rw http.ResponseWriter, r *http.Request) {
 	}
 	dm := map[int64]sqlc.ReleaseHealthDailyRow{}
 	for _, row := range daily {
-		dm[row.Bucket] = row
+		dm[row.Bucket.Unix()] = row
 	}
-	for b := dayFrom; b < win.To; b += pk.Day {
-		row := dm[b]
-		d.Health = append(d.Health, HealthPoint{Label: pk.Time(b).Format("Jan 2"), Total: row.Total, Crashed: row.Crashed})
+	for b := dayFrom; b.Before(win.To); b = b.Add(day) {
+		row := dm[b.Unix()]
+		d.Health = append(d.Health, HealthPoint{Label: b.Format("Jan 2"), Total: row.Total, Crashed: row.Crashed})
 	}
 	tl, err := w.Store.ReleaseTimeline(ctx, sqlc.ReleaseTimelineParams{ProjectID: p.ID, Release: version, Bucket: win.From, Bucket_2: win.To})
 	if err != nil {
@@ -764,7 +759,7 @@ func (w *Web) release(rw http.ResponseWriter, r *http.Request) {
 	}
 	points := map[int64]int64{}
 	for _, row := range tl {
-		points[pk.Bucket(row.Bucket, win.Width)] += row.Crashes
+		points[win.Bucket(row.Bucket).Unix()] += row.Crashes
 	}
 	d.Chart = singleChart("crashes", "level-fatal", points, win)
 	if d.Introduced, err = w.Store.ListIssuesIntroducedIn(ctx, sqlc.ListIssuesIntroducedInParams{ProjectID: p.ID, FirstRelease: &version, Limit: 20}); err != nil {

@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/pk"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
@@ -251,8 +250,8 @@ func (s *Service) Invalidate(projectID int64, release string) {
 // nil when nothing can be resolved yet (the event stays unsymbolicated —
 // a later upload re-queues it); only sidecar / database failures are
 // errors, so the job retries.
-func (s *Service) Event(ctx context.Context, projectID, eventID int64) error {
-	row, err := s.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: projectID, ID: eventID})
+func (s *Service) Event(ctx context.Context, projectID int64, eventID string) error {
+	row, err := s.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: projectID, EventID: eventID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // dropped by retention, or never stored
 	}
@@ -263,7 +262,7 @@ func (s *Service) Event(ctx context.Context, projectID, eventID int64) error {
 		return nil
 	}
 	now := time.Now().UTC()
-	ev := sentry.ParseEvent(row.EventID, pk.Time(row.ID), row.Payload, now)
+	ev := sentry.ParseEvent(row.EventID, row.OccurredAt, row.Payload, now)
 	if ev == nil {
 		return nil
 	}
@@ -293,7 +292,7 @@ func (s *Service) Event(ctx context.Context, projectID, eventID int64) error {
 	}
 	return s.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		if err := q.SetEventSymbols(ctx, sqlc.SetEventSymbolsParams{
-			ProjectID: projectID, ID: eventID, Symbols: symbols,
+			ProjectID: projectID, EventID: eventID, Symbols: symbols,
 			Fingerprint: nilIfEmpty(newFP), ErrorLocation: nilIfEmpty(location),
 		}); err != nil {
 			return err
@@ -304,7 +303,7 @@ func (s *Service) Event(ctx context.Context, projectID, eventID int64) error {
 		if _, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 			ProjectID: projectID, Fingerprint: newFP, Title: ev.IssueTitle(), Level: row.Level,
 			ErrorType: nilIfEmpty(ev.ErrorType), Screen: nilIfEmpty(ev.Screen), Platform: nilIfEmpty(ev.Platform),
-			EventCount: 1, StoredCount: 1, FirstSeen: eventID, LastSeen: eventID, FirstRelease: row.Release,
+			EventCount: 1, StoredCount: 1, FirstSeen: row.OccurredAt, LastSeen: row.OccurredAt, FirstRelease: row.Release,
 		}); err != nil {
 			return err
 		}
@@ -471,7 +470,7 @@ func normalizeDebugID(id string) string {
 func (s *Service) Release(ctx context.Context, projectID int64, release string) error {
 	s.Invalidate(projectID, release)
 	ids, err := s.Store.UnsymbolicatedEvents(ctx, sqlc.UnsymbolicatedEventsParams{
-		ProjectID: projectID, Release: &release, ID: pk.Lower(time.Now().Add(-ReleaseWindow)), Limit: ReleaseMax,
+		ProjectID: projectID, Release: &release, OccurredAt: time.Now().Add(-ReleaseWindow), Limit: ReleaseMax,
 	})
 	if err != nil {
 		return err

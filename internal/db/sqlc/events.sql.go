@@ -8,25 +8,32 @@ package sqlc
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 const existingEventIDs = `-- name: ExistingEventIDs :many
-SELECT id FROM events WHERE id = ANY($1::bigint[])
+SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::text[])
 `
 
-func (q *Queries) ExistingEventIDs(ctx context.Context, dollar_1 []int64) ([]int64, error) {
-	rows, err := q.db.Query(ctx, existingEventIDs, dollar_1)
+type ExistingEventIDsParams struct {
+	ProjectID int64    `json:"project_id"`
+	Column2   []string `json:"column_2"`
+}
+
+// Which of these event_ids are already stored (resent envelopes).
+func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, existingEventIDs, arg.ProjectID, arg.Column2)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []int64{}
+	items := []string{}
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var event_id string
+		if err := rows.Scan(&event_id); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, event_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -35,59 +42,20 @@ func (q *Queries) ExistingEventIDs(ctx context.Context, dollar_1 []int64) ([]int
 }
 
 const getEvent = `-- name: GetEvent :one
-SELECT id, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs, payload, symbols FROM events WHERE project_id = $1 AND id = $2
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs, payload, symbols FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
 `
 
 type GetEventParams struct {
-	ProjectID int64 `json:"project_id"`
-	ID        int64 `json:"id"`
-}
-
-func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, error) {
-	row := q.db.QueryRow(ctx, getEvent, arg.ProjectID, arg.ID)
-	var i Event
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.EventID,
-		&i.Level,
-		&i.Message,
-		&i.Platform,
-		&i.Environment,
-		&i.Release,
-		&i.DeviceID,
-		&i.DeviceModel,
-		&i.OsVersion,
-		&i.Screen,
-		&i.ErrorType,
-		&i.ErrorLocation,
-		&i.Handled,
-		&i.SdkName,
-		&i.UserID,
-		&i.Fingerprint,
-		&i.Symbolicated,
-		&i.Tags,
-		&i.Breadcrumbs,
-		&i.Payload,
-		&i.Symbols,
-	)
-	return i, err
-}
-
-const getEventByEventID = `-- name: GetEventByEventID :one
-SELECT id, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, breadcrumbs, payload, symbols FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY id DESC LIMIT 1
-`
-
-type GetEventByEventIDParams struct {
 	ProjectID int64  `json:"project_id"`
 	EventID   string `json:"event_id"`
 }
 
-func (q *Queries) GetEventByEventID(ctx context.Context, arg GetEventByEventIDParams) (Event, error) {
-	row := q.db.QueryRow(ctx, getEventByEventID, arg.ProjectID, arg.EventID)
+// By Sentry event_id (the newest row when a resend carried another timestamp).
+func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, error) {
+	row := q.db.QueryRow(ctx, getEvent, arg.ProjectID, arg.EventID)
 	var i Event
 	err := row.Scan(
-		&i.ID,
+		&i.OccurredAt,
 		&i.ProjectID,
 		&i.EventID,
 		&i.Level,
@@ -114,39 +82,40 @@ func (q *Queries) GetEventByEventID(ctx context.Context, arg GetEventByEventIDPa
 	return i, err
 }
 
-const issueNeighbors = `-- name: IssueNeighbors :one
-SELECT max(id)::bigint AS latest, min(id)::bigint AS oldest FROM events WHERE project_id = $1 AND fingerprint = $2
+const issueEventRange = `-- name: IssueEventRange :one
+SELECT COALESCE((SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::text ORDER BY e.occurred_at DESC LIMIT 1), '')::text AS latest,
+       COALESCE((SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::text ORDER BY e.occurred_at ASC LIMIT 1), '')::text AS oldest
 `
 
-type IssueNeighborsParams struct {
-	ProjectID   int64   `json:"project_id"`
-	Fingerprint *string `json:"fingerprint"`
+type IssueEventRangeParams struct {
+	ProjectID   int64  `json:"project_id"`
+	Fingerprint string `json:"fingerprint"`
 }
 
-type IssueNeighborsRow struct {
-	Latest int64 `json:"latest"`
-	Oldest int64 `json:"oldest"`
+type IssueEventRangeRow struct {
+	Latest string `json:"latest"`
+	Oldest string `json:"oldest"`
 }
 
-// Latest and oldest stored event of an issue.
-func (q *Queries) IssueNeighbors(ctx context.Context, arg IssueNeighborsParams) (IssueNeighborsRow, error) {
-	row := q.db.QueryRow(ctx, issueNeighbors, arg.ProjectID, arg.Fingerprint)
-	var i IssueNeighborsRow
+// Newest and oldest stored event of an issue (” when none are stored).
+func (q *Queries) IssueEventRange(ctx context.Context, arg IssueEventRangeParams) (IssueEventRangeRow, error) {
+	row := q.db.QueryRow(ctx, issueEventRange, arg.ProjectID, arg.Fingerprint)
+	var i IssueEventRangeRow
 	err := row.Scan(&i.Latest, &i.Oldest)
 	return i, err
 }
 
 const issueUsers = `-- name: IssueUsers :many
 SELECT fingerprint, count(DISTINCT user_id)::bigint AS users
-FROM events WHERE project_id = $1 AND fingerprint = ANY($2::text[]) AND id >= $3 AND id < $4 AND user_id IS NOT NULL
+FROM events WHERE project_id = $1 AND fingerprint = ANY($2::text[]) AND occurred_at >= $3 AND occurred_at < $4 AND user_id IS NOT NULL
 GROUP BY fingerprint
 `
 
 type IssueUsersParams struct {
-	ProjectID int64    `json:"project_id"`
-	Column2   []string `json:"column_2"`
-	ID        int64    `json:"id"`
-	ID_2      int64    `json:"id_2"`
+	ProjectID    int64     `json:"project_id"`
+	Column2      []string  `json:"column_2"`
+	OccurredAt   time.Time `json:"occurred_at"`
+	OccurredAt_2 time.Time `json:"occurred_at_2"`
 }
 
 type IssueUsersRow struct {
@@ -154,13 +123,13 @@ type IssueUsersRow struct {
 	Users       int64   `json:"users"`
 }
 
-// Distinct users per issue in a window (index: project_id, fingerprint, id).
+// Distinct users per issue in a window (index: project_id, fingerprint, occurred_at).
 func (q *Queries) IssueUsers(ctx context.Context, arg IssueUsersParams) ([]IssueUsersRow, error) {
 	rows, err := q.db.Query(ctx, issueUsers,
 		arg.ProjectID,
 		arg.Column2,
-		arg.ID,
-		arg.ID_2,
+		arg.OccurredAt,
+		arg.OccurredAt_2,
 	)
 	if err != nil {
 		return nil, err
@@ -182,12 +151,12 @@ func (q *Queries) IssueUsers(ctx context.Context, arg IssueUsersParams) ([]Issue
 
 const setEventSymbols = `-- name: SetEventSymbols :exec
 UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, error_location = $5
-WHERE project_id = $1 AND id = $2
+WHERE project_id = $1 AND event_id = $2
 `
 
 type SetEventSymbolsParams struct {
 	ProjectID     int64           `json:"project_id"`
-	ID            int64           `json:"id"`
+	EventID       string          `json:"event_id"`
 	Symbols       json.RawMessage `json:"symbols"`
 	Fingerprint   *string         `json:"fingerprint"`
 	ErrorLocation *string         `json:"error_location"`
@@ -196,7 +165,7 @@ type SetEventSymbolsParams struct {
 func (q *Queries) SetEventSymbols(ctx context.Context, arg SetEventSymbolsParams) error {
 	_, err := q.db.Exec(ctx, setEventSymbols,
 		arg.ProjectID,
-		arg.ID,
+		arg.EventID,
 		arg.Symbols,
 		arg.Fingerprint,
 		arg.ErrorLocation,

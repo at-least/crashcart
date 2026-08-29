@@ -3,7 +3,6 @@ package web
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
@@ -15,7 +14,7 @@ var (
 	streamKeepAlive = 15 * time.Second
 )
 
-// stream is GET /p/{slug}/stream?since=<id>: every poll it counts issues
+// stream is GET /p/{slug}/stream?since=<RFC3339>: every poll it counts issues
 // first seen after `since` plus current regressions and emits an `issues`
 // event when the pair changes. Comments keep the connection alive.
 func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
@@ -28,7 +27,11 @@ func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+	since, err := time.Parse(time.RFC3339Nano, r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(rw, "since must be RFC3339", http.StatusBadRequest)
+		return
+	}
 	h := rw.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
