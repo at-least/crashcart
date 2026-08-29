@@ -6,7 +6,7 @@ import "time"
 templ AuthCard(title, desc string) {
 	<div class="min-h-dvh bg-background text-foreground">
 		<main class="page flex min-h-dvh items-center justify-center py-10">
-			<div data-slot="card" class="w-full max-w-sm">
+			<div data-slot="card" class="w-full max-w-lg">
 				<header data-slot="card-header" class="items-center">
 					@BrandMark()
 					<h1 data-slot="card-title" class="mt-2">{ title }</h1>

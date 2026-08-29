@@ -377,8 +377,11 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	if _, ok := det["breadcrumbs"].([]any); !ok {
 		t.Errorf("breadcrumbs = %v", det["breadcrumbs"])
 	}
-	if _, err := time.Parse(time.RFC3339, det["occurred_at"].(string)); err != nil {
-		t.Errorf("occurred_at = %v", det["occurred_at"])
+	if at := det["occurred_at"].(string); !strings.HasSuffix(at, "Z") {
+		t.Errorf("occurred_at not UTC: %v", at)
+	}
+	if at := item["occurred_at"].(string); !strings.HasSuffix(at, "Z") {
+		t.Errorf("list occurred_at not UTC: %v", at)
 	}
 	byEID := e.get("/api/projects/demo/events/e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1", 200)
 	if byEID["event_id"] != "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1" || byEID["level"] != "fatal" {

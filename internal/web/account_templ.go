@@ -32,7 +32,7 @@ func AuthCard(title, desc string) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"min-h-dvh bg-background text-foreground\"><main class=\"page flex min-h-dvh items-center justify-center py-10\"><div data-slot=\"card\" class=\"w-full max-w-sm\"><header data-slot=\"card-header\" class=\"items-center\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"min-h-dvh bg-background text-foreground\"><main class=\"page flex min-h-dvh items-center justify-center py-10\"><div data-slot=\"card\" class=\"w-full max-w-lg\"><header data-slot=\"card-header\" class=\"items-center\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

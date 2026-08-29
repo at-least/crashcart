@@ -231,6 +231,9 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) (rows []EventRow,
 	if err != nil {
 		return nil, false, err
 	}
+	for i := range rows {
+		rows[i].OccurredAt = rows[i].OccurredAt.UTC() // API times are UTC
+	}
 	if len(rows) > limit {
 		rows, more = rows[:limit], true
 	}

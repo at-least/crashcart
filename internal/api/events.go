@@ -99,6 +99,7 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
+	ev.OccurredAt = ev.OccurredAt.UTC()
 	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(ev.Payload), Breadcrumbs: breadcrumbsOf(ev)})
 }
 
