@@ -36,9 +36,7 @@ and follow [Go binary + systemd](https://crashcart.app/deploy/binary).
 - **Your data, portable** — one command exports everything to a plain file
   that restores into any CrashCart
 
-Runs on plain Postgres (Neon, Supabase, RDS, …) or TimescaleDB. There is
-also a [serverless edition](https://github.com/crashcartapp/crashcart-serverless)
-for Cloudflare Workers.
+Runs on plain Postgres (Neon, Supabase, RDS, …) or TimescaleDB.
 
 ## Learn more
 

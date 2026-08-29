@@ -11,7 +11,7 @@ whether they offer the **TimescaleDB** extension, and in which build:
 - **Not available** — plain Postgres.
 
 Plain Postgres is fine below a few million events a month; see
-[Which edition?](/deploy/which-edition#timescaledb-and-compression) for
+[Which database?](/deploy/which-edition) for
 when it matters. Detection is automatic (`TIMESCALE=auto`), so you never
 have to configure anything — this page only tells you what to expect.
 

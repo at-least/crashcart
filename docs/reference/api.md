@@ -257,8 +257,7 @@ Uploading also symbolicates the release's events from the last
 
 Export and import are **CLI commands** in the Go edition —
 `crashcart export` and `crashcart import` ([CLI](./cli)) — not HTTP routes.
-The serverless edition exposes them as `GET /api/export` and
-`POST /api/import`. Format: [Export format](./export-format).
+Format: [Export format](./export-format).
 
 ## Ingest (Sentry protocol)
 

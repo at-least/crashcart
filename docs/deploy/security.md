@@ -4,8 +4,7 @@ What CrashCart stores, who can see it, and where it goes.
 
 ## Where the data lives
 
-In your Postgres (Go edition) or your Cloudflare account's D1 and R2
-(serverless edition). CrashCart makes no outbound connections of its own:
+In your Postgres. CrashCart makes no outbound connections of its own:
 no telemetry, no update checks, no third-party services. The only
 outbound traffic is the alert channels you configure — a webhook URL or
 Telegram — and the dSYM sidecar if you run it, which is a container next

@@ -1,8 +1,7 @@
 # CrashCart export format (NDJSON, format 1)
 
 This is the interchange contract between every CrashCart implementation
-(the Go/TimescaleDB server in this repo, the serverless port, and any future
-one). An implementation is compatible when it can **write** a file that this
+(the Go/TimescaleDB server in this repo and any future one). An implementation is compatible when it can **write** a file that this
 document describes and **read** any such file, regardless of which
 implementation produced it. Implementations share this document, not code.
 
@@ -69,8 +68,7 @@ JavaScript `number` is safe.
 - `format` — integer. A reader that supports format *N* must refuse a file
   with `format > N` and must read `format ≤ N`.
 - `exported_at` — unix ms.
-- `app` — free-form producer name (`"crashcart"`, `"crashcart-serverless"`,
-  …). Readers must not branch on it.
+- `app` — free-form producer name (`"crashcart"`, …). Readers must not branch on it.
 
 ## Rows
 

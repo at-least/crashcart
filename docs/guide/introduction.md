@@ -33,14 +33,13 @@ and discarded — no errors, just nothing stored. There are no user
 accounts either: one viewer password and API keys. The full picture is
 in [Compared to Sentry](./compared-to-sentry).
 
-## Two editions
+## Where it runs
 
-The **Go edition** (this documentation) runs on any server with Postgres.
-The [**Serverless edition**](https://github.com/crashcartapp/crashcart-serverless)
-runs on Cloudflare Workers + D1 with nothing to manage — free for small
-apps.
-Both work with the same SDKs and share the same export format, so you can
-move between them. See [Which edition?](/deploy/which-edition).
+Any server with a Postgres 16+: Docker Compose on a VPS, a binary under
+systemd, Kubernetes, or Fly.io with a free managed database. With
+TimescaleDB it compresses and expires data for free; on plain Postgres it
+works the same and costs a little more disk. See
+[Which database?](/deploy/which-edition).
 
 ## Next
 

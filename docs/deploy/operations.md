@@ -8,8 +8,7 @@ crashcart export shop-ios > shop-ios.ndjson         # one project
 ```
 
 The file is plain newline-delimited JSON and restores into **any**
-CrashCart — a different Postgres, with or without TimescaleDB, or the
-serverless edition:
+CrashCart — a different Postgres, with or without TimescaleDB:
 
 ```sh
 crashcart import < backup.ndjson
@@ -58,14 +57,10 @@ crashes later, so nothing is lost for a short burst.
 
 ## Moving to another database
 
-There is no in-place switch between plain Postgres and TimescaleDB, or
-between the Go and serverless editions. In every case:
+There is no in-place switch between plain Postgres and TimescaleDB:
 
 ```sh
 crashcart export > dump.ndjson
 # point DATABASE_URL at the new database and start CrashCart once
 crashcart import < dump.ndjson
 ```
-
-For the serverless edition, use its `GET /api/export` and `POST /api/import`
-endpoints instead of the CLI on that side.

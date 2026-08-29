@@ -21,9 +21,9 @@ is it different from Sentry?" Honest answer below, in both directions.
 |---|---|---|
 | Scope | Error tracking and release health, nothing else | Errors, performance tracing, profiling, session replay, logs, uptime, cron monitoring |
 | Users | One viewer password, shared. API keys for automation | Accounts, teams, roles, SSO |
-| Running it | One binary + Postgres, or a Cloudflare Worker. 512 MB of RAM is plenty | Self-hosted needs 16 GB RAM, 4 cores and ~20 services; or the hosted plans |
+| Running it | One binary + Postgres. 512 MB of RAM is plenty | Self-hosted needs 16 GB RAM, 4 cores and ~20 services; or the hosted plans |
 | Integrations | Webhooks and Telegram | Slack, Jira, GitHub, PagerDuty and dozens more |
-| Ownership of the data | Your Postgres or your Cloudflare account. No telemetry, nothing leaves the server unless you add an alert channel | Sentry's cloud, or your own self-hosted install |
+| Ownership of the data | Your Postgres. No telemetry, nothing leaves the server unless you add an alert channel | Sentry's cloud, or your own self-hosted install |
 | Price | Free and MIT; what your server costs | Per-event plans; self-hosted is free |
 
 Two more things to know before you switch:

@@ -4,7 +4,7 @@ layout: home
 hero:
   name: CrashCart
   text: Open-source error tracking
-  tagline: Point any Sentry SDK at CrashCart and it receives crashes, errors, messages and release-health sessions. Run it as one Go binary with Postgres, or serverless on Cloudflare — free for small apps.
+  tagline: Point any Sentry SDK at CrashCart and it receives crashes, errors, messages and release-health sessions. One Go binary and a Postgres — free for small apps, cheap at scale.
   actions:
     - theme: brand
       text: Get started
@@ -13,7 +13,7 @@ hero:
       text: Compared to Sentry
       link: /guide/compared-to-sentry
     - theme: alt
-      text: Which edition?
+      text: Which database?
       link: /deploy/which-edition
     - theme: alt
       text: GitHub
@@ -25,7 +25,7 @@ features:
     details: Keep the SDKs you already ship — iOS, Android, Flutter, React Native, web and backend. CrashCart speaks the envelope protocol; the viewer, API and data model are its own.
   - icon: 📦
     title: Run it your way
-    details: One Go binary and a Postgres — Docker Compose on a VPS, Kubernetes, or Fly.io with a free Neon database. Or the serverless edition on Cloudflare Workers, nothing to run at all.
+    details: One Go binary and a Postgres — Docker Compose on a VPS, Kubernetes, or Fly.io with a free Neon database. TimescaleDB for volume, any managed Postgres for zero ops.
   - icon: 🧭
     title: Issue-centric viewer
     details: Overview, issues grouped by fingerprint, stack traces, breakdowns by release / device / OS, release health with crash-free rates. Server-rendered, keyboard triage.
@@ -37,5 +37,5 @@ features:
     details: New issue, regression and crash-spike detectors per project, delivered to webhooks or Telegram.
   - icon: 🔒
     title: Your data, your server
-    details: Events stay in your Postgres or your Cloudflare account. No telemetry, no outbound calls. Optional PII scrubbing, retention you set, and a plain-text export that restores into any CrashCart.
+    details: Events stay in your Postgres. No telemetry, no outbound calls. Optional PII scrubbing, retention you set, and a plain-text export that restores into any CrashCart.
 ---

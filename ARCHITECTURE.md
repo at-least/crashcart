@@ -119,7 +119,7 @@ hour computed live from `events` / `sessions` — so every query, sqlc model and
 the API work unchanged. `retention.RollupRecent` (scheduler, every 10 minutes)
 re-rolls the last 3 complete hours; `RollupAll` rebuilds from the oldest row
 after `import` / `seed`; the sweep deletes `events` / `sessions` by id range
-in 5000-row batches. Same bucket semantics as the serverless implementation.
+in 5000-row batches.
 Trade-offs: no compression (budget 5–10× the storage), no chunk exclusion
 (the `(project_id, id)` indexes carry the range scans).
 
