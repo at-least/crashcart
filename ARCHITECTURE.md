@@ -89,13 +89,15 @@ crashing are inside the set, the release that carries the fix is not.
 **Sampling is per issue, counts stay exact — and it is what bounds the
 database.** The first `projects.sample_keep_first` events of each issue
 are always stored (`ingest.FatalKeepFactor` × that for crashes); after
-that `sample_rate` of them (default 1 %); ungrouped events (nothing to
-fingerprint) take the rate from the start. Dropped events still increment
-`event_count`, so the numbers stay exact. The point: what is stored grows
-with the number of *issues*, not the number of events — the ten-thousandth
-copy of the same NullPointerException adds nothing the issue row does not
-already say. That is why payloads can simply live in Postgres, and why a
-single machine covers a project of any event volume.
+that `sample_rate` of them; ungrouped events (nothing to fingerprint)
+take the rate from the start. Dropped events still increment
+`event_count`, so the numbers stay exact. The default rate is 1 — store
+everything — and a project that outgrows its machine lowers it: what is
+stored then grows with the number of *issues*, not the number of events,
+because the ten-thousandth copy of the same NullPointerException adds
+nothing the issue row does not already say. That is why payloads can
+simply live in Postgres, and why one setting lets a single machine cover
+a project of any event volume.
 
 **The payload lives with the row.** `events.payload` is the event's JSON
 exactly as the SDK sent it, gzipped once at ingest (`STORAGE EXTERNAL`,

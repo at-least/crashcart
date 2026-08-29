@@ -75,7 +75,7 @@ CREATE TABLE projects (
     platform          TEXT,                                   -- ios | android | flutter | web | … (hint only)
     public_key        TEXT NOT NULL UNIQUE,                   -- DSN key: https://<public_key>@host/<id>
     sample_keep_first INTEGER NOT NULL DEFAULT 100,           -- events stored per issue before sampling kicks in (fatal: ingest.FatalKeepFactor times that)
-    sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 0.01, -- kept fraction after that; 1 stores everything
+    sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,  -- kept fraction after that (1 = store everything; lower it to bound the database)
     daily_quota       INTEGER NOT NULL DEFAULT 100000,        -- events accepted per UTC day; 0 = unlimited
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -90,9 +90,10 @@ CREATE TABLE projects (
 -- payload is the event as the SDK sent it, gzipped at ingest (STORAGE
 -- EXTERNAL: TOAST must not compress it again); the database never parses
 -- it — everything filterable is a column or a tags key, extracted at
--- ingest — and it is never rewritten. What bounds its volume is per-issue
--- sampling (projects.sample_keep_first / sample_rate): the stored events
--- grow with the number of issues, not the number of events.
+-- ingest — and it is never rewritten. Per-issue sampling
+-- (projects.sample_keep_first / sample_rate) bounds its volume when a
+-- project lowers sample_rate: the stored events then grow with the number
+-- of issues, not the number of events.
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (partition key)
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,

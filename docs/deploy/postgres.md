@@ -19,14 +19,17 @@ DATABASE_URL=postgres://user:pass@host/crashcart?sslmode=require
 
 ## How big it gets
 
-Not with the number of events — with the number of *issues*. Per-issue
-[sampling](/guide/projects#sampling-and-daily-quota) stores the first
-events of every issue (100 by default, 500 for crashes) and then a small
-fraction (1 %); the rest are counted but not stored. A project with a
-thousand distinct issues keeps on the order of a few hundred thousand
-events, a few hundred MB with payloads — whether it receives ten thousand
-events a day or ten million. Set `sample_rate` to 1 on a project to store
-everything; then the database grows with the traffic.
+By default every event is stored (a few hundred bytes of columns plus
+the gzipped payload, typically 2–5 KB), so the database grows with the
+traffic: roughly 1 GB per 300 000 events. When that is more than you want
+to keep, lower the project's **sample rate** under
+[Settings → Sampling](/guide/projects#sampling-and-daily-quota): the
+first events of every issue are always stored (100 by default, 500 for
+crashes), then only that fraction; the rest are counted but not stored.
+From then on the database grows with the number of *issues*, not
+events — a project with a thousand distinct issues keeps a few hundred
+thousand events, a few hundred MB, whether it receives ten thousand
+events a day or ten million.
 
 Events and sessions are partitioned by week; CrashCart creates the
 partitions ahead of time and drops the expired ones (`RETENTION_DAYS`).

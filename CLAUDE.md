@@ -60,10 +60,11 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
 - `events.payload` is the raw event gzipped at ingest (`store.Gzip`;
   `STORAGE EXTERNAL`); read it with `store.Payload(ctx, event)` — nil when
   the row was imported without one. Symbol files and sentry-cli chunks are
-  BYTEA rows. What bounds the database is per-issue sampling
-  (`sample_keep_first`, `ingest.FatalKeepFactor` for crashes, `sample_rate`
-  default 0.01): stored events grow with issues, not events. There is no
-  second store; do not add one.
+  BYTEA rows. Per-issue sampling (`sample_keep_first`,
+  `ingest.FatalKeepFactor` for crashes, `sample_rate` — default 1, store
+  everything) is what a project lowers to bound the database: stored
+  events then grow with issues, not events. There is no second store; do
+  not add one.
 - Statistics: every write to `events` / `sessions` marks its (project, hour)
   in `event_stats_dirty` / `session_stats_dirty` in the same transaction
   (`MarkEventStatsDirty`, also after a fingerprint change); the
