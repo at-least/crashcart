@@ -1,7 +1,8 @@
-# Serverless edition
+# Serverless edition (Cloudflare Workers + D1)
 
 [crashcart-serverless](https://github.com/crashcartapp/crashcart-serverless)
-is CrashCart on Cloudflare Workers. Same SDK setup, same viewer, same export format.
+is CrashCart on Cloudflare Workers, with D1 as the database and R2 for
+blobs. Same SDK setup, same viewer, same export format.
 
 ## When to use it
 

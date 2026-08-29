@@ -47,7 +47,7 @@ export default defineConfig({
             { text: 'Go binary + systemd', link: '/deploy/binary' },
             { text: 'Kubernetes', link: '/deploy/kubernetes' },
             { text: 'Fly.io + Neon', link: '/deploy/fly' },
-            { text: 'Serverless (Cloudflare)', link: '/deploy/serverless' },
+            { text: 'Serverless (Cloudflare Workers + D1)', link: '/deploy/serverless' },
             { text: 'Before going live', link: '/deploy/checklist' },
           ],
         },

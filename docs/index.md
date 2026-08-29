@@ -34,5 +34,5 @@ features:
     details: New issue, regression and crash-spike detectors per project, delivered to webhooks or Telegram.
   - icon: 🔁
     title: Portable data
-    details: A versioned NDJSON export format shared by every CrashCart implementation. Back up, restore, or move between the Go and serverless editions.
+    details: A versioned NDJSON export format shared by every CrashCart implementation. Back up, restore, or move between the Go edition and the serverless edition on Cloudflare Workers + D1.
 ---
