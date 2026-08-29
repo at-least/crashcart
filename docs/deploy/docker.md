@@ -29,19 +29,24 @@ cd crashcart
 
 ## 3. Configure CrashCart
 
-Open `docker-compose.yml` and set these in the `crashcart` service's
-`environment`:
+Settings live in a `.env` file next to `docker-compose.yml` (it is
+git-ignored). Start from the example:
 
-```yaml
-      PUBLIC_URL: https://crashcart.example.com
-      API_KEYS: "<long random string>"
-      VIEWER_PASSWORD: "<another long random string>"
+```sh
+cp .env.example .env
 ```
 
-Generate the strings with `openssl rand -hex 32`.
+and set these:
 
-Also change the Postgres password from `crashcart` in **both** places it
-appears (`POSTGRES_PASSWORD` on `db`, `DATABASE_URL` on `crashcart`).
+```sh
+POSTGRES_PASSWORD=<long random string>
+PUBLIC_URL=https://crashcart.example.com
+API_KEYS=<long random string>
+VIEWER_PASSWORD=<another long random string>
+```
+
+Generate the strings with `openssl rand -hex 32`. Everything else in the
+file is optional and explained inline.
 
 ## 4. Add Caddy
 
@@ -123,8 +128,8 @@ patch release of that line) in `docker-compose.yml`.
 ## iOS crashes
 
 To symbolicate iOS / macOS crashes, uncomment the `symbolicate` service
-in `docker-compose.yml` and add `SYMBOLICATE_URL: http://symbolicate:8080`
-to `crashcart`'s environment. Android and JavaScript need nothing extra.
+in `docker-compose.yml` and set `SYMBOLICATE_URL=http://symbolicate:8080`
+in `.env`. Android and JavaScript need nothing extra.
 
 ## Backups
 
@@ -141,6 +146,6 @@ Put that in cron. Restore with `crashcart import < backup.ndjson`. See
 |---|---|
 | `certificate obtained` never appears | The A record must point at this server and ports 80/443 must be open (`sudo ufw status`, cloud firewall). Caddy retries by itself once DNS is right |
 | `/health` returns `503` | Postgres isn't up yet: `docker compose logs db` |
-| The DSN says `http://localhost:8080` | `PUBLIC_URL` isn't set; fix it and `docker compose up -d` |
+| The DSN says `http://localhost:8080` | `PUBLIC_URL` isn't set in `.env`; fix it and `docker compose up -d` |
 | SDK gets `401` | Wrong key in the DSN. `docker compose exec crashcart /crashcart rotate-key shop-ios` prints a fresh one |
 | Large crash reports fail with `413` | Raise `max_size` in the Caddyfile |

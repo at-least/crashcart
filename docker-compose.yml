@@ -1,9 +1,12 @@
+# Settings come from a .env file next to this compose file (copy
+# .env.example). Without one, the defaults below give a local install on
+# http://localhost:8080 with no passwords.
 services:
   db:
     image: timescale/timescaledb:latest-pg16
     environment:
       POSTGRES_USER: crashcart
-      POSTGRES_PASSWORD: crashcart
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crashcart}
       POSTGRES_DB: crashcart
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -22,17 +25,15 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://crashcart:crashcart@db:5432/crashcart?sslmode=disable
+      DATABASE_URL: postgres://crashcart:${POSTGRES_PASSWORD:-crashcart}@db:5432/crashcart?sslmode=disable
       LISTEN_ADDR: ":8080"
-      # Bearer keys for /api/* (comma-separated). Empty = open.
-      API_KEYS: ""
-      # HTTP basic auth for the viewer. Empty = open.
-      VIEWER_PASSWORD: ""
-      # Externally visible base URL, used to print DSNs.
-      PUBLIC_URL: "http://localhost:8080"
-      RETENTION_DAYS: "30"
-      # Uncomment with the sidecar below to symbolicate iOS crashes.
-      # SYMBOLICATE_URL: http://symbolicate:8080
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      API_KEYS: ${API_KEYS:-}
+      VIEWER_PASSWORD: ${VIEWER_PASSWORD:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+      # Set in .env together with the symbolicate service below.
+      SYMBOLICATE_URL: ${SYMBOLICATE_URL:-}
     ports:
       - "8080:8080"
     restart: unless-stopped

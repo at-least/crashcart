@@ -12,8 +12,8 @@ apps at it.
       uploads — is open to anyone who can reach the server.
 - [ ] **`VIEWER_PASSWORD`** is set, unless the viewer is only reachable on a
       private network.
-- [ ] **Postgres password** is not the default `crashcart` if the database
-      port is reachable from outside.
+- [ ] **Postgres password** is not the default `crashcart`
+      (`POSTGRES_PASSWORD` in `.env` for Docker Compose).
 - [ ] **Backups.** Schedule `crashcart export > backup.ndjson` (or
       `pg_dump`). See [Operations](./operations#backups).
 - [ ] **Retention** (`RETENTION_DAYS`, default 30) matches how long you
