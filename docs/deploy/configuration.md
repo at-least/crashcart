@@ -41,7 +41,7 @@ data too.
 | Variable | Default | Meaning |
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | Port to listen on |
-| `RATE_LIMIT` | `600` | Requests per minute allowed per DSN key or API key. `0` disables |
+| `RATE_LIMIT` | `600` | Requests per minute allowed per DSN key or API key, counted in memory per process (each replica enforces it on its own traffic). `0` disables |
 | `ALERT_INTERVAL` | `10m` | How often to check for crash spikes |
 | `WORKERS` | `4` | Parallelism for symbolication and alert delivery |
 | `TIMESCALE` | `auto` | `on` / `off` to force TimescaleDB or plain Postgres. See [Postgres options](./postgres) |

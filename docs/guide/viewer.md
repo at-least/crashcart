@@ -62,7 +62,7 @@ Statuses and what they mean are in [Issues & grouping](./issues#lifecycle).
 messages and non-exception events that are not part of any issue. Filters:
 level, release, environment, platform, `user_id`, tags.
 
-`/p/{slug}/events/{id}` — the full event: exception chain, symbolicated and
+`/p/{slug}/events/{event_id}` — the full event: exception chain, symbolicated and
 original frames, breadcrumbs, tags, user, contexts, and the raw payload.
 
 ## Releases

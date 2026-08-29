@@ -19,10 +19,14 @@ and the debug-file upload endpoint sentry-cli uses. Transactions, profiles,
 replays and client reports are accepted and dropped. The Sentry Web API and
 UI are not imitated; the viewer is our own.
 
-**Time is in the primary key.** `events.id = unix_ms × 1000 + rand(0..999)`
-(`internal/pk`). It is the TimescaleDB time dimension, so a time window is
-an id range, ordering by id is chronological, and chunk exclusion works on
-the PK alone. Never compare `to_timestamp(id/1e6)` in a WHERE clause.
+**Time is a TIMESTAMPTZ column, keys are natural.** `events.occurred_at` /
+`sessions.started_at` are the TimescaleDB time dimensions; a time window
+is a range on them, buckets are `time_bucket(INTERVAL …)`, policies take
+intervals. The primary keys are `(project_id, event_id, occurred_at)` and
+`(project_id, sid, started_at)` — the SDK's own ids, so a resent envelope
+lands on the same row (`ON CONFLICT DO NOTHING`) and a session's status
+updates hit one row. Events are addressed by `event_id` everywhere (URLs,
+API, jobs); list pagination is a keyset cursor `(occurred_at, event_id)`.
 
 **Ingest is one transaction, no hot rows.** Per envelope: fold events by
 fingerprint → one `issues` upsert per distinct fingerprint → sampling
@@ -44,13 +48,17 @@ issue seen on a release different from `resolved_release`.
 events of each issue are always stored; after that `sample_rate` of them;
 `fatal` always. Dropped events still increment `event_count`.
 
-**Symbolicate once, store beside the payload.** `payload` is never rewritten
-(it is TOASTed; rewriting it doubles the write). Symbolicated frames go in
-`events.symbols`; the fingerprint and `error_location` are updated. ProGuard
-and source maps resolve in-process and inline at ingest when the mapping is
-cached; dSYM goes through the sidecar via the job worker. Uploading a symbol
-file re-queues the release's unsymbolicated events from the last
-`COMPRESS_AFTER` (updates must land before the chunk is compressed).
+**Symbolicate at ingest, store beside the payload.** `payload` is never
+rewritten (it is TOASTed; rewriting it doubles the write). Symbolicated
+frames go in `events.symbols`; `fingerprint` and `error_location` are
+computed on the resolved frames, so the issue is right from the first
+event. ProGuard and source maps resolve in-process (mappings are loaded
+from the database on first use and cached); dSYM goes through the sidecar
+with a per-envelope time budget (`ingest.SymbolicateBudget`) — only when
+the sidecar fails or runs out of time is a `symbolicate` job queued. An
+event with no mapping yet is stored as-is, without a job: uploading a
+symbol file re-queues the release's unsymbolicated events from the last
+`COMPRESS_AFTER` (`resymbolicate`), which may move them to a new issue.
 
 **Compression + retention are policies.** Chunks older than `COMPRESS_AFTER`
 (48 h) are compressed (`segmentby project_id, fingerprint`; typically
@@ -60,7 +68,15 @@ reconciled from the environment at startup (`internal/retention`).
 
 **Jobs live in Postgres.** `jobs` + `SELECT … FOR UPDATE SKIP LOCKED`. Kinds:
 `symbolicate {event}`, `resymbolicate {release}`, `alert {type, fingerprint}`.
-Retries with backoff, dropped after 8 attempts.
+Retries with backoff, dropped after 8 attempts. Workers wake on
+`NOTIFY crashcart_jobs` (a trigger on insert, fired at commit; one LISTEN
+connection per process — `store.Listener`) and poll every 30 s as the
+fallback; the SSE "new issues" stream wakes the same way on
+`crashcart_issues` (new issue / regression, payload = project id).
+
+**Rate limiting is in memory.** Fixed 60 s windows per credential, per
+process; with several replicas each enforces `RATE_LIMIT` on its own
+share.
 
 **Viewer is server-rendered.** templ + htmx; all state in the URL. Issue-
 centric: overview → issues → issue (stack, breakdown, events) → event;
@@ -73,13 +89,12 @@ theme, and the SSE "new issues" banner.
 | table | kind | key | notes |
 |---|---|---|---|
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
-| events | hypertable (1 day chunks) | id (µs) | compressed after 48 h |
-| sessions | hypertable | id (µs) | release-health inputs, `count` for aggregates |
+| events | hypertable (1 day chunks) | (project_id, event_id, occurred_at) | compressed after 48 h |
+| sessions | hypertable | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
 | issues | table | (project_id, fingerprint) | stateful |
 | symbol_files | table | (project_id, kind, release, filename) | BYTEA in Postgres |
 | jobs | table | id | queue |
 | alert_rules / alert_channels | table | | per project |
-| rate_limits | table | (key, window) | 60 s fixed windows |
 | event_stats_hourly | cagg | bucket, project, release, platform, level | events / crashes / errors |
 | issue_stats_hourly | cagg | bucket, project, fingerprint | sparklines |
 | release_health_daily | cagg | bucket, project, release | total / crashed / errored sessions |
@@ -93,14 +108,14 @@ refresh is per bucket, compression per chunk.
 
 ## Export / import
 
-Spec: `docs/export-format.md` (shared contract; change it before the code).
+Spec: `docs/reference/export-format.md` (change it before the code).
 
 `crashcart export` streams NDJSON: `{"t":"<table>", ...columns}`. Rows refer
-to projects by `project` slug (never by id), timestamps are unix ms, ids are
-integers, JSON columns are embedded, bytes are base64. `crashcart import`
-upserts (events/sessions `ON CONFLICT DO NOTHING`, everything else on its key),
-so importing twice or onto live data is safe. Aggregates are not exported;
-they recompute.
+to projects by `project` slug (never by id), timestamps are RFC3339 UTC,
+events / sessions carry their natural keys, JSON columns are embedded,
+bytes are base64. `crashcart import` upserts (events/sessions
+`ON CONFLICT DO NOTHING`, everything else on its key), so importing twice or
+onto live data is safe. Aggregates are not exported; they recompute.
 
 ## Plain-Postgres mode (Neon, Supabase, RDS, …)
 
@@ -114,12 +129,14 @@ it was created with.
 
 On plain Postgres the stats live in `*_rolled` tables and the names the
 queries use (`event_stats_hourly`, `issue_stats_hourly`,
-`release_health_daily`) are views: the rolled rows `UNION ALL` the current
-hour computed live from `events` / `sessions` — so every query, sqlc model and
-the API work unchanged. `retention.RollupRecent` (scheduler, every 10 minutes)
-re-rolls the last 3 complete hours; `RollupAll` rebuilds from the oldest row
-after `import` / `seed`; the sweep deletes `events` / `sessions` by id range
-in 5000-row batches.
+`release_health_daily`) are views: the rolled rows `UNION ALL` everything at
+or after the rollup watermark (`stats_rollup.watermark`, the end of the last
+rolled hour) computed live from `events` / `sessions` — so every query, sqlc
+model and the API work unchanged, and nothing goes missing between an hour
+rolling over and the next rollup. `retention.RollupRecent` (scheduler, every
+10 minutes) re-rolls the last 3 complete hours and advances the watermark;
+`RollupAll` rebuilds from the oldest row after `import` / `seed`; the sweep
+deletes `events` / `sessions` by time range in 5000-row batches.
 Trade-offs: no compression (budget 5–10× the storage), no chunk exclusion
 (the `(project_id, id)` indexes carry the range scans).
 

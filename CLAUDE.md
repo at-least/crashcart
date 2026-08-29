@@ -29,20 +29,20 @@ Local TimescaleDB for tests: `docker run -d --name crashcart-test-pg -e POSTGRES
 cmd/crashcart/        main.go: subcommands
 internal/
   config/             env → Config
-  pk/                 µs primary key ↔ time; bucket arithmetic
   sentry/             envelope parser, Frame, Fingerprint, ErrorLocation
   db/                 migrations/*.sql (0001 common; 0002_timescale / 0002_plain variants), sqlc_schema.sql (mirror for sqlc),
                       queries/*.sql → sqlc/ (generated), migrate.go
-  store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL)
-  auth/               Bearer, Basic, CORS, RateLimit, SentryKey
+  store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
+                      Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out)
+  auth/               Bearer, Basic, CORS, RateLimit (in-memory), SentryKey
   ingest/             POST /api/{id}/envelope|store; Ingest(); PII redaction
-  symbolicate/        proguard / sourcemap (in-process), dsym (sidecar client), Service (cache + Inline + job handler)
+  symbolicate/        proguard / sourcemap (in-process), dsym (sidecar client), Service (cache + Resolve at ingest + job handlers)
   jobs/               worker loop (SKIP LOCKED), handlers by kind
   alerts/             notifier (webhook, telegram), crash-spike scheduler
-  retention/          Timescale policy reconcile + sweeps (issues, jobs, rate_limits, symbol files)
+  retention/          Timescale policy reconcile + sweeps (issues, jobs, upload chunks, symbol files); plain-Postgres rollup
   api/                /api/projects/… JSON handlers, /api/0/… sentry-cli compat
   web/                templ views, handlers, state.go (URL ↔ ViewState), svg charts, assets/, styles/
-  export/             NDJSON export / import (format contract: docs/export-format.md)
+  export/             NDJSON export / import (format: docs/reference/export-format.md)
   seed/               demo data
   server/             mux wiring
   testdb/             TEST_DATABASE_URL helper: fresh schema per test
@@ -57,10 +57,15 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
   the migrations (it is the plain-SQL mirror sqlc parses; caggs appear as tables).
 - Hand-written SQL only in: migrations, `internal/store` (dynamic filters),
   `internal/export`, `internal/retention` (policy calls).
-- Time windows on hypertables are id ranges: `pk.Lower(from)` / `pk.Upper(to)`.
+- Time is `TIMESTAMPTZ` everywhere (`events.occurred_at`, `sessions.started_at`,
+  `issues.first_seen/last_seen`, aggregate `bucket`); windows are `[from, to)`
+  on those columns, buckets are UTC-aligned (`t.Truncate(width)` in Go matches
+  `time_bucket` / `date_trunc(…, 'UTC')`). Events are addressed by `event_id`;
+  event lists page with `store.Cursor` (`occurred_at` + `event_id`).
 - Nullable text columns are `*string` (sqlc `emit_pointers_for_null_types`);
   `TIMESTAMPTZ` → `time.Time`; `JSONB` → `json.RawMessage`.
-- API JSON is snake_case; times RFC3339 UTC; ids are integers (< 2^53).
+- API JSON is snake_case; times RFC3339 UTC; identity ids (projects, symbol
+  files, channels) are integers, events are keyed by `event_id`.
 - Viewer URL state lives in `web/state.go` (`ViewState.With*` return copies);
   HTML mutations require the `HX-Request` header (CSRF guard); `/api/*` needs
   Bearer auth when `API_KEYS` is set; the viewer needs basic auth when

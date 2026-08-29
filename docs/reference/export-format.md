@@ -1,13 +1,11 @@
 # CrashCart export format (NDJSON, format 1)
 
-This is the interchange contract between every CrashCart implementation
-(the Go/TimescaleDB server in this repo and any future one). An implementation is compatible when it can **write** a file that this
-document describes and **read** any such file, regardless of which
-implementation produced it. Implementations share this document, not code.
-
-The Go reference implementation is `internal/export/export.go`; its
-`TestRoundTrip` is the reference behaviour when this text is ambiguous.
-Change this document *before* changing either.
+The file `crashcart export` writes and `crashcart import` reads: a full,
+portable copy of one or all projects for backups and for moving between
+databases (TimescaleDB ↔ plain Postgres included). The Go implementation is
+`internal/export/export.go`; its `TestRoundTrip` is the reference behaviour
+when this text is ambiguous. Change this document *before* changing the
+code.
 
 ## Container
 
@@ -25,8 +23,8 @@ Change this document *before* changing either.
 _meta
 projects*            (all projects, sorted by slug)
 issues*              (per project in slug order; within a project by fingerprint)
-events*              (per project; by id ascending)
-sessions*            (per project; by id ascending)
+events*              (per project; by occurred_at, event_id ascending)
+sessions*            (per project; by started_at, sid ascending)
 symbol_files*        (per project; by kind, release, filename)
 alert_rules*         (per project; by type)
 alert_channels*      (per project; by insertion order)
@@ -40,41 +38,40 @@ above; the within-table sort is a determinism convenience, not a contract.
 
 | Column type | JSON |
 |---|---|
-| timestamp (`TIMESTAMPTZ`) | integer, unix **milliseconds** UTC |
-| time-series id (`events.id`, `sessions.id`) | integer, `unix_ms × 1000 + 0..999` (see *Ids*) |
+| timestamp (`TIMESTAMPTZ`) | string, RFC 3339 in UTC with fractional seconds as needed (`2026-08-20T09:59:00.000123Z`); readers accept any RFC 3339 offset |
 | counts / sizes | integer |
 | JSON / JSONB column | embedded JSON value (object or array), never a string |
 | bytes (`BYTEA`) | base64 string (standard alphabet, with padding) |
 | `NULL` | field **omitted**; readers also accept an explicit `null` |
 | boolean | `true` / `false` |
 
-## Ids
+## Keys
 
 Rows never carry a database identity id. A row refers to its project by
-`"project": "<slug>"`. Projects, symbol files and alert channels are
-identified by their natural keys (below), so a dump loads into any database.
+`"project": "<slug>"`. Every table is identified by its natural key (below),
+so a dump loads into any database:
 
-`events.id` and `sessions.id` are exported and kept on import. They encode
-the event time (`ms × 1000 + random 0..999`) and are the primary key, the
-time dimension, and the dedupe key. They stay below 2^53 until year 2255, so
-JavaScript `number` is safe.
+- events: `(project, event_id, occurred_at)` — the SDK's event id and timestamp
+- sessions: `(project, sid, started_at)` — the SDK's session id (aggregate rows carry a generated `agg-…` sid)
+- issues: `(project, fingerprint)`
+- projects: `slug`; symbol files: `(project, kind, release, filename)`;
+  alert rules: `(project, type)`; alert channels: `(project, kind, config)`
 
 ## `_meta`
 
 ```json
-{"t":"_meta","format":1,"exported_at":1756450000000,"app":"crashcart"}
+{"t":"_meta","format":1,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
 ```
 
 - `format` — integer. A reader that supports format *N* must refuse a file
   with `format > N` and must read `format ≤ N`.
-- `exported_at` — unix ms.
-- `app` — free-form producer name (`"crashcart"`, …). Readers must not branch on it.
+- `exported_at` — timestamp.
+- `app` — free-form producer name. Readers must not branch on it.
 
 ## Rows
 
 Required fields are those without `?`. `?` fields may be omitted (NULL).
-Types: `str`, `int`, `float`, `bool`, `json`, `b64`, `ms` (unix ms),
-`id` (time-series id).
+Types: `str`, `int`, `float`, `bool`, `json`, `b64`, `ts` (timestamp).
 
 ### `projects`
 
@@ -86,7 +83,7 @@ public_key        str    DSN public key; unique per database
 sample_keep_first int    default 100
 sample_rate       float  0 < x ≤ 1; default 1
 daily_quota?      int    default 100000
-created_at        ms
+created_at        ts
 ```
 
 Import: upsert on `slug`; all listed columns are replaced. Missing
@@ -107,24 +104,24 @@ platform?         str
 status            str    unresolved triaged resolved ignored regression; default unresolved
 event_count       int    events seen (including sampled-out)
 stored_count      int    events actually stored
-first_seen        ms
-last_seen         ms
+first_seen        ts
+last_seen         ts
 first_release?    str
 last_release?     str
 resolved_release? str
-created_at        ms
-updated_at        ms
+created_at        ts
+updated_at        ts
 ```
 
 Import: upsert on `(project, fingerprint)`. **Counts are replaced, not
-added.** `created_at`/`updated_at` of `0` or missing → now.
+added.** A missing timestamp → now.
 
 ### `events`
 
 ```
 project           str    slug
-id                id     required, ≠ 0
-event_id          str    Sentry event_id (32 hex)
+occurred_at       ts     required
+event_id          str    required; Sentry event_id (32 hex, or a derived "ts-…" id)
 level             str    fatal error warning info debug
 message           str
 platform?         str
@@ -147,22 +144,23 @@ payload           json   required; the raw Sentry event object, never rewritten
 symbols?          json   symbolicated frames (only when symbolicated)
 ```
 
-Import: insert; conflict on `id` → skip (`ON CONFLICT DO NOTHING`).
-`tags`/`breadcrumbs` missing or `null` → defaults. A row without `id` or
-`payload` is an error.
+Import: insert; conflict on `(project, event_id, occurred_at)` → skip
+(`ON CONFLICT DO NOTHING`). `tags`/`breadcrumbs` missing or `null` →
+defaults. A row without `occurred_at`, `event_id` or `payload` is an error.
 
 ### `sessions`
 
 ```
 project           str    slug
-id                id
+started_at        ts     required
+sid               str    required
 release           str
 environment?      str
 status            str    ok exited errored crashed abnormal
 count             int    ≥ 1 (aggregated session count); default 1
 ```
 
-Import: insert; conflict on `id` → skip.
+Import: insert; conflict on `(project, sid, started_at)` → skip.
 
 ### `symbol_files`
 
@@ -174,7 +172,7 @@ debug_id?         str
 filename          str
 size              int    bytes; 0 → derived from data
 data              b64
-uploaded_at       ms
+uploaded_at       ts
 ```
 
 Import: upsert on `(project, kind, release, filename)`; `debug_id`, `size`,
@@ -187,7 +185,7 @@ project           str    slug
 type              str    new_issue regression crash_spike
 enabled           bool
 cooldown_minutes  int
-last_triggered?   ms
+last_triggered?   ts
 ```
 
 Import: upsert on `(project, type)`.
@@ -198,7 +196,7 @@ Import: upsert on `(project, type)`.
 project           str    slug
 kind              str    webhook telegram
 config            json   object; kind-specific; default {}
-created_at        ms
+created_at        ts
 ```
 
 Import: insert only when no row with identical `(project, kind, config)`
@@ -207,9 +205,9 @@ exists (JSON equality, not string equality).
 ## Not exported
 
 Aggregates (`event_stats_hourly`, `issue_stats_hourly`,
-`release_health_daily` or their equivalents), the job queue, upload chunks
-and rate-limit buckets. Aggregates must be recomputable from `events` and
-`sessions`; the rest expire.
+`release_health_daily`), the job queue and upload chunks. Aggregates are
+recomputed after import (`crashcart import` refreshes them); the rest
+expire.
 
 ## Reader rules
 
@@ -228,11 +226,4 @@ and rate-limit buckets. Aggregates must be recomputable from `events` and
   Old readers ignore unknown fields and unknown `t`.
 - **Breaking change** (renamed/removed required field, changed encoding):
   bump `format`, keep reading the previous one for at least one release.
-- Update this file, then the Go implementation and its `TestRoundTrip`,
-  then the other implementations.
-
-## Compatibility testing
-
-Each implementation keeps a round-trip test (write → read → compare) and
-should also import a fixture produced by *another* implementation. Producing
-a fixture: `crashcart seed && crashcart export > export-v1.ndjson`.
+- Update this file, then the implementation and its `TestRoundTrip`.

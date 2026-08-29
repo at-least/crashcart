@@ -115,8 +115,6 @@ Issue object:
   "users": 391,
   "first_seen": "2026-08-20T11:02:13Z",
   "last_seen": "2026-08-29T08:41:55Z",
-  "first_seen_id": 1755687733000123,
-  "last_seen_id": 1756456915000842,
   "first_release": "2.4.0",
   "last_release": "2.4.1",
   "resolved_release": null,
@@ -140,10 +138,14 @@ The detail (`GET …/issues/{fingerprint}`, takes a window) adds:
     "os_version":   [ { "value": "18.0", "count": 601 } ],
     "environment":  [ { "value": "production", "count": 1284 } ]
   },
-  "latest_event_id": 1756456915000842,
-  "oldest_event_id": 1755687733000123
+  "latest_event_id": "e1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+  "oldest_event_id": "0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d"
 }
 ```
+
+`latest_event_id` / `oldest_event_id` are the newest and oldest *stored*
+events of the issue (`""` when none is stored), usable with
+`GET …/events/{event_id}`.
 
 `PATCH` and `bulk` accept any of the five statuses; `bulk` returns
 `{"updated": n, "status": "…"}`.
@@ -152,7 +154,7 @@ The detail (`GET …/issues/{fingerprint}`, takes a window) adds:
 
 ```
 GET /api/projects/{slug}/events
-GET /api/projects/{slug}/events/{id}
+GET /api/projects/{slug}/events/{event_id}
 ```
 
 List parameters (all optional):
@@ -163,17 +165,19 @@ List parameters (all optional):
 | `tag.<key>` | Exact match on a tag, e.g. `tag.tenant=acme` |
 | `q` | Substring match on the message |
 | `crash` | `1` / `true`: only unhandled (fatal) events |
-| `before` | Cursor: an event id; returns events older than it |
+| `before` | Cursor: the `next_before` of the previous page; returns the events after it (newest first) |
 | `limit` | Page size, default 50 |
 | `days`, `from`, `to` | Window. **When none is given the list is unbounded** and pages through all retained events by cursor |
 
-Response: `{"events": [...], "more": bool, "next_before": id | null}` —
-pass `next_before` as `before` for the next page.
+Response: `{"events": [...], "more": bool, "next_before": string | null}` —
+pass `next_before` as `before` for the next page (it is opaque:
+`<occurred_at RFC3339>_<event_id>`, URL-encode it).
 
-List items are summaries (id, `time`, level, title, release, environment,
-platform, user, device, OS, `fingerprint`, tags). The detail returns the
-full event row: the exception chain with original **and** symbolicated
-frames, breadcrumbs, tags, user, contexts, and the raw payload as received.
+List items are summaries (`event_id`, `occurred_at`, level, message,
+release, environment, platform, user, device, OS, `fingerprint`, tags),
+newest first. The detail (by the Sentry `event_id`) returns the full event
+row: the exception chain with original **and** symbolicated frames,
+breadcrumbs, tags, user, contexts, and the raw payload as received.
 
 
 ## Releases
