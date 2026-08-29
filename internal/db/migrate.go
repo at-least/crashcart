@@ -115,7 +115,7 @@ func MigrateMode(ctx context.Context, pool *pgxpool.Pool, mode Mode) (ran []stri
 		case Timescale:
 			variant = timescaleSuffix
 		default:
-			if _, err := conn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb"); err == nil {
+			if timescaleUsable(ctx, conn) {
 				variant = timescaleSuffix
 			} else {
 				variant = plainSuffix
@@ -192,4 +192,20 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	return pool, nil
+}
+
+// timescaleUsable reports whether the full TimescaleDB is available: the
+// extension can be created and it runs under the "timescale" (TSL) license.
+// Hosts such as Neon ship the Apache-2 build, where CREATE EXTENSION succeeds
+// but compression and continuous aggregates — everything 0002_timescale.sql
+// needs — fail with "functionality not supported under the current license".
+func timescaleUsable(ctx context.Context, conn *pgxpool.Conn) bool {
+	if _, err := conn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb"); err != nil {
+		return false
+	}
+	var license string
+	if err := conn.QueryRow(ctx, "SELECT current_setting('timescaledb.license', true)").Scan(&license); err != nil {
+		return false
+	}
+	return license == "timescale"
 }
