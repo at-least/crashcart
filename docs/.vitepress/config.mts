@@ -45,6 +45,7 @@ export default defineConfig({
             { text: 'Docker Compose on a VPS', link: '/deploy/docker' },
             { text: 'Go binary + systemd', link: '/deploy/binary' },
             { text: 'Kubernetes', link: '/deploy/kubernetes' },
+            { text: 'Fly.io + Neon', link: '/deploy/fly' },
             { text: 'Serverless (Cloudflare)', link: '/deploy/serverless' },
             { text: 'Before going live', link: '/deploy/checklist' },
           ],

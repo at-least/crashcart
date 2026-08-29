@@ -40,8 +40,4 @@ Take the provider's connection URL as `DATABASE_URL`:
 DATABASE_URL=postgres://user:pass@host/crashcart?sslmode=require
 ```
 
-A zero-ops setup is the CrashCart Docker image on Cloud Run or Fly.io with
-`DATABASE_URL` pointing at Neon. Because CrashCart does its housekeeping
-in the background, on a scale-to-zero host run
-[`crashcart retention` and `crashcart alerts` from cron](./operations#running-without-a-long-lived-server)
-instead.
+For a zero-ops setup see [Fly.io + Neon](./fly).
