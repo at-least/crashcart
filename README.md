@@ -36,7 +36,7 @@ and follow [Go binary + systemd](https://crashcart.app/deploy/binary).
 - **Your data, portable** — one command exports everything to a plain file
   that restores into any CrashCart
 
-Runs on plain Postgres (Neon, Supabase, RDS, …) or TimescaleDB.
+Needs Postgres 16+ with TimescaleDB (the `timescale/timescaledb` image, or Tiger Cloud).
 
 ## Learn more
 

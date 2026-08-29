@@ -41,12 +41,7 @@ func New(t testing.TB) *store.Store {
 		t.Fatal(err)
 	}
 	// TEST_PLAIN=1 runs the suite on the plain-Postgres schema variant.
-	mode := db.Timescale
-	if os.Getenv("TEST_PLAIN") != "" {
-		mode = db.Plain
-	}
-	_, plain, err := db.MigrateMode(ctx, pool, mode)
-	if err != nil {
+	if _, err := db.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -55,9 +50,7 @@ func New(t testing.TB) *store.Store {
 		admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
 		admin.Close()
 	})
-	st := store.New(pool)
-	st.Plain = plain
-	return st
+	return store.New(pool)
 }
 
 // Projects creates placeholder projects with the given ids so rows that

@@ -17,7 +17,7 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/guide/introduction', activeMatch: '/guide/' },
-      { text: 'Install', link: '/deploy/which-edition', activeMatch: '/deploy/' },
+      { text: 'Install', link: '/deploy/docker', activeMatch: '/deploy/' },
       { text: 'Reference', link: '/reference/cli', activeMatch: '/reference/' },
     ],
 
@@ -48,22 +48,9 @@ export default defineConfig({
         {
           text: 'Install',
           items: [
-            { text: 'Which database?', link: '/deploy/which-edition' },
-          ],
-        },
-        {
-          text: 'TimescaleDB',
-          items: [
             { text: 'Docker Compose on a VPS', link: '/deploy/docker' },
             { text: 'Go binary + systemd', link: '/deploy/binary' },
             { text: 'Kubernetes', link: '/deploy/kubernetes' },
-          ],
-        },
-        {
-          text: 'Plain Postgres',
-          items: [
-            { text: 'Fly.io + Neon', link: '/deploy/fly' },
-            { text: 'Managed Postgres providers', link: '/deploy/managed-postgres' },
           ],
         },
         {
@@ -72,7 +59,7 @@ export default defineConfig({
             { text: 'Before going live', link: '/deploy/checklist' },
             { text: 'Security & privacy', link: '/deploy/security' },
             { text: 'Configuration', link: '/deploy/configuration' },
-            { text: 'Postgres options', link: '/deploy/postgres' },
+            { text: 'The database', link: '/deploy/postgres' },
             { text: 'Operations', link: '/deploy/operations' },
           ],
         },

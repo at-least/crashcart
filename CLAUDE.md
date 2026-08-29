@@ -7,7 +7,7 @@ Platform — never "log entry", "error group", "app version", "OS").
 ## Stack
 
 Go 1.24+ (std `net/http` mux, pgx/v5, sqlc, templ), Postgres 16 +
-TimescaleDB (optional — used when available, plain Postgres otherwise), htmx + Tailwind v4 + shadless for the viewer.
+TimescaleDB (required: Community build), htmx + Tailwind v4 + shadless for the viewer.
 Optional: dSYM symbolication sidecar (`container/symbolicate`).
 
 ## Commands
@@ -30,7 +30,7 @@ cmd/crashcart/        main.go: subcommands
 internal/
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, ErrorLocation
-  db/                 migrations/*.sql (0001 common; 0002_timescale / 0002_plain variants), sqlc_schema.sql (mirror for sqlc),
+  db/                 migrations/*.sql, sqlc_schema.sql (mirror for sqlc; caggs appear as tables),
                       queries/*.sql → sqlc/ (generated), migrate.go
   store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out)
@@ -39,7 +39,7 @@ internal/
   symbolicate/        proguard / sourcemap (in-process), dsym (sidecar client), Service (cache + Resolve at ingest + job handlers)
   jobs/               worker loop (SKIP LOCKED), handlers by kind
   alerts/             notifier (webhook, telegram), crash-spike scheduler
-  retention/          Timescale policy reconcile + sweeps (issues, jobs, upload chunks, symbol files); plain-Postgres rollup
+  retention/          Timescale policy reconcile + sweeps (issues, jobs, upload chunks, symbol files)
   api/                /api/projects/… JSON handlers, /api/0/… sentry-cli compat
   web/                templ views, handlers, state.go (URL ↔ ViewState), svg charts, assets/, styles/
   export/             NDJSON export / import (format: docs/reference/export-format.md)
@@ -52,9 +52,8 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
 ## Conventions
 
 - Regenerate after editing: `sqlc generate` (queries or `sqlc_schema.sql`),
-  `templ generate` (`.templ`). `TEST_PLAIN=1 make test-db` runs the suite on plain Postgres (no
-  TimescaleDB; `TIMESCALE=off`). Keep `internal/db/sqlc_schema.sql` in sync with
-  the migrations (it is the plain-SQL mirror sqlc parses; caggs appear as tables).
+  `templ generate` (`.templ`). Keep `internal/db/sqlc_schema.sql` in sync with
+  the migration (it is the plain-SQL mirror sqlc parses; caggs appear as tables).
 - Hand-written SQL only in: migrations, `internal/store` (dynamic filters),
   `internal/export`, `internal/retention` (policy calls).
 - Time is `TIMESTAMPTZ` everywhere (`events.occurred_at`, `sessions.started_at`,

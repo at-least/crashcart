@@ -50,7 +50,7 @@ you decide.
 There is no import of historical Sentry data; issues and events start
 fresh. The move is small:
 
-1. [Install CrashCart](/deploy/which-edition) and create one project per
+1. [Install CrashCart](/deploy/docker) and create one project per
    app and platform.
 2. Replace the DSN in each app with the CrashCart one. Ship a release.
 3. Point `sentry-cli` (or the Gradle plugin) at CrashCart for symbol

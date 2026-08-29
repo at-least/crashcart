@@ -17,9 +17,9 @@ type Config struct {
 
 	APIKeys        []string // Bearer keys for /api/*; empty = open
 	ViewerPassword string   // HTTP basic auth for the viewer; "" = open
-	CORSOrigin     string // SDK ingest endpoints (browser SDKs); "*" by default
-	APICORSOrigin  string // /api/* JSON API; "" = no CORS headers (same-origin / non-browser callers)
-	RateLimit      int // requests / minute / credential; 0 = off
+	CORSOrigin     string   // SDK ingest endpoints (browser SDKs); "*" by default
+	APICORSOrigin  string   // /api/* JSON API; "" = no CORS headers (same-origin / non-browser callers)
+	RateLimit      int      // requests / minute / credential; 0 = off
 
 	RetentionDays    int
 	CompressAfter    time.Duration
@@ -29,7 +29,6 @@ type Config struct {
 	TelegramBotToken string
 	PIIRedact        bool
 	CustomTags       []string // tag keys the viewer shows as filters
-	Timescale        string   // "auto" (default) | "on" | "off" — see internal/db.ParseMode
 }
 
 // Load reads the environment. It fails only on unparseable values; missing
@@ -47,7 +46,6 @@ func Load() (Config, error) {
 		TelegramBotToken: get("TELEGRAM_BOT_TOKEN", ""),
 		PIIRedact:        get("PII_REDACT", "false") == "true",
 		CustomTags:       SplitCSV(get("CUSTOM_TAGS", "")),
-		Timescale:        get("TIMESCALE", "auto"),
 	}
 	var err error
 	if c.RateLimit, err = intEnv("RATE_LIMIT", 600); err != nil {

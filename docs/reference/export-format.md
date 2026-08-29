@@ -2,7 +2,7 @@
 
 The file `crashcart export` writes and `crashcart import` reads: a full,
 portable copy of one or all projects for backups and for moving between
-databases (TimescaleDB ↔ plain Postgres included). The Go implementation is
+databases. The Go implementation is
 `internal/export/export.go`; its `TestRoundTrip` is the reference behaviour
 when this text is ambiguous. Change this document *before* changing the
 code.

@@ -14,9 +14,6 @@ import (
 func TestReconcile(t *testing.T) {
 	st := testdb.New(t)
 	testdb.Projects(t, st, 1)
-	if st.Plain {
-		t.Skip("plain Postgres has no policies")
-	}
 	ctx := context.Background()
 	log := slog.Default()
 	cfg := config.Config{RetentionDays: 14, CompressAfter: 36 * time.Hour}
@@ -154,73 +151,5 @@ func TestRefreshAggregates(t *testing.T) {
 	}
 	if crashes != 1 {
 		t.Fatalf("crashes after refresh = %d, want 1", crashes)
-	}
-}
-
-func TestRollupPlain(t *testing.T) {
-	st := testdb.New(t)
-	testdb.Projects(t, st, 1)
-	if !st.Plain {
-		t.Skip("TEST_PLAIN=1 only")
-	}
-	ctx := context.Background()
-	now := time.Now().UTC()
-	// Two crashes in a complete hour, one in the live hour, one session
-	// yesterday. On a fresh database nothing is rolled, so everything is live.
-	insert := func(at time.Time, eid, level string) {
-		if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, handled, release, payload) VALUES ($1, 1, $2, $3, 'm', false, '1.0', '{}')`, at, eid, level); err != nil {
-			t.Fatal(err)
-		}
-	}
-	insert(now.Add(-2*time.Hour), "e1", "fatal")
-	insert(now.Add(-2*time.Hour), "e2", "error")
-	insert(now, "e3", "fatal")
-	if _, err := st.Pool.Exec(ctx, `INSERT INTO sessions (started_at, project_id, sid, release, status, count) VALUES ($1, 1, 's1', '1.0', 'crashed', 3)`, now.Add(-24*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	var live int64
-	st.Pool.QueryRow(ctx, "SELECT coalesce(sum(crashes), 0) FROM event_stats_hourly WHERE project_id = 1").Scan(&live)
-	if live != 3 {
-		t.Fatalf("before any rollup everything is live: crashes = %d", live)
-	}
-	if err := RollupRecent(ctx, st, now); err != nil {
-		t.Fatal(err)
-	}
-	var crashes, rolled int64
-	st.Pool.QueryRow(ctx, "SELECT coalesce(sum(crashes), 0) FROM event_stats_hourly WHERE project_id = 1").Scan(&crashes)
-	st.Pool.QueryRow(ctx, "SELECT count(*) FROM event_stats_hourly_rolled WHERE project_id = 1").Scan(&rolled)
-	if crashes != 3 || rolled != 2 {
-		t.Fatalf("after rollup: crashes = %d (want 3), rolled rows = %d (want 2)", crashes, rolled)
-	}
-	var wm time.Time
-	st.Pool.QueryRow(ctx, "SELECT watermark FROM stats_rollup").Scan(&wm)
-	if !wm.Equal(now.Truncate(time.Hour)) {
-		t.Fatalf("watermark = %v, want %v", wm, now.Truncate(time.Hour))
-	}
-	// Idempotent, and RollupAll reaches yesterday's session.
-	if err := RollupRecent(ctx, st, now); err != nil {
-		t.Fatal(err)
-	}
-	st.Pool.QueryRow(ctx, "SELECT coalesce(sum(crashes), 0) FROM event_stats_hourly WHERE project_id = 1").Scan(&crashes)
-	if crashes != 3 {
-		t.Fatalf("second rollup changed the sums: %d", crashes)
-	}
-	if err := RollupAll(ctx, st, now); err != nil {
-		t.Fatal(err)
-	}
-	var total int64
-	st.Pool.QueryRow(ctx, "SELECT coalesce(sum(total), 0) FROM release_health_daily WHERE project_id = 1").Scan(&total)
-	if total != 3 {
-		t.Fatalf("release health after RollupAll = %d, want 3", total)
-	}
-	// Sweep deletes by time range on plain.
-	cfg := config.Config{RetentionDays: 1}
-	if err := Sweep(ctx, st, cfg, slog.Default()); err != nil {
-		t.Fatal(err)
-	}
-	var sessions int64
-	st.Pool.QueryRow(ctx, "SELECT count(*) FROM sessions").Scan(&sessions)
-	if sessions != 0 {
-		t.Fatalf("sessions after sweep = %d, want 0", sessions)
 	}
 }

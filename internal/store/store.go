@@ -16,9 +16,6 @@ import (
 type Store struct {
 	Pool *pgxpool.Pool
 	*sqlc.Queries
-	// Plain is true on plain Postgres (no TimescaleDB): stats come from the
-	// rollup tables (internal/retention) instead of continuous aggregates.
-	Plain bool
 }
 
 // New builds a Store on an open pool.
@@ -43,12 +40,11 @@ func (s *Store) Tx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx, 
 const (
 	LeaderSpikeCheck int64 = 0x63726173 + 1 // "cras" + n
 	LeaderSweep      int64 = 0x63726173 + 2
-	LeaderRollup     int64 = 0x63726173 + 3
 )
 
 // RunAsLeader runs fn while holding the session advisory lock key, and
 // reports false without running it when another replica holds the lock —
-// so scheduled work (sweeps, rollups, spike checks) runs once per
+// so scheduled work (sweeps, spike checks) runs once per
 // deployment, not once per replica.
 func (s *Store) RunAsLeader(ctx context.Context, key int64, fn func()) (bool, error) {
 	conn, err := s.Pool.Acquire(ctx)

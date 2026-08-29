@@ -1,46 +1,43 @@
-# Postgres options
+# The database
 
-CrashCart needs Postgres 16 or newer. TimescaleDB is optional.
+CrashCart needs **Postgres 16 or newer with TimescaleDB** — the Community
+build (`timescaledb.license = timescale`), which is what gives compressed
+storage (5–10× smaller after 48 h), free retention (a day's chunk is
+dropped, not deleted row by row) and the pre-computed stats behind the
+overview and release-health pages. This is what the Docker Compose and
+Kubernetes installs run.
 
-## With or without TimescaleDB
+## Where to get it
 
-CrashCart uses TimescaleDB when it's available and plain Postgres
-otherwise. Nothing changes in how you use it. The difference:
+| | |
+|---|---|
+| Self-hosted | The [`timescale/timescaledb`](https://hub.docker.com/r/timescale/timescaledb) image, or the [TimescaleDB package](https://docs.tigerdata.com/self-hosted/latest/install/) for your distro next to your own Postgres |
+| Managed | [Tiger Cloud](https://www.tigerdata.com/) (formerly Timescale Cloud) |
 
-| | Plain Postgres | With TimescaleDB |
-|---|---|---|
-| Works on | Neon, Supabase, RDS, Cloud SQL, a local `apt install postgresql` | The `timescale/timescaledb` image (what Docker Compose uses), Timescale Cloud, self-managed |
-| Storage | 5–10× more (no compression) | Compressed after 48 h |
-| Matters at | — | Tens of millions of events a month |
-
-Below a few million events a month there is no practical difference.
-Pick whatever Postgres you already have. Note that most managed hosts
-ship the Apache-2 build of TimescaleDB, which has no compression;
-CrashCart treats it as plain Postgres. Provider by provider:
-[Managed Postgres providers](./managed-postgres).
-
-The choice is made the first time CrashCart starts against a database and
-stays. To switch later, [export and import](./operations#moving-to-another-database)
-into a new database.
-
-The `TIMESCALE` variable controls detection: `auto` (default), `on` or
-`off`.
+Most other managed Postgres hosts (Neon, Supabase, RDS, Cloud SQL, Azure,
+Aiven, Render, …) either don't offer the extension or ship the Apache-2
+build, which loads but refuses compression and continuous aggregates.
+CrashCart checks the license on startup and refuses to start against
+those, so you find out immediately rather than at the first compression
+job.
 
 ## Permissions
 
-The database user needs to create tables. On hosts that offer TimescaleDB,
-either let the user create the extension or create it once as an admin:
+The database user needs to create tables and the extension. On a host
+where the user cannot create extensions, create it once as an admin:
 
 ```sql
 CREATE EXTENSION timescaledb;
 ```
 
-## Managed Postgres
+## Connection
 
-Take the provider's connection URL as `DATABASE_URL`:
+Take the connection URL as `DATABASE_URL`:
 
 ```
 DATABASE_URL=postgres://user:pass@host/crashcart?sslmode=require
 ```
 
-For a zero-ops setup see [Fly.io + Neon](./fly).
+Compression, chunk retention (`RETENTION_DAYS`, `COMPRESS_AFTER`) and the
+stats refresh are TimescaleDB policies — they run inside the database and
+need no cron on your side. See [Configuration](./configuration).

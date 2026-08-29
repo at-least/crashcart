@@ -3,10 +3,10 @@
 CrashCart, Postgres and Caddy (for automatic HTTPS) on one Linux server.
 Every step below has been run as written on a fresh Ubuntu machine.
 
-::: info Storage: Go edition + TimescaleDB
-The compose file runs the `timescale/timescaledb` image, so you get
-compressed storage and free retention — comfortable at tens of millions
-of events a month. See [three ways your data is stored](./which-edition#timescaledb-and-compression).
+::: info Storage: TimescaleDB
+The compose file runs the `timescale/timescaledb` image: compressed
+storage and free retention — comfortable at tens of millions of events a
+month. See [The database](./postgres).
 :::
 
 **You need**

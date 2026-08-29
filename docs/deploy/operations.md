@@ -57,7 +57,7 @@ crashes later, so nothing is lost for a short burst.
 
 ## Moving to another database
 
-There is no in-place switch between plain Postgres and TimescaleDB:
+Export, then import into the new database:
 
 ```sh
 crashcart export > dump.ndjson

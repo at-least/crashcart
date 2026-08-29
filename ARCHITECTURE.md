@@ -96,8 +96,8 @@ connection per process — `store.Listener`) and poll every 30 s as the
 fallback; the SSE "new issues" stream wakes the same way on
 `crashcart_issues` (new issue / regression, payload = project id).
 
-**Scheduled work runs on one replica.** The spike check, the retention
-sweep and the plain-Postgres rollup tick in every process, but each tick
+**Scheduled work runs on one replica.** The spike check and the retention
+sweep tick in every process, but each tick
 takes a Postgres advisory lock (`store.RunAsLeader`) and skips when another
 replica holds it.
 
@@ -148,27 +148,12 @@ bytes are base64. `crashcart import` upserts (events/sessions
 transaction, so importing twice or onto live data is safe and a failed
 import changes nothing. Aggregates are not exported; they recompute.
 
-## Plain-Postgres mode (Neon, Supabase, RDS, …)
+## Why TimescaleDB is required
 
-Managed Postgres cannot run the Community (TSL) half of TimescaleDB (Neon ships
-the Apache-2 edition only; Supabase removed the extension on PG17), so the
-schema has two variants chosen by the migrator (`internal/db`): `0001_init.sql`
-is common, then exactly one of `0002_timescale.sql` (hypertables, compression,
-continuous aggregates) or `0002_plain.sql`. `TIMESCALE=auto` (default) probes
-`CREATE EXTENSION`; `on` / `off` force a variant. A database keeps the variant
-it was created with.
-
-On plain Postgres the stats live in `*_rolled` tables and the names the
-queries use (`event_stats_hourly`, `issue_stats_hourly`,
-`release_health_daily`) are views: the rolled rows `UNION ALL` everything at
-or after the rollup watermark (`stats_rollup.watermark`, the end of the last
-rolled hour) computed live from `events` / `sessions` — so every query, sqlc
-model and the API work unchanged, and nothing goes missing between an hour
-rolling over and the next rollup. `retention.RollupRecent` (scheduler, every
-10 minutes) re-rolls the last 3 complete hours and advances the watermark;
-`RollupAll` rebuilds from the oldest row after `import` / `seed`; the sweep
-deletes `events` / `sessions` by time range in 5000-row batches.
-Trade-offs: no compression (budget 5–10× the storage), no chunk exclusion
-(the `(project_id, id)` indexes carry the range scans).
-
-`TEST_PLAIN=1` runs the whole test suite on the plain variant.
+The schema depends on the Community (TSL) half of TimescaleDB: compression
+(`segmentby project_id, fingerprint`), chunk-drop retention and continuous
+aggregates with real-time aggregation. The migrator (`internal/db`) creates
+the extension and checks `timescaledb.license = 'timescale'`; a database
+with the Apache-2 build (what most managed hosts ship) or without the
+extension is refused at startup with `ErrNoTimescale`. There is one schema
+(`0001_init.sql`), one stats path and one test run.

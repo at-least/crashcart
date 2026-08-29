@@ -28,8 +28,8 @@ subcommand is given.
 ## `migrate`
 
 Applies pending migrations and exits. Useful in a deploy pipeline step, or
-to prepare a database before `import`. Chooses the TimescaleDB or plain
-variant on first run according to `TIMESCALE`.
+to prepare a database before `import`. Fails when the database has no
+TimescaleDB Community build (see [The database](/deploy/postgres)).
 
 ## `retention`
 

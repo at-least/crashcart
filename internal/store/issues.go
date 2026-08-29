@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
 

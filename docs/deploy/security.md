@@ -39,7 +39,7 @@ replays are discarded on arrival.
 | `/health` | none | Returns only status |
 
 CrashCart does not terminate TLS. Put Caddy, nginx or a load balancer in
-front; every [install guide](/deploy/which-edition) does this.
+front; every [install guide](/deploy/docker) does this.
 
 ## Limits that protect you
 

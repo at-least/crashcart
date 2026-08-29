@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/store"
 )

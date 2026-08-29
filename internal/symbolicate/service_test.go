@@ -15,8 +15,8 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/jobs"
 	"github.com/crashcartapp/crashcart/internal/ingest"
+	"github.com/crashcartapp/crashcart/internal/jobs"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"

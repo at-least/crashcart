@@ -13,8 +13,8 @@ hero:
       text: Compared to Sentry
       link: /guide/compared-to-sentry
     - theme: alt
-      text: Which database?
-      link: /deploy/which-edition
+      text: Install
+      link: /deploy/docker
     - theme: alt
       text: GitHub
       link: https://github.com/crashcartapp/crashcart
@@ -25,7 +25,7 @@ features:
     details: Keep the SDKs you already ship — iOS, Android, Flutter, React Native, web and backend. CrashCart speaks the envelope protocol; the viewer, API and data model are its own.
   - icon: 📦
     title: Run it your way
-    details: One Go binary and a Postgres — Docker Compose on a VPS, Kubernetes, or Fly.io with a free Neon database. TimescaleDB for volume, any managed Postgres for zero ops.
+    details: One Go binary and one Postgres with TimescaleDB — Docker Compose on a VPS, Kubernetes, or Tiger Cloud. Compressed storage, retention that costs nothing.
   - icon: 🧭
     title: Issue-centric viewer
     details: Overview, issues grouped by fingerprint, stack traces, breakdowns by release / device / OS, release health with crash-free rates. Server-rendered, keyboard triage.

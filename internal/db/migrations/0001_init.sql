@@ -1,11 +1,11 @@
--- CrashCart schema: the tables every deployment has. The migrator then
--- applies exactly one of 0002_timescale.sql (hypertables, compression,
--- continuous aggregates) or 0002_plain.sql (plain Postgres: rolled-up
--- stats tables behind views with a live current hour) — see internal/db.
---
--- Time-series tables (events, sessions) carry their time in a TIMESTAMPTZ
--- column that is the hypertable dimension; a time window is a range on it.
--- Their unique key includes that column (a hypertable requires it).
+-- CrashCart schema. Requires TimescaleDB (Community build: compression and
+-- continuous aggregates). Time-series tables (events, sessions) carry
+-- their time in a TIMESTAMPTZ column that is the hypertable dimension; a
+-- time window is a range on it. Their unique key includes that column (a
+-- hypertable requires it). Hypertables, compression settings and the
+-- continuous aggregates follow the tables at the end of this file.
+
+CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- The one definition of "crash": fatal, or an unhandled exception. Used by
 -- the continuous aggregates, the spike check and the event filters.
@@ -206,3 +206,74 @@ CREATE TRIGGER issues_notify_insert AFTER INSERT ON issues
 CREATE TRIGGER issues_notify_regression AFTER UPDATE OF status ON issues
     FOR EACH ROW WHEN (NEW.status = 'regression' AND OLD.status IS DISTINCT FROM NEW.status)
     EXECUTE FUNCTION crashcart_notify_issue();
+
+-- ── hypertables, compression, continuous aggregates ────────────────────
+
+SELECT create_hypertable('events', 'occurred_at', chunk_time_interval => INTERVAL '1 day', if_not_exists => true);
+ALTER TABLE events SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'project_id, fingerprint',
+    timescaledb.compress_orderby = 'occurred_at DESC'
+);
+
+SELECT create_hypertable('sessions', 'started_at', chunk_time_interval => INTERVAL '1 day', if_not_exists => true);
+ALTER TABLE sessions SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'project_id, release',
+    timescaledb.compress_orderby = 'started_at DESC'
+);
+
+-- ── continuous aggregates ──────────────────────────────────────────────
+-- Buckets are TIMESTAMPTZ starts (UTC-aligned). Real-time aggregation is
+-- on so the newest bucket includes rows not yet materialized.
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS event_stats_hourly
+WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
+SELECT time_bucket(INTERVAL '1 hour', occurred_at) AS bucket,
+       project_id,
+       COALESCE(release, '')  AS release,
+       COALESCE(platform, '') AS platform,
+       level,
+       count(*)                                                        AS events,
+       count(*) FILTER (WHERE crashcart_is_crash(level, handled))        AS crashes,
+       count(*) FILTER (WHERE level = 'error' AND handled IS NOT false) AS errors
+FROM events
+GROUP BY 1, 2, 3, 4, 5
+WITH NO DATA;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS issue_stats_hourly
+WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
+SELECT time_bucket(INTERVAL '1 hour', occurred_at) AS bucket,
+       project_id,
+       fingerprint,
+       count(*) AS events
+FROM events
+WHERE fingerprint IS NOT NULL
+GROUP BY 1, 2, 3
+WITH NO DATA;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS release_health_daily
+WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
+SELECT time_bucket(INTERVAL '1 day', started_at) AS bucket,
+       project_id,
+       release,
+       sum(count)                                                    AS total,
+       sum(count) FILTER (WHERE status = 'crashed')                  AS crashed,
+       sum(count) FILTER (WHERE status IN ('errored', 'abnormal'))   AS errored
+FROM sessions
+GROUP BY 1, 2, 3
+WITH NO DATA;
+
+-- Refresh: every 5 minutes, re-materialize the last 3 hours / 3 days.
+SELECT add_continuous_aggregate_policy('event_stats_hourly',
+    start_offset => INTERVAL '3 hours', end_offset => INTERVAL '1 minute',
+    schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
+SELECT add_continuous_aggregate_policy('issue_stats_hourly',
+    start_offset => INTERVAL '3 hours', end_offset => INTERVAL '1 minute',
+    schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
+SELECT add_continuous_aggregate_policy('release_health_daily',
+    start_offset => INTERVAL '3 days', end_offset => INTERVAL '1 minute',
+    schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
+
+-- Retention and compression policies are reconciled at startup from
+-- RETENTION_DAYS (see internal/retention), not fixed here.

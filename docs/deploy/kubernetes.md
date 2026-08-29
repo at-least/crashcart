@@ -4,12 +4,11 @@ CrashCart as a Deployment behind an Ingress, with Postgres either managed
 or as a small in-cluster StatefulSet. The manifests below were applied as
 written on a fresh cluster.
 
-::: info Storage: depends on the Postgres you point it at
+::: info Storage: TimescaleDB
 The in-cluster `postgres.yaml` below runs TimescaleDB: compressed
-storage, free retention. A managed Postgres (Neon, RDS, Cloud SQL, …)
-runs in plain mode — simpler to operate, but no compression, comfortable
-to a few million events a month. See
-[three ways your data is stored](./which-edition#timescaledb-and-compression).
+storage, free retention. A managed database works too as long as it runs
+the TimescaleDB Community build (Tiger Cloud). See
+[The database](./postgres).
 :::
 
 **You need**
@@ -135,7 +134,7 @@ spec:
   #     secretName: crashcart-tls
 ```
 
-If you're using a **managed Postgres** (Neon, RDS, Cloud SQL, …), set
+If you're using a **managed TimescaleDB** (Tiger Cloud), set
 `DATABASE_URL` in the Secret to its connection string and skip the next
 file.
 
