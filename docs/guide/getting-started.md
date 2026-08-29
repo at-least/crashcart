@@ -1,8 +1,8 @@
 # Getting started
 
-This page takes you from nothing to a crash in the viewer. It uses Docker
-Compose; for production see [Docker Compose](/deploy/docker) or
-[Go binary + systemd](/deploy/binary).
+This page takes you from nothing to a crash in the viewer on your own
+machine. For a real server, follow [Docker Compose on a VPS](/deploy/docker)
+or [Go binary + systemd](/deploy/binary) instead.
 
 ## 1. Run CrashCart
 
@@ -78,5 +78,5 @@ docker compose exec crashcart /crashcart seed
 - [Symbolication](./symbolication) — upload ProGuard mappings, source maps
   or dSYMs so stack traces show real file names and lines.
 - [Alerts](./alerts) — get told about new issues and crash spikes.
-- [Docker Compose in production](/deploy/docker) — API keys, viewer
-  password, public URL, retention.
+- [Install on a server](/deploy/docker) — with HTTPS, API keys and a
+  viewer password.

@@ -1,7 +1,8 @@
 # Go binary + systemd
 
 Run CrashCart as a plain service on a Linux host, with Postgres installed
-on the same machine or provided by a managed service.
+on the same machine or provided by a managed service. Prefer containers?
+See [Docker Compose on a VPS](./docker).
 
 ## 1. Get the binary
 
@@ -110,7 +111,8 @@ sudo -u crashcart env $(sudo cat /etc/crashcart.env | xargs) crashcart project s
 ```
 
 or open `https://crashcart.example.com` and create it in the viewer. Then
-follow [Connect an SDK](/guide/sdks).
+follow [Connect an SDK](/guide/sdks), and go through
+[Before going live](./checklist) once.
 
 ## Upgrading
 

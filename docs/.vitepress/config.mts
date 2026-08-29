@@ -17,7 +17,7 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/guide/introduction', activeMatch: '/guide/' },
-      { text: 'Deploy', link: '/deploy/docker', activeMatch: '/deploy/' },
+      { text: 'Install', link: '/deploy/docker', activeMatch: '/deploy/' },
       { text: 'Reference', link: '/reference/cli', activeMatch: '/reference/' },
     ],
 
@@ -40,14 +40,20 @@ export default defineConfig({
       ],
       '/deploy/': [
         {
-          text: 'Deploy',
+          text: 'Install',
           items: [
-            { text: 'Docker Compose', link: '/deploy/docker' },
+            { text: 'Docker Compose on a VPS', link: '/deploy/docker' },
             { text: 'Go binary + systemd', link: '/deploy/binary' },
-            { text: 'Postgres options', link: '/deploy/postgres' },
+            { text: 'Serverless (Cloudflare)', link: '/deploy/serverless' },
+            { text: 'Before going live', link: '/deploy/checklist' },
+          ],
+        },
+        {
+          text: 'Operate',
+          items: [
             { text: 'Configuration', link: '/deploy/configuration' },
+            { text: 'Postgres options', link: '/deploy/postgres' },
             { text: 'Operations', link: '/deploy/operations' },
-            { text: 'Serverless edition', link: '/deploy/serverless' },
           ],
         },
       ],
