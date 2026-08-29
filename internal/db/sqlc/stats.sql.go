@@ -31,39 +31,53 @@ func (q *Queries) AddProjectUsage(ctx context.Context, arg AddProjectUsageParams
 	return events, err
 }
 
-const crashSpikeInputs = `-- name: CrashSpikeInputs :one
-SELECT (SELECT count(*) FROM events e
-         WHERE e.project_id = $1::bigint AND e.occurred_at >= $2::timestamptz
-           AND crashcart_is_crash(e.level, e.handled))::bigint AS recent,
-       COALESCE((SELECT sum(h.crashes) FROM event_stats_hourly h
-                  WHERE h.project_id = $1::bigint
-                    AND h.bucket >= $3::timestamptz AND h.bucket < $4::timestamptz), 0)::bigint AS baseline
+const crashSpikeInputs = `-- name: CrashSpikeInputs :many
+WITH recent AS (
+    SELECT project_id, count(*) AS n FROM events
+    WHERE occurred_at >= $1::timestamptz AND crashcart_is_crash(level, handled)
+    GROUP BY project_id),
+baseline AS (
+    SELECT project_id, sum(crashes) AS n FROM event_stats_hourly
+    WHERE bucket >= $2::timestamptz AND bucket < $3::timestamptz
+    GROUP BY project_id)
+SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
+       COALESCE(recent.n, 0)::bigint AS recent, COALESCE(baseline.n, 0)::bigint AS baseline
+FROM recent FULL OUTER JOIN baseline USING (project_id)
 `
 
 type CrashSpikeInputsParams struct {
-	ProjectID    int64     `json:"project_id"`
 	RecentFrom   time.Time `json:"recent_from"`
 	BaselineFrom time.Time `json:"baseline_from"`
 	BaselineTo   time.Time `json:"baseline_to"`
 }
 
 type CrashSpikeInputsRow struct {
-	Recent   int64 `json:"recent"`
-	Baseline int64 `json:"baseline"`
+	ProjectID int64 `json:"project_id"`
+	Recent    int64 `json:"recent"`
+	Baseline  int64 `json:"baseline"`
 }
 
-// Crashes in the exact last hour (from the raw table, so the top of the
-// hour does not matter) vs. the 24 full hourly buckets before that hour.
-func (q *Queries) CrashSpikeInputs(ctx context.Context, arg CrashSpikeInputsParams) (CrashSpikeInputsRow, error) {
-	row := q.db.QueryRow(ctx, crashSpikeInputs,
-		arg.ProjectID,
-		arg.RecentFrom,
-		arg.BaselineFrom,
-		arg.BaselineTo,
-	)
-	var i CrashSpikeInputsRow
-	err := row.Scan(&i.Recent, &i.Baseline)
-	return i, err
+// Per project: crashes in the exact last hour (from the raw table, so the
+// top of the hour does not matter) vs. the 24 full hourly buckets before
+// that hour. Projects with no crashes in either are omitted.
+func (q *Queries) CrashSpikeInputs(ctx context.Context, arg CrashSpikeInputsParams) ([]CrashSpikeInputsRow, error) {
+	rows, err := q.db.Query(ctx, crashSpikeInputs, arg.RecentFrom, arg.BaselineFrom, arg.BaselineTo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CrashSpikeInputsRow{}
+	for rows.Next() {
+		var i CrashSpikeInputsRow
+		if err := rows.Scan(&i.ProjectID, &i.Recent, &i.Baseline); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const expireProjectUsage = `-- name: ExpireProjectUsage :execrows
@@ -215,13 +229,14 @@ func (q *Queries) ProjectUsage(ctx context.Context, arg ProjectUsageParams) (int
 }
 
 const releaseStats = `-- name: ReleaseStats :many
-SELECT release,
-       array_remove(array_agg(DISTINCT platform), '')::text[] AS platforms,
-       min(bucket)::timestamptz AS first_seen, max(bucket)::timestamptz AS last_seen,
-       sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
-FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND bucket < $3 AND release <> ''
-GROUP BY release ORDER BY max(bucket) DESC, release
+SELECT s.release,
+       COALESCE(r.platforms, '{}'::text[])::text[] AS platforms,
+       COALESCE(r.first_seen, min(s.bucket))::timestamptz AS first_seen, max(s.bucket)::timestamptz AS last_seen,
+       sum(s.events)::bigint AS events, sum(s.crashes)::bigint AS crashes, sum(s.errors)::bigint AS errors
+FROM event_stats_hourly s
+LEFT JOIN releases r ON r.project_id = s.project_id AND r.release = s.release
+WHERE s.project_id = $1 AND s.bucket >= $2 AND s.bucket < $3 AND s.release <> ''
+GROUP BY s.release, r.platforms, r.first_seen ORDER BY max(s.bucket) DESC, s.release
 `
 
 type ReleaseStatsParams struct {
@@ -240,7 +255,8 @@ type ReleaseStatsRow struct {
 	Errors    int64     `json:"errors"`
 }
 
-// Every release with activity in the window, most recently active first.
+// Every release with activity in the window, most recently active first;
+// platforms and first_seen are all-time, from the releases table.
 func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]ReleaseStatsRow, error) {
 	rows, err := q.db.Query(ctx, releaseStats, arg.ProjectID, arg.Bucket, arg.Bucket_2)
 	if err != nil {

@@ -7,39 +7,7 @@ package sqlc
 
 import (
 	"context"
-	"time"
 )
-
-const distinctReleases = `-- name: DistinctReleases :many
-SELECT release FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND release <> ''
-GROUP BY release ORDER BY max(bucket) DESC LIMIT 50
-`
-
-type DistinctReleasesParams struct {
-	ProjectID int64     `json:"project_id"`
-	Bucket    time.Time `json:"bucket"`
-}
-
-func (q *Queries) DistinctReleases(ctx context.Context, arg DistinctReleasesParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, distinctReleases, arg.ProjectID, arg.Bucket)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var release string
-		if err := rows.Scan(&release); err != nil {
-			return nil, err
-		}
-		items = append(items, release)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
 
 const issuesIntroducedPerRelease = `-- name: IssuesIntroducedPerRelease :many
 

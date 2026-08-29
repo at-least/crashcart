@@ -68,19 +68,7 @@ type Payload struct {
 // EnsureRules creates the project's three default rules (all enabled,
 // 60 min cooldown) when they do not exist yet. Existing rows are kept.
 func EnsureRules(ctx context.Context, st *store.Store, projectID int64) error {
-	for _, typ := range []string{TypeNewIssue, TypeRegression, TypeCrashSpike} {
-		_, err := st.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: projectID, Type: sqlc.AlertType(typ)})
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-		if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: projectID, Type: sqlc.AlertType(typ), Enabled: true, CooldownMinutes: defaultCooldown}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return st.EnsureAlertRules(ctx, sqlc.EnsureAlertRulesParams{ProjectID: projectID, CooldownMinutes: defaultCooldown})
 }
 
 // Issue handles job kind "alert" ({type: new_issue|regression, fingerprint}).
@@ -119,46 +107,46 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 
 // CheckSpikes evaluates the crash_spike rule of every project (scheduler).
 func (n *Notifier) CheckSpikes(ctx context.Context) error {
-	projects, err := n.Store.ListProjects(ctx)
+	// "recent" is the exact last hour from the raw table; the baseline is
+	// the ~24 hourly buckets before it. Bucket keys are start times, so
+	// `bucket < recentFrom` includes the partial bucket the recent hour
+	// starts in: no gap between the two. One query covers every project.
+	now := time.Now().UTC()
+	recentFrom := now.Add(-time.Hour)
+	rows, err := n.Store.CrashSpikeInputs(ctx, sqlc.CrashSpikeInputsParams{
+		RecentFrom: recentFrom, BaselineFrom: recentFrom.Truncate(time.Hour).Add(-24 * time.Hour), BaselineTo: recentFrom,
+	})
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, p := range projects {
-		if err := n.checkSpike(ctx, p); err != nil {
-			errs = append(errs, fmt.Errorf("project %s: %w", p.Slug, err))
+	for _, in := range rows {
+		if !IsSpike(in.Recent, in.Baseline) {
+			continue
+		}
+		if err := n.spike(ctx, in.ProjectID, in.Recent, in.Baseline); err != nil {
+			errs = append(errs, fmt.Errorf("project %d: %w", in.ProjectID, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (n *Notifier) checkSpike(ctx context.Context, p sqlc.Project) error {
-	if err := EnsureRules(ctx, n.Store, p.ID); err != nil {
+// spike claims the crash_spike cooldown for the project and notifies.
+func (n *Notifier) spike(ctx context.Context, projectID, recent, baseline int64) error {
+	if err := EnsureRules(ctx, n.Store, projectID); err != nil {
 		return err
 	}
-	// "recent" is the exact last hour from the raw table; the baseline is
-	// the ~24 hourly buckets before it.
-	now := time.Now().UTC()
-	recentFrom := now.Add(-time.Hour)
-	// Bucket keys are start times, so `bucket < recentFrom` includes the
-	// partial bucket the recent hour starts in: no gap between the two.
-	in, err := n.Store.CrashSpikeInputs(ctx, sqlc.CrashSpikeInputsParams{
-		ProjectID: p.ID, RecentFrom: recentFrom, BaselineFrom: recentFrom.Truncate(time.Hour).Add(-24 * time.Hour), BaselineTo: recentFrom,
-	})
-	if err != nil {
-		return err
-	}
-	if !IsSpike(in.Recent, in.Baseline) {
-		return nil
-	}
-	claimed, err := n.Store.TouchAlertRule(ctx, sqlc.TouchAlertRuleParams{ProjectID: p.ID, Type: TypeCrashSpike})
+	claimed, err := n.Store.TouchAlertRule(ctx, sqlc.TouchAlertRuleParams{ProjectID: projectID, Type: TypeCrashSpike})
 	if err != nil {
 		return err
 	}
 	if claimed == 0 {
 		return nil
 	}
-	recent, baseline := in.Recent, in.Baseline
+	p, err := n.Store.GetProjectByID(ctx, projectID)
+	if err != nil {
+		return err
+	}
 	n.notify(ctx, p.ID, Payload{
 		Type: TypeCrashSpike, Project: p.Name, ProjectSlug: p.Slug,
 		Title:  fmt.Sprintf("Crash spike: %d crashes in the last hour (baseline %.1f/h)", recent, float64(baseline)/24),

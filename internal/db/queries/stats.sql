@@ -45,14 +45,16 @@ WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
 GROUP BY level;
 
 -- name: ReleaseStats :many
--- Every release with activity in the window, most recently active first.
-SELECT release,
-       array_remove(array_agg(DISTINCT platform), '')::text[] AS platforms,
-       min(bucket)::timestamptz AS first_seen, max(bucket)::timestamptz AS last_seen,
-       sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
-FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND bucket < $3 AND release <> ''
-GROUP BY release ORDER BY max(bucket) DESC, release;
+-- Every release with activity in the window, most recently active first;
+-- platforms and first_seen are all-time, from the releases table.
+SELECT s.release,
+       COALESCE(r.platforms, '{}'::text[])::text[] AS platforms,
+       COALESCE(r.first_seen, min(s.bucket))::timestamptz AS first_seen, max(s.bucket)::timestamptz AS last_seen,
+       sum(s.events)::bigint AS events, sum(s.crashes)::bigint AS crashes, sum(s.errors)::bigint AS errors
+FROM event_stats_hourly s
+LEFT JOIN releases r ON r.project_id = s.project_id AND r.release = s.release
+WHERE s.project_id = $1 AND s.bucket >= $2 AND s.bucket < $3 AND s.release <> ''
+GROUP BY s.release, r.platforms, r.first_seen ORDER BY max(s.bucket) DESC, s.release;
 
 -- name: ReleaseTimeline :many
 WITH h AS (
@@ -83,15 +85,21 @@ GROUP BY e.project_id, e.release
 ORDER BY max(e.bucket) DESC, e.release DESC
 LIMIT 1;
 
--- name: CrashSpikeInputs :one
--- Crashes in the exact last hour (from the raw table, so the top of the
--- hour does not matter) vs. the 24 full hourly buckets before that hour.
-SELECT (SELECT count(*) FROM events e
-         WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.occurred_at >= sqlc.arg(recent_from)::timestamptz
-           AND crashcart_is_crash(e.level, e.handled))::bigint AS recent,
-       COALESCE((SELECT sum(h.crashes) FROM event_stats_hourly h
-                  WHERE h.project_id = sqlc.arg(project_id)::bigint
-                    AND h.bucket >= sqlc.arg(baseline_from)::timestamptz AND h.bucket < sqlc.arg(baseline_to)::timestamptz), 0)::bigint AS baseline;
+-- name: CrashSpikeInputs :many
+-- Per project: crashes in the exact last hour (from the raw table, so the
+-- top of the hour does not matter) vs. the 24 full hourly buckets before
+-- that hour. Projects with no crashes in either are omitted.
+WITH recent AS (
+    SELECT project_id, count(*) AS n FROM events
+    WHERE occurred_at >= sqlc.arg(recent_from)::timestamptz AND crashcart_is_crash(level, handled)
+    GROUP BY project_id),
+baseline AS (
+    SELECT project_id, sum(crashes) AS n FROM event_stats_hourly
+    WHERE bucket >= sqlc.arg(baseline_from)::timestamptz AND bucket < sqlc.arg(baseline_to)::timestamptz
+    GROUP BY project_id)
+SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
+       COALESCE(recent.n, 0)::bigint AS recent, COALESCE(baseline.n, 0)::bigint AS baseline
+FROM recent FULL OUTER JOIN baseline USING (project_id);
 
 -- name: PlatformTotals :many
 -- Raw SDK platforms seen in a window (for the "expected vs received" check).

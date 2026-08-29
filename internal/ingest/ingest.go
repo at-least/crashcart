@@ -395,6 +395,47 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				preps = kept
 			}
 		}
+		// Releases mentioned by this envelope (events and sessions).
+		type relSeen struct {
+			platform string
+			at       time.Time
+		}
+		rels := map[string]relSeen{}
+		note := func(release, platform string, at time.Time) {
+			if release == "" {
+				return
+			}
+			cur, ok := rels[release]
+			if !ok {
+				rels[release] = relSeen{platform, at.UTC()}
+				return
+			}
+			if cur.platform == "" {
+				cur.platform = platform
+			}
+			if at.Before(cur.at) {
+				cur.at = at.UTC()
+			}
+			rels[release] = cur
+		}
+		for _, pr := range preps {
+			note(pr.ev.Release, pr.ev.Platform, pr.ev.Timestamp)
+		}
+		for _, s := range env.Sessions {
+			note(s.Release, "", s.StartedAt)
+		}
+		if len(rels) > 0 {
+			rp := sqlc.UpsertReleasesParams{ProjectID: p.ID}
+			for r, seen := range rels {
+				rp.Releases = append(rp.Releases, r)
+				rp.Platforms = append(rp.Platforms, seen.platform)
+				rp.FirstSeens = append(rp.FirstSeens, seen.at)
+			}
+			if err := q.UpsertReleases(ctx, rp); err != nil {
+				return fmt.Errorf("upsert releases: %w", err)
+			}
+		}
+
 		groups := map[string][]*prepared{}
 		var order []string
 		for _, pr := range preps {

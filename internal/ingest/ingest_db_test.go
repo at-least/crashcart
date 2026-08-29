@@ -160,6 +160,17 @@ func TestIngestLifecycle(t *testing.T) {
 		t.Fatalf("unlimited quota: %v", err)
 	}
 
+	// Every release the envelopes mentioned is on record, with its platforms.
+	rels, err := st.ListReleases(ctx, sqlc.ListReleasesParams{ProjectID: p.ID, Limit: 10})
+	if err != nil || len(rels) == 0 {
+		t.Fatalf("releases: %d %v", len(rels), err)
+	}
+	for _, r := range rels {
+		if r.Release == "" || r.FirstSeen.IsZero() {
+			t.Errorf("release row %+v", r)
+		}
+	}
+
 	// Hourly stats via the continuous aggregate (real-time).
 	var crashes int64
 	st.Pool.QueryRow(ctx, "SELECT sum(crashes) FROM event_stats_hourly WHERE project_id=$1", p.ID).Scan(&crashes)

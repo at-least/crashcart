@@ -426,6 +426,13 @@ type ProjectUsage struct {
 	Events    int64     `json:"events"`
 }
 
+type Release struct {
+	ProjectID int64     `json:"project_id"`
+	Release   string    `json:"release"`
+	Platforms []string  `json:"platforms"`
+	FirstSeen time.Time `json:"first_seen"`
+}
+
 type ReleaseHealthDaily struct {
 	Bucket    time.Time `json:"bucket"`
 	ProjectID int64     `json:"project_id"`

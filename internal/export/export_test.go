@@ -121,7 +121,7 @@ func TestRoundTrip(t *testing.T) {
 	if !slices.Equal(seq, Tables) {
 		t.Fatalf("table order %v, want %v", seq, Tables)
 	}
-	want := map[string]int{"projects": 1, "issues": 1, "events": 2, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
+	want := map[string]int{"projects": 1, "releases": 2, "issues": 1, "events": 2, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s: %d rows, want %d", k, got[k], v)

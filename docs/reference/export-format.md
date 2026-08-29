@@ -22,6 +22,7 @@ code.
 ```
 _meta
 projects*            (all projects, sorted by slug)
+releases*            (per project in slug order; within a project by release)
 issues*              (per project in slug order; within a project by fingerprint)
 events*              (per project; by occurred_at, event_id ascending)
 sessions*            (per project; by started_at, sid ascending)
@@ -53,6 +54,7 @@ so a dump loads into any database:
 
 - events: `(project, event_id, occurred_at)` — the SDK's event id and timestamp
 - sessions: `(project, sid, started_at)` — the SDK's session id (aggregate rows carry a generated `agg-…` sid)
+- releases: `(project, release)`
 - issues: `(project, fingerprint)`
 - projects: `slug`; symbol files: `(project, kind, release, filename)`;
   alert rules: `(project, type)`; alert channels: `(project, kind, config)`
@@ -90,6 +92,18 @@ Import: upsert on `slug`; all listed columns are replaced. Missing
 `public_key` → a fresh random 32-hex key is generated. `sample_rate ≤ 0` →
 1. A project slug that first appears on a non-`projects` row is created with
 `name = slug` and a fresh key.
+
+### `releases`
+
+```
+project           str    slug
+release           str    natural key with project
+platforms         json   array of str; platform families seen on this release
+first_seen        ts
+```
+
+Upserted on `(project, release)`: platforms are merged, `first_seen` keeps
+the earlier value.
 
 ### `issues`
 

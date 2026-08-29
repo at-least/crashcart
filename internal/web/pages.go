@@ -327,7 +327,7 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 		}
 		d.Sparks = sparks
 	}
-	d.Releases, _ = w.Store.DistinctReleases(ctx, sqlc.DistinctReleasesParams{ProjectID: p.ID, Bucket: n.Add(-90 * day)})
+	d.Releases = w.releaseNames(ctx, p.ID)
 	return d, nil
 }
 
@@ -550,7 +550,7 @@ func (w *Web) events(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	d.Releases, _ = w.Store.DistinctReleases(ctx, sqlc.DistinctReleasesParams{ProjectID: p.ID, Bucket: win.From})
+	d.Releases = w.releaseNames(ctx, p.ID)
 	pg := Page{S: s, Project: &p, Section: "events"}
 	w.page(rw, r, pg, func(pg Page) templ.Component { return Events(pg, d) })
 }
@@ -732,4 +732,17 @@ func (w *Web) release(rw http.ResponseWriter, r *http.Request) {
 	}
 	pg := Page{S: s, Project: &p, Section: "releases"}
 	w.page(rw, r, pg, func(pg Page) templ.Component { return ReleasePage(pg, d) })
+}
+
+// releaseNames lists the project's releases for filter dropdowns, newest first.
+func (w *Web) releaseNames(ctx context.Context, projectID int64) []string {
+	rows, err := w.Store.ListReleases(ctx, sqlc.ListReleasesParams{ProjectID: projectID, Limit: 50})
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Release)
+	}
+	return out
 }

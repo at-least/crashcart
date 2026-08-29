@@ -46,7 +46,7 @@ const Format = 1
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
-var Tables = []string{"projects", "issues", "events", "sessions", "symbol_files", "alert_rules", "alert_channels"}
+var Tables = []string{"projects", "releases", "issues", "events", "sessions", "symbol_files", "alert_rules", "alert_channels"}
 
 // Options narrows an export.
 type Options struct {
@@ -79,6 +79,14 @@ type projectRow struct {
 	SampleRate      float64 `json:"sample_rate"`
 	DailyQuota      *int32  `json:"daily_quota,omitempty"`
 	CreatedAt       ts      `json:"created_at"`
+}
+
+type releaseRow struct {
+	T         string   `json:"t"`
+	Project   string   `json:"project"`
+	Release   string   `json:"release"`
+	Platforms []string `json:"platforms"`
+	FirstSeen ts       `json:"first_seen"`
 }
 
 type issueRow struct {
@@ -205,6 +213,7 @@ const (
 	os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
 	payload, symbols FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
+	selectReleases    = `SELECT project_id, release, platforms, first_seen FROM releases WHERE project_id = $1 ORDER BY release`
 	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at
 	FROM symbol_files WHERE project_id = $1 ORDER BY kind, release, filename`
 	selectAlertRules    = `SELECT project_id, type, enabled, cooldown_minutes, last_triggered FROM alert_rules WHERE project_id = $1 ORDER BY type`
@@ -234,6 +243,13 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		}
 	}
 	// Per table, per project: the order of Tables is the order of the file.
+	for _, p := range projects {
+		if err := stream(ctx, st, selectReleases, p.ID, func(r sqlc.Release) error {
+			return enc.Encode(releaseRow{T: "releases", Project: p.Slug, Release: r.Release, Platforms: r.Platforms, FirstSeen: at(r.FirstSeen)})
+		}); err != nil {
+			return fmt.Errorf("export releases: %w", err)
+		}
+	}
 	for _, p := range projects {
 		if err := stream(ctx, st, selectIssues, p.ID, func(r sqlc.Issue) error {
 			return enc.Encode(issueRow{
@@ -357,6 +373,10 @@ const (
 	    event_count = EXCLUDED.event_count, stored_count = EXCLUDED.stored_count, first_seen = EXCLUDED.first_seen,
 	    last_seen = EXCLUDED.last_seen, first_release = EXCLUDED.first_release, last_release = EXCLUDED.last_release,
 	    resolved_release = EXCLUDED.resolved_release, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
+	upsertRelease = `INSERT INTO releases (project_id, release, platforms, first_seen) VALUES ($1,$2,$3,$4)
+	ON CONFLICT (project_id, release) DO UPDATE SET
+	    platforms = (SELECT array_agg(DISTINCT x ORDER BY x) FROM unnest(releases.platforms || EXCLUDED.platforms) AS x),
+	    first_seen = LEAST(releases.first_seen, EXCLUDED.first_seen)`
 	insertSession = `INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count) VALUES ($1,$2,$3,$4,$5,$6,$7)
 	ON CONFLICT (project_id, sid, started_at) DO NOTHING`
 	upsertSymbolFile = `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, uploaded_at)
@@ -449,6 +469,22 @@ func (im *importer) line(b []byte) error {
 			return fmt.Errorf("upsert project %q: %w", r.Slug, err)
 		}
 		im.projects[r.Slug] = id
+	case "releases":
+		var r releaseRow
+		if err := json.Unmarshal(b, &r); err != nil {
+			return err
+		}
+		pid, err := im.project(r.Project)
+		if err != nil {
+			return err
+		}
+		if r.Release == "" {
+			return errors.New("releases row without release")
+		}
+		if r.Platforms == nil {
+			r.Platforms = []string{}
+		}
+		im.batch.Queue(upsertRelease, pid, r.Release, r.Platforms, tsOrNow(r.FirstSeen))
 	case "issues":
 		var r issueRow
 		if err := json.Unmarshal(b, &r); err != nil {

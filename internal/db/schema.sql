@@ -91,6 +91,22 @@ CREATE TABLE sessions (
 );
 CREATE INDEX sessions_project_release ON sessions (project_id, release, started_at DESC);
 
+-- ── releases ───────────────────────────────────────────────────────────
+-- Every release a project has ever reported (events or sessions), with the
+-- platforms seen on it. Upserted at ingest; the update is a no-op unless a
+-- new platform or an earlier first_seen shows up, so it is not a hot row.
+-- Issues and stats keep the release as text (no FK): a release is a fact
+-- about events, this table is the index of them.
+
+CREATE TABLE releases (
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    release    TEXT NOT NULL,
+    platforms  TEXT[] NOT NULL DEFAULT '{}',
+    first_seen TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (project_id, release)
+);
+CREATE INDEX releases_project_first_seen ON releases (project_id, first_seen DESC);
+
 -- ── issues (stateful; the only non-hypertable ingest upserts) ──────────
 
 CREATE TABLE issues (

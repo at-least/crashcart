@@ -72,6 +72,14 @@ CREATE TABLE sessions (
     PRIMARY KEY (project_id, sid, started_at)
 );
 
+CREATE TABLE releases (
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    release    TEXT NOT NULL,
+    platforms  TEXT[] NOT NULL DEFAULT '{}',
+    first_seen TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (project_id, release)
+);
+
 CREATE TABLE issues (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     fingerprint      TEXT NOT NULL,

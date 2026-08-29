@@ -29,10 +29,11 @@ updates hit one row. Every per-project table references `projects` with
 `ON DELETE CASCADE`: deleting a project deletes its data. Events are addressed by `event_id` everywhere (URLs,
 API, jobs); list pagination is a keyset cursor `(occurred_at, event_id)`.
 
-**Ingest is one transaction, no hot rows.** Per envelope: fold events by
-fingerprint → one `issues` upsert per distinct fingerprint → sampling
-decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events → sessions
-→ jobs. Aggregates are *not* touched at ingest.
+**Ingest is one transaction, no hot rows.** Per envelope: quota bump →
+`releases` upsert (a no-op unless a new release / platform appears) → fold
+events by fingerprint → one `issues` upsert per distinct fingerprint →
+sampling decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events →
+sessions → jobs. Aggregates are *not* touched at ingest.
 
 **Aggregates are continuous aggregates.** `event_stats_hourly`,
 `issue_stats_hourly`, `release_health_daily` are TimescaleDB continuous
@@ -123,6 +124,7 @@ theme, and the SSE "new issues" banner.
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
 | events | hypertable (1 day chunks) | (project_id, event_id, occurred_at) | compressed after 48 h |
 | sessions | hypertable | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
+| releases | table | (project_id, release) | every release seen, platforms, first_seen |
 | issues | table | (project_id, fingerprint) | stateful |
 | symbol_files | table | (project_id, kind, release, filename) | BYTEA in Postgres |
 | project_usage | table | (project_id, day) | events received per UTC day; daily quota |
