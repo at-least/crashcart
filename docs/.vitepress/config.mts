@@ -4,8 +4,8 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'CrashCart',
   description: 'Open-source, Sentry SDK compatible error tracking for mobile and web apps.',
-  // GitHub Pages serves a project site under /<repo>/.
-  base: '/crashcart/',
+  sitemap: { hostname: 'https://crashcart.app' },
+  base: '/',
   lastUpdated: true,
   cleanUrls: true,
 
@@ -33,11 +33,11 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/crashcartdev/crashcart' },
+      { icon: 'github', link: 'https://github.com/crashcartapp/crashcart' },
     ],
 
     editLink: {
-      pattern: 'https://github.com/crashcartdev/crashcart/edit/main/docs/:path',
+      pattern: 'https://github.com/crashcartapp/crashcart/edit/main/docs/:path',
       text: 'Edit this page on GitHub',
     },
 
