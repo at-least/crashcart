@@ -101,3 +101,26 @@ integers, JSON columns are embedded, bytes are base64. `crashcart import`
 upserts (events/sessions `ON CONFLICT DO NOTHING`, everything else on its key),
 so importing twice or onto live data is safe. Aggregates are not exported;
 they recompute.
+
+## To do: plain-Postgres mode (Neon / Supabase)
+
+Managed Postgres cannot run the Community (TSL) half of TimescaleDB: Neon ships
+the Apache-2 edition only (hypertables, but no continuous aggregates,
+compression or retention policies); Supabase has removed the extension on
+PG17. Supporting them means a mode without Timescale, chosen by the migrator
+when the extension is unavailable:
+
+- `events` / `sessions` as plain tables (pg_partman optional later); the
+  `(project_id, id)` indexes carry the time-range queries.
+- `event_stats_hourly` / `issue_stats_hourly` / `release_health_daily` as
+  plain tables, refreshed by the scheduler once per hour for the previous
+  bucket (idempotent: delete bucket + insert … select); queries union the
+  current hour live from the raw tables. Same design as the serverless
+  implementation's rollup cron — port its bucket semantics verbatim so both
+  implementations' stats tables stay column-identical.
+- Retention: batched `DELETE … WHERE id < cutoff` instead of drop_chunks.
+- No compression: budget 5–10× the storage.
+
+Do this after the serverless rollup lands (its spec is the reference).
+Deployment recipe to document alongside: Cloud Run / Fly (scale to zero) +
+Neon; Timescale Cloud stays the full-featured managed option.
