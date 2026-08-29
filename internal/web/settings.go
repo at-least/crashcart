@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/newlix/crashcart/internal/sentry"
 	"github.com/newlix/crashcart/internal/symbolicate"
 )
 
@@ -84,6 +85,10 @@ func (w *Web) createProject(rw http.ResponseWriter, r *http.Request) {
 	platform := strings.TrimSpace(r.PostForm.Get("platform"))
 	if !slugRe.MatchString(slug) || name == "" {
 		http.Error(rw, "slug (a-z, 0-9, -) and name are required", http.StatusBadRequest)
+		return
+	}
+	if platform != "" && !sentry.IsFamily(platform) {
+		http.Error(rw, "platform must be one of "+strings.Join(sentry.Families, ", "), http.StatusBadRequest)
 		return
 	}
 	key := make([]byte, 16)

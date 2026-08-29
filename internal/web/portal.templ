@@ -1,5 +1,11 @@
 package web
 
+import (
+	"strings"
+
+	"github.com/newlix/crashcart/internal/sentry"
+)
+
 // Portal: one card per project plus the create form.
 templ Portal(cards []PortalCard) {
 	<div class="flex flex-wrap items-end justify-between gap-3">
@@ -20,6 +26,11 @@ templ Portal(cards []PortalCard) {
 							{ c.P.Slug }
 							if c.P.Platform != nil {
 								{ " · " + *c.P.Platform }
+							}
+							if c.Mismatch {
+								<span data-slot="badge" data-variant="destructive" class="ml-2" title={ "received " + strings.Join(c.Received, ", ") }>platform mismatch</span>
+							} else if len(c.Received) > 0 && c.P.Platform == nil {
+								{ " · " + strings.Join(c.Received, ", ") }
 							}
 						</div>
 					</header>
@@ -48,7 +59,7 @@ templ Portal(cards []PortalCard) {
 				<span data-slot="native-select-wrapper">
 					<select data-slot="native-select" id="np-platform" name="platform">
 						<option value="">unspecified</option>
-						for _, p := range []string{"ios", "android", "flutter", "javascript", "node", "python", "other"} {
+						for _, p := range sentry.Families {
 							<option value={ p }>{ p }</option>
 						}
 					</select>

@@ -24,6 +24,8 @@ import (
 // PortalCard is one project on the portal.
 type PortalCard struct {
 	P             sqlc.Project
+	Received      []string // platform families seen in the last 7 days
+	Mismatch      bool     // some of them are not what the project declares
 	Crashes24h    int64
 	LatestRelease string
 	CrashFree     string
@@ -45,6 +47,7 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 			c.Crashes24h = t.Crashes
 		}
 		c.LatestRelease, c.CrashFree = w.latestHealth(ctx, p.ID, n, 30)
+		c.Received, c.Mismatch = w.receivedPlatforms(ctx, p, pk.Lower(n.Add(-7*24*time.Hour)), pk.Upper(n))
 		counts, _ := w.Store.CountIssuesByStatus(ctx, p.ID)
 		for _, row := range counts {
 			if row.Status == "unresolved" || row.Status == "triaged" || row.Status == "regression" {
@@ -54,6 +57,38 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 		cards = append(cards, c)
 	}
 	w.page(rw, r, Page{S: ViewState{Filters: map[string]string{}}, Section: "portal"}, func(Page) templ.Component { return Portal(cards) })
+}
+
+// receivedPlatforms lists the platform families that sent events in the
+// window (most events first) and whether any is not what the project
+// declares. The aggregate only has the raw platform, so the family is
+// derived without the SDK name — close enough for a warning.
+func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, from, to int64) ([]string, bool) {
+	rows, err := w.Store.PlatformTotals(ctx, sqlc.PlatformTotalsParams{ProjectID: p.ID, Bucket: from, Bucket_2: to})
+	if err != nil {
+		return nil, false
+	}
+	expected := ""
+	if p.Platform != nil {
+		expected = *p.Platform
+	}
+	seen := map[string]bool{}
+	var out []string
+	mismatch := false
+	for _, r := range rows {
+		fam := sentry.Family(r.Platform, "")
+		if expected == "android" && r.Platform == "java" {
+			fam = "android" // the JVM/Android ambiguity resolves in the project's favour
+		}
+		if !seen[fam] {
+			seen[fam] = true
+			out = append(out, fam)
+		}
+		if !sentry.Accepts(expected, fam) {
+			mismatch = true
+		}
+	}
+	return out, mismatch
 }
 
 // latestHealth finds the release with the most recent activity in the last
@@ -87,6 +122,8 @@ type ChartData struct {
 
 // OverviewData feeds the overview page.
 type OverviewData struct {
+	Received      []string // platform families seen in the window
+	Mismatch      bool
 	LatestRelease string
 	CrashFree     string
 	Crashes       int64
@@ -106,6 +143,7 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 	n := now()
 	win := s.Window(n)
 	var d OverviewData
+	d.Received, d.Mismatch = w.receivedPlatforms(ctx, p, win.From, win.To)
 	d.LatestRelease, d.CrashFree = w.latestHealth(ctx, p.ID, n, win.Days)
 	totals, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, Bucket: win.From, Bucket_2: win.To})
 	if err != nil {

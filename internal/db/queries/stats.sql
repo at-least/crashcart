@@ -43,3 +43,10 @@ SELECT (SELECT count(*) FROM events e
        COALESCE((SELECT sum(h.crashes) FROM event_stats_hourly h
                   WHERE h.project_id = sqlc.arg(project_id)::bigint
                     AND h.bucket >= sqlc.arg(baseline_from)::bigint AND h.bucket < sqlc.arg(baseline_to)::bigint), 0)::bigint AS baseline;
+
+-- name: PlatformTotals :many
+-- Raw SDK platforms seen in a window (for the "expected vs received" check).
+SELECT platform, sum(events)::bigint AS events
+FROM event_stats_hourly
+WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+GROUP BY platform ORDER BY events DESC;

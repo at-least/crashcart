@@ -1,9 +1,20 @@
 package web
 
+import "strings"
+
 // Overview: three stat cards, crash timeline by release, new issues and
 // regressions.
 templ Overview(pg Page, d OverviewData) {
 	<h1 class="page-title">Overview <span class="page-title-win">{ pg.S.Win }</span></h1>
+	if d.Mismatch {
+		<div data-slot="alert" data-variant="destructive" role="alert" class="mt-3">
+			<div data-slot="alert-title">Platform mismatch</div>
+			<div data-slot="alert-description">
+				This project is declared as <b>{ *pg.Project.Platform }</b> but received <b>{ strings.Join(d.Received, ", ") }</b> events in the last { pg.S.Win }.
+				Check which app holds this DSN — events are stored either way.
+			</div>
+		</div>
+	}
 	<div class="stat-grid mt-4">
 		@StatCard("Crash-free sessions", d.CrashFree, latestHint(d.LatestRelease))
 		@StatCard("Crashes", compact(d.Crashes), "in the last "+pg.S.Win)

@@ -15,6 +15,7 @@ import (
 	"github.com/newlix/crashcart/internal/alerts"
 	"github.com/newlix/crashcart/internal/config"
 	"github.com/newlix/crashcart/internal/db/sqlc"
+	"github.com/newlix/crashcart/internal/sentry"
 )
 
 // projectOut is the JSON shape of a project (public key exposed as the DSN).
@@ -109,6 +110,10 @@ func (h *Handler) createProject(w http.ResponseWriter, r *http.Request) {
 	if in.Name == "" {
 		in.Name = in.Slug
 	}
+	if in.Platform != "" && !sentry.IsFamily(in.Platform) {
+		writeErr(w, http.StatusBadRequest, "platform must be one of "+strings.Join(sentry.Families, ", "))
+		return
+	}
 	p, err := h.Store.CreateProject(r.Context(), sqlc.CreateProjectParams{
 		Slug: in.Slug, Name: in.Name, Platform: nilIfEmpty(in.Platform), PublicKey: NewKey(),
 	})
@@ -160,6 +165,10 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 		upd.Name = strings.TrimSpace(*in.Name)
 	}
 	if in.Platform != nil {
+		if *in.Platform != "" && !sentry.IsFamily(*in.Platform) {
+			writeErr(w, http.StatusBadRequest, "platform must be one of "+strings.Join(sentry.Families, ", "))
+			return
+		}
 		upd.Platform = nilIfEmpty(*in.Platform)
 	}
 	if in.SampleKeepFirst != nil {

@@ -82,6 +82,45 @@ func (q *Queries) LevelTotals(ctx context.Context, arg LevelTotalsParams) ([]Lev
 	return items, nil
 }
 
+const platformTotals = `-- name: PlatformTotals :many
+SELECT platform, sum(events)::bigint AS events
+FROM event_stats_hourly
+WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+GROUP BY platform ORDER BY events DESC
+`
+
+type PlatformTotalsParams struct {
+	ProjectID int64 `json:"project_id"`
+	Bucket    int64 `json:"bucket"`
+	Bucket_2  int64 `json:"bucket_2"`
+}
+
+type PlatformTotalsRow struct {
+	Platform string `json:"platform"`
+	Events   int64  `json:"events"`
+}
+
+// Raw SDK platforms seen in a window (for the "expected vs received" check).
+func (q *Queries) PlatformTotals(ctx context.Context, arg PlatformTotalsParams) ([]PlatformTotalsRow, error) {
+	rows, err := q.db.Query(ctx, platformTotals, arg.ProjectID, arg.Bucket, arg.Bucket_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PlatformTotalsRow{}
+	for rows.Next() {
+		var i PlatformTotalsRow
+		if err := rows.Scan(&i.Platform, &i.Events); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const releaseStats = `-- name: ReleaseStats :many
 SELECT release, platform,
        min(bucket)::bigint AS first_seen, max(bucket)::bigint AS last_seen,

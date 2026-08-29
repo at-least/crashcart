@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/newlix/crashcart/internal/jobs"
 	"github.com/newlix/crashcart/internal/retention"
 	"github.com/newlix/crashcart/internal/seed"
+	"github.com/newlix/crashcart/internal/sentry"
 	"github.com/newlix/crashcart/internal/server"
 	"github.com/newlix/crashcart/internal/store"
 	"github.com/newlix/crashcart/internal/symbolicate"
@@ -37,7 +39,8 @@ const usage = `usage: crashcart <command>
   seed [slug]      write a week of demo data (default project "demo")
   export [slug]    stream NDJSON to stdout (all projects, or one)
   import           load NDJSON from stdin (idempotent)
-  project <slug> <name> [platform]   create a project and print its DSN key
+  project <slug> <name> [platform]   create a project and print its DSN
+                                     (platform: ios android flutter react-native web backend other) key
 `
 
 func main() {
@@ -123,6 +126,9 @@ func main() {
 		var platform *string
 		if fs.NArg() > 2 {
 			p := fs.Arg(2)
+			if !sentry.IsFamily(p) {
+				fatal(log, fmt.Errorf("platform must be one of %s", strings.Join(sentry.Families, ", ")))
+			}
 			platform = &p
 		}
 		p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: fs.Arg(0), Name: fs.Arg(1), Platform: platform, PublicKey: newKey()})
@@ -144,14 +150,18 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	}
 	worker := &jobs.Worker{Store: st, Log: log, Handlers: map[string]jobs.Handler{
 		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
-			var a struct{ Event int64 `json:"event"` }
+			var a struct {
+				Event int64 `json:"event"`
+			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return err
 			}
 			return syms.Event(ctx, j.ProjectID, a.Event)
 		},
 		"resymbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
-			var a struct{ Release string `json:"release"` }
+			var a struct {
+				Release string `json:"release"`
+			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return err
 			}

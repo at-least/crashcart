@@ -139,6 +139,15 @@ func TestIngestLifecycle(t *testing.T) {
 		t.Fatalf("resend counted: %d → %d", before.EventCount, after.EventCount)
 	}
 
+	// A declared platform flags foreign events without dropping them.
+	ios := "ios"
+	p.Platform = &ios
+	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 7)), now), now)
+	if err != nil || res.Mismatched != 1 || res.Received != 1 {
+		t.Fatalf("android event into an ios project: %+v %v", res, err)
+	}
+	p.Platform = nil
+
 	// Hourly stats via the continuous aggregate (real-time).
 	var crashes int64
 	st.Pool.QueryRow(ctx, "SELECT sum(crashes) FROM event_stats_hourly WHERE project_id=$1", p.ID).Scan(&crashes)

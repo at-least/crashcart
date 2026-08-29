@@ -55,8 +55,9 @@ type Ingester struct {
 	Symbols Symbolicator // may be nil
 	Log     *slog.Logger
 
-	mu    sync.Mutex
-	byKey map[string]cachedProject
+	mu     sync.Mutex
+	byKey  map[string]cachedProject
+	warned map[int64]time.Time // last platform-mismatch warning per project
 }
 
 type cachedProject struct {
@@ -70,6 +71,7 @@ type Result struct {
 	Stored      int      // events written
 	Sampled     int      // events counted but not stored
 	Duplicates  int      // resent events already stored
+	Mismatched  int      // events whose platform family is not the project's
 	Invalid     int      // event items that did not parse
 	Sessions    int      // session rows written
 	NewIssues   []string // fingerprints created by this envelope
@@ -229,7 +231,7 @@ func firstEventID(env sentry.Envelope) string {
 
 func (in *Ingester) ok(w http.ResponseWriter, res Result, id string) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions, "invalid": res.Invalid})
+	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions, "invalid": res.Invalid, "mismatched": res.Mismatched})
 }
 
 func (in *Ingester) fail(w http.ResponseWriter, err error) {
@@ -261,6 +263,10 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	}
 
 	res.Invalid = env.Invalid
+	expected := ""
+	if p.Platform != nil {
+		expected = *p.Platform
+	}
 
 	// 1. Analyze. Inline symbolication when a mapping is cached; the
 	//    fingerprint is computed on the best frames we have. Ids derive
@@ -277,6 +283,10 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		seenEvent[ev.EventID] = true
 		if in.Cfg.PIIRedact {
 			redact(ev)
+		}
+		if fam := sentry.Family(ev.Platform, ev.SDKName); !sentry.Accepts(expected, fam) {
+			res.Mismatched++
+			in.warnMismatch(p, ev, fam)
 		}
 		id := eventPK(ev)
 		for seenID[id] && id%pk.Scale < pk.Scale-1 {
@@ -439,6 +449,25 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		return nil
 	})
 	return res, err
+}
+
+// warnMismatch logs a platform mismatch at most once a minute per project:
+// a wrong DSN in one app would otherwise write a line per event. The
+// events are stored regardless; the viewer shows the same mismatch.
+func (in *Ingester) warnMismatch(p sqlc.Project, ev *sentry.Event, family string) {
+	in.mu.Lock()
+	last, ok := in.warned[p.ID]
+	if !ok || time.Since(last) > time.Minute {
+		if in.warned == nil {
+			in.warned = map[int64]time.Time{}
+		}
+		in.warned[p.ID] = time.Now()
+		ok = false
+	}
+	in.mu.Unlock()
+	if !ok {
+		in.Log.Warn("ingest: platform mismatch", "project", p.Slug, "expected", *p.Platform, "got", family, "platform", ev.Platform, "sdk", ev.SDKName)
+	}
 }
 
 // eventPK derives the primary key from the event's own id: the millisecond
