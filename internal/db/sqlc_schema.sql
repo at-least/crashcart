@@ -83,25 +83,27 @@ CREATE TABLE events (
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     symbols        JSONB,
-    payload_ref    TEXT,
+    pack_id        BIGINT,
+    pack_offset    INTEGER,
+    pack_len       INTEGER,
     PRIMARY KEY (project_id, event_id, occurred_at)
 );
 
 
 CREATE TABLE packs (
-    pack_key    TEXT PRIMARY KEY,
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     next_offset BIGINT NOT NULL DEFAULT 0,
     closed      BOOLEAN NOT NULL DEFAULT false,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE payload_spool (
-    pack_key   TEXT NOT NULL,
-    "offset"   BIGINT NOT NULL,
+    pack_id    BIGINT NOT NULL,
+    "offset"   INTEGER NOT NULL,
     size       INTEGER NOT NULL,
     data       BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (pack_key, "offset")
+    PRIMARY KEY (pack_id, "offset")
 );
 
 CREATE TABLE sessions (

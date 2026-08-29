@@ -117,6 +117,25 @@ type eventDetail struct {
 	Breadcrumbs []sentry.Breadcrumb `json:"breadcrumbs"`
 }
 
+// MarshalJSON leaves out where the payload sits (pack_id, pack_offset,
+// pack_len): storage detail, not part of the API.
+func (d eventDetail) MarshalJSON() ([]byte, error) {
+	b, err := json.Marshal(d.Event)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	delete(m, "pack_id")
+	delete(m, "pack_offset")
+	delete(m, "pack_len")
+	m["payload"], _ = json.Marshal(d.Payload)
+	m["breadcrumbs"], _ = json.Marshal(d.Breadcrumbs)
+	return json.Marshal(m)
+}
+
 func breadcrumbsOf(ev sqlc.Event, payload []byte) []sentry.Breadcrumb {
 	if len(payload) == 0 {
 		return []sentry.Breadcrumb{}

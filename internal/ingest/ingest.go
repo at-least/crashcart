@@ -572,13 +572,12 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		}
 		// Payloads into a pack (the rows carry where): as late as possible,
 		// since the pack's lock is held from here to commit.
-		refs, err := store.SpoolPayloads(ctx, q, payloads)
+		places, err := store.SpoolPayloads(ctx, q, payloads)
 		if err != nil {
 			return err
 		}
 		for i := range rows {
-			r := string(refs[i])
-			rows[i].PayloadRef = &r
+			rows[i].Pack = &places[i]
 		}
 		if err := store.InsertEvents(ctx, tx, rows); err != nil {
 			return fmt.Errorf("insert events: %w", err)

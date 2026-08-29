@@ -88,8 +88,8 @@ CREATE TABLE projects (
 -- a wrong clock — so an insert never fails for want of a partition; the
 -- partition job moves such rows into a real partition when it creates one.
 -- The payload (the event as the SDK sent it) sits in payload_spool until
--- its pack of many payloads is uploaded; payload_ref says which pack and
--- where, from the start.
+-- its pack of many payloads is uploaded; pack_id / pack_offset / pack_len
+-- say which pack and where, from the start.
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (partition key)
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
@@ -112,7 +112,9 @@ CREATE TABLE events (
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     symbols        JSONB,                            -- symbolicated frames (written once)
-    payload_ref    TEXT,                             -- blob.Ref of the raw event in its pack (written with the row; NULL: never stored)
+    pack_id        BIGINT,                          -- the pack object (events/<pack_id>) holding the raw event; NULL: never stored
+    pack_offset    INTEGER,                          -- … where in it
+    pack_len       INTEGER,                          -- … how many bytes (gzipped)
     PRIMARY KEY (project_id, event_id, occurred_at)  -- a resent envelope lands on the same key
 ) PARTITION BY RANGE (occurred_at);
 CREATE TABLE events_default PARTITION OF events DEFAULT;
@@ -129,7 +131,7 @@ CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filte
 -- it will have in its pack object. packs are the packs being filled: the
 -- transaction claims the fullest open one nobody else is writing to
 -- (FOR UPDATE SKIP LOCKED; none free → it opens one), advances
--- next_offset — its offset, the same value events.payload_ref carries, so
+-- next_offset — its offset, the same value the event row carries, so
 -- the event row is written once; a rollback returns the bytes, so there
 -- are no gaps — and closes the pack when it reaches blob.PackBytes.
 -- retention.PackPayloads (any process) uploads closed packs and deletes
@@ -138,7 +140,7 @@ CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filte
 -- the object store is down, which is the point.
 
 CREATE TABLE packs (
-    pack_key    TEXT PRIMARY KEY,                    -- the pack object's key (events/<day>/<id>)
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, -- the pack object is events/<id>
     next_offset BIGINT NOT NULL DEFAULT 0,           -- bytes reserved so far
     closed      BOOLEAN NOT NULL DEFAULT false,      -- full: waiting for upload
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -146,12 +148,12 @@ CREATE TABLE packs (
 CREATE INDEX packs_open ON packs (next_offset DESC) WHERE NOT closed;
 
 CREATE TABLE payload_spool (
-    pack_key   TEXT NOT NULL,                        -- the pack object's key (events/<day>/<id>)
-    "offset"   BIGINT NOT NULL,                      -- where the payload sits in it
+    pack_id    BIGINT NOT NULL REFERENCES packs ON DELETE CASCADE,
+    "offset"   INTEGER NOT NULL,                     -- where the payload sits in the pack
     size       INTEGER NOT NULL,                     -- octet_length(data)
     data       BYTEA NOT NULL,                       -- the payload, gzipped
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (pack_key, "offset")
+    PRIMARY KEY (pack_id, "offset")
 );
 
 -- ── sessions (release health) ──────────────────────────────────────────

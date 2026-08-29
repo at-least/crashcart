@@ -58,7 +58,7 @@ S3_SECRET_KEY=…
 
 Payloads are gzipped and written to Postgres with the event (a small
 spool table), already at their place in the next pack object — one per
-8 MB of compressed payloads (`events/<day>/<pack>`; the event row records
+8 MB of compressed payloads (`events/<pack id>`; the event row records
 where its payload sits) — and a full pack is uploaded as one PUT, so the
 bucket sees one request per 8 MB rather than per event and request
 charges stay negligible at any volume.

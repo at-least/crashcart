@@ -49,8 +49,8 @@ will have in a *pack* object: the transaction claims the fullest open
 pack no other transaction is writing to (`packs`, `FOR UPDATE SKIP
 LOCKED`; none free → it opens one), advances the pack's byte counter by
 the envelope's total — the offsets — and closes the pack when that
-reaches 8 MB. So `events.payload_ref` (`<pack>#<offset>#<length>`) is
-written with the row, once; a rollback returns the bytes, so packs have
+reaches 8 MB. So the event row's `pack_id` / `pack_offset` / `pack_len`
+are written with the row, once; a rollback returns the bytes, so packs have
 no gaps; concurrent envelopes take different packs and never wait on
 each other; no pack belongs to a process, so a process dying leaves
 nothing to recover. Every process looks for closed packs every 5 s
@@ -114,8 +114,10 @@ events of each issue are always stored; after that `sample_rate` of them;
 
 **Bytes live in the bucket, rows in Postgres.** The event payload — the
 JSON exactly as the SDK sent it — is gzipped on its own and packed with
-its neighbours into `events/<day>/<pack id>`; `events.payload_ref` is
-`<key>#<offset>#<length>`, and a read is one ranged GET (`store.Payload`
+its neighbours into `events/<pack id>` (`packs.id`, a plain sequence:
+nothing lists the bucket, so the key carries nothing else); the event
+row's `pack_id` / `pack_offset` / `pack_len` say where, and a read is one
+ranged GET (`store.Payload`
 tries the spool first — a primary-key lookup on a small table — which
 also means "not in the spool" implies "already uploaded": no window in
 which a payload is in neither place). Everything
@@ -208,9 +210,9 @@ theme, and the SSE "new issues" banner.
 |---|---|---|---|
 | users / user_sessions / api_keys | table | id / token_hash / id | viewer accounts, session cookies (hashed), API keys (hashed) |
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
-| events | weekly partitions + default | (project_id, event_id, occurred_at) | columns + `payload_ref` into a pack in the bucket |
-| packs | table | pack_key | packs being filled (`next_offset`) or waiting for upload (`closed`) |
-| payload_spool | table | (pack_key, offset) | payloads of those packs, at their offsets |
+| events | weekly partitions + default | (project_id, event_id, occurred_at) | columns + `pack_id` / `pack_offset` / `pack_len` into a pack in the bucket |
+| packs | table | id | packs being filled (`next_offset`) or waiting for upload (`closed`) |
+| payload_spool | table | (pack_id, offset) | payloads of those packs, at their offsets |
 | sessions | weekly partitions + default | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
 | releases | table | (project_id, release) | every release seen, platforms, first_seen |
 | issues | table | (project_id, fingerprint) | stateful |
@@ -222,7 +224,7 @@ theme, and the SSE "new issues" banner.
 | event_stats_hourly_rolled → event_stats_hourly | table → view | bucket, project, release, platform, level | events / crashes / errors; `crashcart_event_stats(…)` reads the view |
 | issue_stats_hourly_rolled → issue_stats_hourly | table → view | bucket, project, fingerprint | sparklines |
 | release_health_hourly_rolled → release_health_hourly | table → view | bucket, project, release | total / crashed / errored sessions |
-| *(bucket)* `events/<day>/<pack>`, `symbols/`, `chunks/` | objects | pack: `payload_ref`; others derived from the row | expired by lifecycle rule |
+| *(bucket)* `events/<pack id>`, `symbols/`, `chunks/` | objects | derived from the row | expired by lifecycle rule |
 
 ## Write cost per event
 

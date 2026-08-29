@@ -371,6 +371,9 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 		t.Error("list must not include payload")
 	}
 	det := e.get("/api/projects/demo/events/"+item["event_id"].(string), 200)
+	if _, ok := det["pack_id"]; ok {
+		t.Error("detail must not expose where the payload is stored")
+	}
 	payload, ok := det["payload"].(map[string]any)
 	if !ok || payload["event_id"] != det["event_id"] {
 		t.Errorf("payload not an object: %v", det["payload"])

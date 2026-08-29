@@ -261,17 +261,13 @@ func TestPackPayloads(t *testing.T) {
 		}
 		return ev
 	}
-	ref := func(id string) (key string, off int64) {
+	ref := func(id string) (pack int64, off int64) {
 		t.Helper()
 		ev := get(id)
-		if ev.PayloadRef == nil {
-			t.Fatalf("%s has no payload_ref", id)
+		if ev.PackID == nil || ev.PackOffset == nil || ev.PackLen == nil {
+			t.Fatalf("%s has no pack", id)
 		}
-		key, off, _, ok := blob.ParseRef(*ev.PayloadRef)
-		if !ok {
-			t.Fatalf("bad ref %q", *ev.PayloadRef)
-		}
-		return key, off
+		return *ev.PackID, int64(*ev.PackOffset)
 	}
 	const a, b, c = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
 	if _, err := in.Ingest(ctx, p, sentry.Parse(event(a), now), now); err != nil {
@@ -280,8 +276,8 @@ func TestPackPayloads(t *testing.T) {
 	// The row carries its ref from the start, at offset 0 of a fresh pack;
 	// the payload is read from the spool while the pack is open.
 	keyA, offA := ref(a)
-	if offA != 0 || !strings.HasPrefix(keyA, blob.PrefixEvents) {
-		t.Fatalf("first ref = %s#%d", keyA, offA)
+	if offA != 0 || keyA == 0 {
+		t.Fatalf("first ref = %d#%d", keyA, offA)
 	}
 	if bs, err := st.Payload(ctx, get(a)); err != nil || !strings.Contains(string(bs), `"message":"boom a1`) {
 		t.Fatalf("payload from spool: %q %v", bs, err)
@@ -306,17 +302,17 @@ func TestPackPayloads(t *testing.T) {
 	}
 	gzA := blob.Gzip(sentry.Parse(event(a), now).Events[0].Raw)
 	if keyB, offB := ref(b); keyB != keyA || offB != int64(len(gzA)) {
-		t.Fatalf("second ref = %s#%d, want %s#%d", keyB, offB, keyA, len(gzA))
+		t.Fatalf("second ref = %d#%d, want %d#%d", keyB, offB, keyA, len(gzA))
 	}
 	// Two envelopes at once take two different packs (the row lock is held
 	// to commit), and both refs stay valid.
-	var otherKey string
+	var otherKey int64
 	err = st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		refs, err := store.SpoolPayloads(ctx, q, [][]byte{blob.Gzip([]byte("{}"))})
+		places, err := store.SpoolPayloads(ctx, q, [][]byte{blob.Gzip([]byte("{}"))})
 		if err != nil {
 			return err
 		}
-		otherKey, _, _, _ = blob.ParseRef(string(refs[0]))
+		otherKey = places[0].PackID
 		// While this holds pack A (or B), another transaction goes elsewhere.
 		if _, err := in.Ingest(ctx, p, sentry.Parse(event(c), now), now); err != nil {
 			return err
@@ -327,7 +323,7 @@ func TestPackPayloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	if keyC, _ := ref(c); keyC == otherKey {
-		t.Fatalf("concurrent envelopes shared pack %s", keyC)
+		t.Fatalf("concurrent envelopes shared pack %d", keyC)
 	}
 	// Closing (the CLI's PackAll) uploads every pack: spool empty, refs
 	// unchanged, payloads now come from the objects.

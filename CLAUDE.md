@@ -35,7 +35,7 @@ internal/
   sentry/             envelope parser, Frame, Fingerprint, ErrorLocation
   db/                 schema.sql (the whole schema, created on first start — no migrations), sqlc_schema.sql
                       (mirror for sqlc; the stats views appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
-  blob/               Store interface + keys (SymbolKey / ChunkKey), packs (BuildPack / Ref / ReadRef), S3 (minio-go), Memory (tests)
+  blob/               Store interface + keys (SymbolKey / ChunkKey / PackKey), packs (AssemblePack / ReadPayload), S3 (minio-go), Memory (tests)
   store/              Store = pool + Blobs + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out)
   auth/               Access (API keys, user sessions, bcrypt), CORS, RateLimit (in-memory), SentryKey
@@ -63,8 +63,8 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
 - Bytes live in the object store, not in Postgres for long: in the ingest
   transaction `store.SpoolPayloads` claims an open pack (`packs`, SKIP
   LOCKED), reserves the offsets and writes the gzipped payloads to
-  `payload_spool`; the returned refs go into `events.payload_ref` with the
-  row (written once). `retention.PackPayloads` (every 5 s in every process)
+  `payload_spool`; the returned places go into the event row's
+  `pack_id` / `pack_offset` / `pack_len` (written once). `retention.PackPayloads` (every 5 s in every process)
   uploads closed packs (8 MB; nothing else closes one) and deletes their
   rows. Read with `store.Payload(ctx, event)` — spool first, then a ranged
   GET; nil when the pack has expired. Packs have no owner: never add

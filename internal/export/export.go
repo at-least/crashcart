@@ -221,7 +221,7 @@ const (
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
 	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
 	os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
-	symbols, payload_ref FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
+	symbols, pack_id, pack_offset, pack_len FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectReleases    = `SELECT project_id, release, platforms, first_seen FROM releases WHERE project_id = $1 ORDER BY release`
 	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
@@ -726,13 +726,12 @@ func (im *importer) flushEvents() error {
 			idx = append(idx, i)
 		}
 	}
-	refs, err := store.SpoolPayloads(im.ctx, im.q, withPayload)
+	places, err := store.SpoolPayloads(im.ctx, im.q, withPayload)
 	if err != nil {
 		return err
 	}
 	for j, i := range idx {
-		r := string(refs[j])
-		rows[i].PayloadRef = &r
+		rows[i].Pack = &places[j]
 	}
 	return store.InsertEvents(im.ctx, im.tx, rows)
 }

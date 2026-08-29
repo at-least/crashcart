@@ -368,7 +368,9 @@ type Event struct {
 	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
 	Symbols       json.RawMessage `json:"symbols"`
-	PayloadRef    *string         `json:"payload_ref"`
+	PackID        *int64          `json:"pack_id"`
+	PackOffset    *int32          `json:"pack_offset"`
+	PackLen       *int32          `json:"pack_len"`
 }
 
 type EventStatsDirty struct {
@@ -448,15 +450,15 @@ type Job struct {
 }
 
 type Pack struct {
-	PackKey    string    `json:"pack_key"`
+	ID         int64     `json:"id"`
 	NextOffset int64     `json:"next_offset"`
 	Closed     bool      `json:"closed"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
 type PayloadSpool struct {
-	PackKey   string    `json:"pack_key"`
-	Offset    int64     `json:"offset"`
+	PackID    int64     `json:"pack_id"`
+	Offset    int32     `json:"offset"`
 	Size      int32     `json:"size"`
 	Data      []byte    `json:"data"`
 	CreatedAt time.Time `json:"created_at"`

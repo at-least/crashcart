@@ -416,13 +416,13 @@ const PackInterval = 5 * time.Second
 // the pack back for the next run; a crash after the PUT only means the
 // same bytes are uploaded again. Returns how many payloads were packed.
 func PackPayloads(ctx context.Context, st *store.Store) (int, error) {
-	keys, err := st.ClosedPacks(ctx)
+	ids, err := st.ClosedPacks(ctx)
 	if err != nil {
 		return 0, err
 	}
 	total := 0
-	for _, key := range keys {
-		n, err := packOne(ctx, st, key)
+	for _, id := range ids {
+		n, err := packOne(ctx, st, id)
 		if err != nil {
 			return total, err
 		}
@@ -431,32 +431,29 @@ func PackPayloads(ctx context.Context, st *store.Store) (int, error) {
 	return total, nil
 }
 
-func packOne(ctx context.Context, st *store.Store, key string) (int, error) {
+func packOne(ctx context.Context, st *store.Store, id int64) (int, error) {
 	n := 0
 	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		if _, err := q.LockClosedPack(ctx, key); err != nil {
+		if _, err := q.LockClosedPack(ctx, id); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil // another process has it, or already uploaded it
 			}
 			return err
 		}
-		rows, err := q.PackRows(ctx, key)
+		rows, err := q.PackRows(ctx, id)
 		if err != nil {
 			return err
 		}
 		if len(rows) > 0 {
 			members := make([]blob.PackMember, len(rows))
 			for i, r := range rows {
-				members[i] = blob.PackMember{Off: r.Offset, Data: r.Data}
+				members[i] = blob.PackMember{Off: int64(r.Offset), Data: r.Data}
 			}
-			if err := st.Blobs.PutRaw(ctx, key, blob.AssemblePack(members)); err != nil {
-				return err
-			}
-			if err := q.DeletePack(ctx, key); err != nil {
+			if err := st.Blobs.PutRaw(ctx, blob.PackKey(id), blob.AssemblePack(members)); err != nil {
 				return err
 			}
 		}
-		if err := q.DeletePackRow(ctx, key); err != nil {
+		if err := q.DeletePack(ctx, id); err != nil { // the spool rows cascade
 			return err
 		}
 		n = len(rows)

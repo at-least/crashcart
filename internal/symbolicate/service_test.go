@@ -51,15 +51,14 @@ func storeEvent(t *testing.T, st *store.Store, p sqlc.Project, raw string) (id, 
 		}); err != nil {
 			return err
 		}
-		refs, err := store.SpoolPayloads(ctx, q, [][]byte{blob.Gzip(ev.Raw)})
+		places, err := store.SpoolPayloads(ctx, q, [][]byte{blob.Gzip(ev.Raw)})
 		if err != nil {
 			return err
 		}
-		r := string(refs[0])
 		return store.InsertEvents(ctx, tx, []store.EventInsert{{
 			OccurredAt: at, ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message, Platform: nilIfEmpty(ev.Platform),
 			Release: nilIfEmpty(ev.Release), ErrorType: nilIfEmpty(ev.ErrorType), Fingerprint: &fp,
-			Tags: []byte("{}"), PayloadRef: &r,
+			Tags: []byte("{}"), Pack: &places[0],
 		}})
 	})
 	if err != nil {

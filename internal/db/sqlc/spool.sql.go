@@ -12,13 +12,13 @@ import (
 
 const advancePack = `-- name: AdvancePack :one
 UPDATE packs SET next_offset = next_offset + $2::bigint, closed = next_offset + $2::bigint >= $3::bigint
-WHERE pack_key = $1 RETURNING (next_offset - $2::bigint)::bigint AS off, closed
+WHERE id = $1 RETURNING (next_offset - $2::bigint)::bigint AS off, closed
 `
 
 type AdvancePackParams struct {
-	PackKey  string `json:"pack_key"`
-	N        int64  `json:"n"`
-	MaxBytes int64  `json:"max_bytes"`
+	ID       int64 `json:"id"`
+	N        int64 `json:"n"`
+	MaxBytes int64 `json:"max_bytes"`
 }
 
 type AdvancePackRow struct {
@@ -29,7 +29,7 @@ type AdvancePackRow struct {
 // Reserves n bytes in a claimed pack; the pack closes when that reaches
 // max_bytes. Rolling the transaction back returns the bytes: no gaps.
 func (q *Queries) AdvancePack(ctx context.Context, arg AdvancePackParams) (AdvancePackRow, error) {
-	row := q.db.QueryRow(ctx, advancePack, arg.PackKey, arg.N, arg.MaxBytes)
+	row := q.db.QueryRow(ctx, advancePack, arg.ID, arg.N, arg.MaxBytes)
 	var i AdvancePackRow
 	err := row.Scan(&i.Off, &i.Closed)
 	return i, err
@@ -37,26 +37,26 @@ func (q *Queries) AdvancePack(ctx context.Context, arg AdvancePackParams) (Advan
 
 const claimOpenPack = `-- name: ClaimOpenPack :one
 
-SELECT pack_key, next_offset FROM packs WHERE NOT closed
+SELECT id, next_offset FROM packs WHERE NOT closed
 ORDER BY next_offset DESC LIMIT 1 FOR UPDATE SKIP LOCKED
 `
 
 type ClaimOpenPackRow struct {
-	PackKey    string `json:"pack_key"`
-	NextOffset int64  `json:"next_offset"`
+	ID         int64 `json:"id"`
+	NextOffset int64 `json:"next_offset"`
 }
 
 // Payload packs: packs is the set of pack objects being filled (closed =
 // false, any number, chosen with SKIP LOCKED so concurrent envelopes never
 // wait on each other) or waiting for upload (closed = true);
 // payload_spool holds the payloads of those packs, each at its offset.
-// The event row's payload_ref was written with them.
+// The event row's pack_id / pack_offset / pack_len were written with them.
 // The fullest open pack no other transaction is writing to (its row lock
 // is ours until commit). ErrNoRows: open one (OpenPack).
 func (q *Queries) ClaimOpenPack(ctx context.Context) (ClaimOpenPackRow, error) {
 	row := q.db.QueryRow(ctx, claimOpenPack)
 	var i ClaimOpenPackRow
-	err := row.Scan(&i.PackKey, &i.NextOffset)
+	err := row.Scan(&i.ID, &i.NextOffset)
 	return i, err
 }
 
@@ -74,22 +74,22 @@ func (q *Queries) CloseOpenPacks(ctx context.Context) (int64, error) {
 }
 
 const closedPacks = `-- name: ClosedPacks :many
-SELECT pack_key FROM packs WHERE closed ORDER BY created_at
+SELECT id FROM packs WHERE closed ORDER BY id
 `
 
-func (q *Queries) ClosedPacks(ctx context.Context) ([]string, error) {
+func (q *Queries) ClosedPacks(ctx context.Context) ([]int64, error) {
 	rows, err := q.db.Query(ctx, closedPacks)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []string{}
+	items := []int64{}
 	for rows.Next() {
-		var pack_key string
-		if err := rows.Scan(&pack_key); err != nil {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		items = append(items, pack_key)
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -109,20 +109,12 @@ func (q *Queries) CountSpool(ctx context.Context) (int64, error) {
 }
 
 const deletePack = `-- name: DeletePack :exec
-DELETE FROM payload_spool WHERE pack_key = $1
+DELETE FROM packs WHERE id = $1
 `
 
-func (q *Queries) DeletePack(ctx context.Context, packKey string) error {
-	_, err := q.db.Exec(ctx, deletePack, packKey)
-	return err
-}
-
-const deletePackRow = `-- name: DeletePackRow :exec
-DELETE FROM packs WHERE pack_key = $1
-`
-
-func (q *Queries) DeletePackRow(ctx context.Context, packKey string) error {
-	_, err := q.db.Exec(ctx, deletePackRow, packKey)
+// The spool rows go with it (ON DELETE CASCADE).
+func (q *Queries) DeletePack(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deletePack, id)
 	return err
 }
 
@@ -141,44 +133,43 @@ func (q *Queries) ExpireSpool(ctx context.Context, createdAt time.Time) (int64, 
 }
 
 const lockClosedPack = `-- name: LockClosedPack :one
-SELECT pack_key FROM packs WHERE pack_key = $1 AND closed FOR UPDATE SKIP LOCKED
+SELECT id FROM packs WHERE id = $1 AND closed FOR UPDATE SKIP LOCKED
 `
 
 // Claims a closed pack for upload; another process's claim is skipped.
-func (q *Queries) LockClosedPack(ctx context.Context, packKey string) (string, error) {
-	row := q.db.QueryRow(ctx, lockClosedPack, packKey)
-	var pack_key string
-	err := row.Scan(&pack_key)
-	return pack_key, err
+func (q *Queries) LockClosedPack(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRow(ctx, lockClosedPack, id)
+	err := row.Scan(&id)
+	return id, err
 }
 
 const openPack = `-- name: OpenPack :one
-INSERT INTO packs (pack_key) VALUES ($1) RETURNING pack_key, next_offset
+INSERT INTO packs DEFAULT VALUES RETURNING id, next_offset
 `
 
 type OpenPackRow struct {
-	PackKey    string `json:"pack_key"`
-	NextOffset int64  `json:"next_offset"`
+	ID         int64 `json:"id"`
+	NextOffset int64 `json:"next_offset"`
 }
 
-func (q *Queries) OpenPack(ctx context.Context, packKey string) (OpenPackRow, error) {
-	row := q.db.QueryRow(ctx, openPack, packKey)
+func (q *Queries) OpenPack(ctx context.Context) (OpenPackRow, error) {
+	row := q.db.QueryRow(ctx, openPack)
 	var i OpenPackRow
-	err := row.Scan(&i.PackKey, &i.NextOffset)
+	err := row.Scan(&i.ID, &i.NextOffset)
 	return i, err
 }
 
 const packRows = `-- name: PackRows :many
-SELECT "offset", data FROM payload_spool WHERE pack_key = $1 ORDER BY "offset"
+SELECT "offset", data FROM payload_spool WHERE pack_id = $1 ORDER BY "offset"
 `
 
 type PackRowsRow struct {
-	Offset int64  `json:"offset"`
+	Offset int32  `json:"offset"`
 	Data   []byte `json:"data"`
 }
 
-func (q *Queries) PackRows(ctx context.Context, packKey string) ([]PackRowsRow, error) {
-	rows, err := q.db.Query(ctx, packRows, packKey)
+func (q *Queries) PackRows(ctx context.Context, packID int64) ([]PackRowsRow, error) {
+	rows, err := q.db.Query(ctx, packRows, packID)
 	if err != nil {
 		return nil, err
 	}
@@ -198,34 +189,34 @@ func (q *Queries) PackRows(ctx context.Context, packKey string) ([]PackRowsRow, 
 }
 
 const spoolPayloads = `-- name: SpoolPayloads :exec
-INSERT INTO payload_spool (pack_key, "offset", data, size)
-SELECT d.pack_key, d.off, d.data, octet_length(d.data)
-FROM (SELECT unnest($1::text[]) AS pack_key, unnest($2::bigint[]) AS off, unnest($3::bytea[]) AS data) AS d
-ON CONFLICT (pack_key, "offset") DO NOTHING
+INSERT INTO payload_spool (pack_id, "offset", data, size)
+SELECT d.pack_id, d.off, d.data, octet_length(d.data)
+FROM (SELECT unnest($1::bigint[]) AS pack_id, unnest($2::int[]) AS off, unnest($3::bytea[]) AS data) AS d
+ON CONFLICT (pack_id, "offset") DO NOTHING
 `
 
 type SpoolPayloadsParams struct {
-	PackKeys []string `json:"pack_keys"`
-	Offsets  []int64  `json:"offsets"`
-	Datas    [][]byte `json:"datas"`
+	PackIds []int64  `json:"pack_ids"`
+	Offsets []int32  `json:"offsets"`
+	Datas   [][]byte `json:"datas"`
 }
 
 func (q *Queries) SpoolPayloads(ctx context.Context, arg SpoolPayloadsParams) error {
-	_, err := q.db.Exec(ctx, spoolPayloads, arg.PackKeys, arg.Offsets, arg.Datas)
+	_, err := q.db.Exec(ctx, spoolPayloads, arg.PackIds, arg.Offsets, arg.Datas)
 	return err
 }
 
 const spooledPayload = `-- name: SpooledPayload :one
-SELECT data FROM payload_spool WHERE pack_key = $1 AND "offset" = $2
+SELECT data FROM payload_spool WHERE pack_id = $1 AND "offset" = $2
 `
 
 type SpooledPayloadParams struct {
-	PackKey string `json:"pack_key"`
-	Offset  int64  `json:"offset"`
+	PackID int64 `json:"pack_id"`
+	Offset int32 `json:"offset"`
 }
 
 func (q *Queries) SpooledPayload(ctx context.Context, arg SpooledPayloadParams) ([]byte, error) {
-	row := q.db.QueryRow(ctx, spooledPayload, arg.PackKey, arg.Offset)
+	row := q.db.QueryRow(ctx, spooledPayload, arg.PackID, arg.Offset)
 	var data []byte
 	err := row.Scan(&data)
 	return data, err

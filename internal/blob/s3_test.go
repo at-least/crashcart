@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
-	"time"
 )
 
 // s3Test returns a client on TEST_S3_* (a MinIO, say) or skips.
@@ -95,10 +93,13 @@ func testPacker(t *testing.T, s Store) {
 	for i := 0; i < 3; i++ {
 		payloads = append(payloads, []byte(fmt.Sprintf(`{"event_id":"%d","message":"payload number %d"}`, i, i)))
 	}
-	// Laid out with a gap after the first member (a rolled-back envelope).
-	key := PackKey(time.Now())
+	// Laid out with a gap after the first member.
+	const id = 42
+	if PackKey(id) != "events/42" {
+		t.Fatalf("key = %q", PackKey(id))
+	}
 	var members []PackMember
-	var refs []Ref
+	var offs, lens []int64
 	off := int64(0)
 	for i, p := range payloads {
 		gz := Gzip(p)
@@ -106,26 +107,22 @@ func testPacker(t *testing.T, s Store) {
 			off += 100
 		}
 		members = append(members, PackMember{Off: off, Data: gz})
-		refs = append(refs, NewRef(key, off, int64(len(gz))))
+		offs, lens = append(offs, off), append(lens, int64(len(gz)))
 		off += int64(len(gz))
 	}
 	data := AssemblePack(members)
 	if int64(len(data)) != off {
 		t.Fatalf("pack is %d bytes, want %d", len(data), off)
 	}
-	// Not uploaded yet: the refs point at a pack that does not exist.
-	if _, err := ReadRef(ctx, s, string(refs[0])); !errors.Is(err, ErrNotFound) {
+	// Not uploaded yet.
+	if _, err := ReadPayload(ctx, s, id, offs[0], lens[0]); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("before upload: %v", err)
 	}
-	if err := s.PutRaw(ctx, key, data); err != nil {
+	if err := s.PutRaw(ctx, PackKey(id), data); err != nil {
 		t.Fatal(err)
 	}
-	for i, ref := range refs {
-		key, _, _, ok := ParseRef(string(ref))
-		if !ok || !strings.HasPrefix(key, PrefixEvents) {
-			t.Fatalf("ref %q", ref)
-		}
-		b, err := ReadRef(ctx, s, string(ref))
+	for i := range payloads {
+		b, err := ReadPayload(ctx, s, id, offs[i], lens[i])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,19 +130,10 @@ func testPacker(t *testing.T, s Store) {
 			t.Fatalf("payload %d = %q", i, b)
 		}
 	}
-	if PackKey(time.Now()) == key {
-		t.Fatal("pack keys repeat")
-	}
 }
 
 func TestPackerMemory(t *testing.T) {
 	testPacker(t, NewMemory())
-	if _, _, _, ok := ParseRef("events/2026-08-30/abc#12#x"); ok {
-		t.Fatal("bad ref parsed")
-	}
-	if k, off, n, ok := ParseRef("events/2026-08-30/abc#12#34"); !ok || k != "events/2026-08-30/abc" || off != 12 || n != 34 {
-		t.Fatalf("parse = %q %d %d %v", k, off, n, ok)
-	}
 }
 
 func TestMemory(t *testing.T) {

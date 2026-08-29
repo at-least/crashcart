@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,34 +33,38 @@ func New(pool *pgxpool.Pool, blobs blob.Store) *Store {
 // nil, nil when the event has none (its pack expired, or it was imported
 // without one).
 func (s *Store) Payload(ctx context.Context, e sqlc.Event) ([]byte, error) {
-	if e.PayloadRef == nil {
+	if e.PackID == nil || e.PackOffset == nil || e.PackLen == nil {
 		return nil, nil
 	}
-	key, off, _, ok := blob.ParseRef(*e.PayloadRef)
-	if !ok {
-		return nil, fmt.Errorf("event %s: bad payload ref %q", e.EventID, *e.PayloadRef)
-	}
-	b, err := s.SpooledPayload(ctx, sqlc.SpooledPayloadParams{PackKey: key, Offset: off})
+	b, err := s.SpooledPayload(ctx, sqlc.SpooledPayloadParams{PackID: *e.PackID, Offset: *e.PackOffset})
 	if err == nil {
 		return blob.Gunzip(b)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	b, err = blob.ReadRef(ctx, s.Blobs, *e.PayloadRef)
+	b, err = blob.ReadPayload(ctx, s.Blobs, *e.PackID, int64(*e.PackOffset), int64(*e.PackLen))
 	if errors.Is(err, blob.ErrNotFound) {
 		return nil, nil
 	}
 	return b, err
 }
 
+// PayloadPlace is where a payload sits: the event row's pack_id,
+// pack_offset and pack_len.
+type PayloadPlace struct {
+	PackID int64
+	Offset int32
+	Len    int32
+}
+
 // SpoolPayloads reserves room for gzipped payloads in a pack and writes
 // them to the spool, inside the caller's transaction: it claims the
 // fullest open pack no other transaction holds (or opens one), advances
-// its counter by the total, and returns each payload's Ref for its event
-// row. The pack's row lock is held until commit, so concurrent envelopes
-// use different packs; a rollback returns the bytes.
-func SpoolPayloads(ctx context.Context, q *sqlc.Queries, payloads [][]byte) ([]blob.Ref, error) {
+// its counter by the total, and returns each payload's place for its
+// event row. The pack's row lock is held until commit, so concurrent
+// envelopes use different packs; a rollback returns the bytes.
+func SpoolPayloads(ctx context.Context, q *sqlc.Queries, payloads [][]byte) ([]PayloadPlace, error) {
 	if len(payloads) == 0 {
 		return nil, nil
 	}
@@ -70,30 +73,31 @@ func SpoolPayloads(ctx context.Context, q *sqlc.Queries, payloads [][]byte) ([]b
 		total += int64(len(p))
 	}
 	pack, err := q.ClaimOpenPack(ctx)
-	key := pack.PackKey
+	id := pack.ID
 	if errors.Is(err, pgx.ErrNoRows) {
-		key = blob.PackKey(time.Now())
-		_, err = q.OpenPack(ctx, key)
+		var opened sqlc.OpenPackRow
+		opened, err = q.OpenPack(ctx)
+		id = opened.ID
 	}
 	if err != nil {
 		return nil, fmt.Errorf("claim pack: %w", err)
 	}
-	adv, err := q.AdvancePack(ctx, sqlc.AdvancePackParams{PackKey: key, N: total, MaxBytes: blob.PackBytes})
+	adv, err := q.AdvancePack(ctx, sqlc.AdvancePackParams{ID: id, N: total, MaxBytes: blob.PackBytes})
 	if err != nil {
 		return nil, fmt.Errorf("advance pack: %w", err)
 	}
-	refs := make([]blob.Ref, len(payloads))
-	sp := sqlc.SpoolPayloadsParams{PackKeys: make([]string, len(payloads)), Offsets: make([]int64, len(payloads)), Datas: payloads}
+	places := make([]PayloadPlace, len(payloads))
+	sp := sqlc.SpoolPayloadsParams{PackIds: make([]int64, len(payloads)), Offsets: make([]int32, len(payloads)), Datas: payloads}
 	off := adv.Off
 	for i, p := range payloads {
-		refs[i] = blob.NewRef(key, off, int64(len(p)))
-		sp.PackKeys[i], sp.Offsets[i] = key, off
+		places[i] = PayloadPlace{PackID: id, Offset: int32(off), Len: int32(len(p))}
+		sp.PackIds[i], sp.Offsets[i] = id, int32(off)
 		off += int64(len(p))
 	}
 	if err := q.SpoolPayloads(ctx, sp); err != nil {
 		return nil, fmt.Errorf("spool payloads: %w", err)
 	}
-	return refs, nil
+	return places, nil
 }
 
 // Tx runs fn inside a transaction with a transaction-scoped Queries.

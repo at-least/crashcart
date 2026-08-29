@@ -4,21 +4,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
-	"strconv"
-	"strings"
-	"time"
 )
 
 // Payloads are stored in packs: one object holding many payloads, each
 // gzipped on its own (Gzip, at ingest), so the object store sees one PUT
 // per PackBytes of payloads (PUT requests are what an S3 bill is made of)
-// and a read is one ranged GET. Each process fills a pack of its own
-// (store.PackAllocator) and the event row holds the Ref of its payload
-// from the start; retention.PackPayloads uploads a pack once it is
-// closed.
+// and a read is one ranged GET. Packs are rows of the packs table
+// (store.SpoolPayloads places payloads in them) and the event row holds
+// its payload's pack, offset and length from the start;
+// retention.PackPayloads uploads a pack once it is closed.
 
 // PackBytes is the size at which a pack closes.
 const PackBytes = 8 << 20
@@ -45,37 +40,8 @@ func Gunzip(data []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// Ref locates one payload inside a pack: "<key>#<offset>#<length>".
-type Ref string
-
-// NewRef builds a Ref.
-func NewRef(key string, off, n int64) Ref { return Ref(fmt.Sprintf("%s#%d#%d", key, off, n)) }
-
-// ParseRef splits a Ref.
-func ParseRef(r string) (key string, off, n int64, ok bool) {
-	i := strings.LastIndexByte(r, '#')
-	if i < 0 {
-		return "", 0, 0, false
-	}
-	j := strings.LastIndexByte(r[:i], '#')
-	if j < 0 {
-		return "", 0, 0, false
-	}
-	off, err1 := strconv.ParseInt(r[j+1:i], 10, 64)
-	n, err2 := strconv.ParseInt(r[i+1:], 10, 64)
-	if err1 != nil || err2 != nil || off < 0 || n <= 0 || r[:j] == "" {
-		return "", 0, 0, false
-	}
-	return r[:j], off, n, true
-}
-
-// PackKey names a pack by the UTC day it was opened (so the events/
-// lifecycle rule applies) and a random id (so processes never collide).
-func PackKey(now time.Time) string {
-	b := make([]byte, 12)
-	rand.Read(b)
-	return fmt.Sprintf("%s%s/%s", PrefixEvents, now.UTC().Format("2006-01-02"), hex.EncodeToString(b))
-}
+// PackKey is the object key of pack id.
+func PackKey(id int64) string { return fmt.Sprintf("%s%d", PrefixEvents, id) }
 
 // PackMember is one payload at its offset.
 type PackMember struct {
@@ -97,20 +63,16 @@ func AssemblePack(members []PackMember) []byte {
 	return buf.Bytes()
 }
 
-// ReadRef fetches one payload by its Ref: a ranged GET of the pack, then
+// ReadPayload fetches one payload from its pack: a ranged GET, then
 // gunzip. ErrNotFound when the pack is not (or no longer) there.
-func ReadRef(ctx context.Context, s Store, ref string) ([]byte, error) {
-	key, off, n, ok := ParseRef(ref)
-	if !ok {
-		return nil, fmt.Errorf("blob: bad payload ref %q", ref)
-	}
-	raw, err := s.GetRange(ctx, key, off, n)
+func ReadPayload(ctx context.Context, s Store, packID int64, off, n int64) ([]byte, error) {
+	raw, err := s.GetRange(ctx, PackKey(packID), off, n)
 	if err != nil {
 		return nil, err
 	}
 	out, err := Gunzip(raw)
 	if err != nil {
-		return nil, fmt.Errorf("blob: payload %s: %w", ref, err)
+		return nil, fmt.Errorf("blob: payload %d@%d: %w", packID, off, err)
 	}
 	return out, nil
 }
