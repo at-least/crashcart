@@ -95,11 +95,24 @@ func testPacker(t *testing.T, s Store) {
 	for i := 0; i < 3; i++ {
 		payloads = append(payloads, []byte(fmt.Sprintf(`{"event_id":"%d","message":"payload number %d"}`, i, i)))
 	}
-	for i := range payloads {
-		payloads[i] = Gzip(payloads[i])
-	}
+	// Laid out with a gap after the first member (a rolled-back envelope).
 	key := PackKey(time.Now())
-	data, refs := BuildPack(key, payloads)
+	var members []PackMember
+	var refs []Ref
+	off := int64(0)
+	for i, p := range payloads {
+		gz := Gzip(p)
+		if i == 1 {
+			off += 100
+		}
+		members = append(members, PackMember{Off: off, Data: gz})
+		refs = append(refs, NewRef(key, off, int64(len(gz))))
+		off += int64(len(gz))
+	}
+	data := AssemblePack(members)
+	if int64(len(data)) != off {
+		t.Fatalf("pack is %d bytes, want %d", len(data), off)
+	}
 	// Not uploaded yet: the refs point at a pack that does not exist.
 	if _, err := ReadRef(ctx, s, string(refs[0])); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("before upload: %v", err)

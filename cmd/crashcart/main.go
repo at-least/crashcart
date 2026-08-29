@@ -215,10 +215,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	// stays as the fallback).
 	listener := &store.Listener{Pool: st.Pool, Log: log}
 	go listener.Run(ctx)
-	// Every process drains the payload spool into packs (SKIP LOCKED: they
-	// share the work rather than repeat it).
+	// Every process uploads the closed payload packs (SKIP LOCKED keeps
+	// them from repeating each other's work).
 	go every(ctx, retention.PackInterval, func() {
-		if _, err := retention.PackPayloads(ctx, st, false); err != nil {
+		if _, err := retention.PackPayloads(ctx, st); err != nil {
 			log.Error("payload pack", "err", err)
 		}
 	})

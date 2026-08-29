@@ -447,13 +447,19 @@ type Job struct {
 	CreatedAt   time.Time       `json:"created_at"`
 }
 
-type PayloadSpool struct {
-	ProjectID  int64     `json:"project_id"`
-	EventID    sentry.ID `json:"event_id"`
-	OccurredAt time.Time `json:"occurred_at"`
-	Data       []byte    `json:"data"`
-	Size       int32     `json:"size"`
+type Pack struct {
+	PackKey    string    `json:"pack_key"`
+	NextOffset int64     `json:"next_offset"`
+	Closed     bool      `json:"closed"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type PayloadSpool struct {
+	PackKey   string    `json:"pack_key"`
+	Offset    int64     `json:"offset"`
+	Size      int32     `json:"size"`
+	Data      []byte    `json:"data"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Project struct {

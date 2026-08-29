@@ -57,10 +57,11 @@ S3_SECRET_KEY=…
 ```
 
 Payloads are gzipped and written to Postgres with the event (a small
-spool table), then moved to the bucket in batches — packed into one
-object per 8 MB of compressed payloads (`events/<day>/<pack>`; the event row
-records where its payload sits) — so the bucket sees one PUT per batch
-rather than per event and request charges stay negligible at any volume.
+spool table), already at their place in the next pack object — one per
+8 MB of compressed payloads (`events/<day>/<pack>`; the event row records
+where its payload sits) — and a full pack is uploaded as one PUT, so the
+bucket sees one request per 8 MB rather than per event and request
+charges stay negligible at any volume.
 Nothing is lost if the bucket is unreachable: payloads wait in the spool
 (readable from there meanwhile) until it is back. Symbol files are one
 object each (`symbols/<project>/<id>`). An object that outlives its rows

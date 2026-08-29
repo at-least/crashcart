@@ -1,53 +1,57 @@
--- payload_spool: payloads written in the ingest transaction, drained into
--- packs in the object store by retention.PackPayloads.
+-- Payload packs: packs is the set of pack objects being filled (closed =
+-- false, any number, chosen with SKIP LOCKED so concurrent envelopes never
+-- wait on each other) or waiting for upload (closed = true);
+-- payload_spool holds the payloads of those packs, each at its offset.
+-- The event row's payload_ref was written with them.
+
+-- name: ClaimOpenPack :one
+-- The fullest open pack no other transaction is writing to (its row lock
+-- is ours until commit). ErrNoRows: open one (OpenPack).
+SELECT pack_key, next_offset FROM packs WHERE NOT closed
+ORDER BY next_offset DESC LIMIT 1 FOR UPDATE SKIP LOCKED;
+
+-- name: OpenPack :one
+INSERT INTO packs (pack_key) VALUES ($1) RETURNING pack_key, next_offset;
+
+-- name: AdvancePack :one
+-- Reserves n bytes in a claimed pack; the pack closes when that reaches
+-- max_bytes. Rolling the transaction back returns the bytes: no gaps.
+UPDATE packs SET next_offset = next_offset + sqlc.arg(n)::bigint, closed = next_offset + sqlc.arg(n)::bigint >= sqlc.arg(max_bytes)::bigint
+WHERE pack_key = $1 RETURNING (next_offset - sqlc.arg(n)::bigint)::bigint AS off, closed;
 
 -- name: SpoolPayloads :exec
-INSERT INTO payload_spool (project_id, event_id, occurred_at, data, size)
-SELECT sqlc.arg(project_id)::bigint, d.event_id, d.occurred_at, d.data, octet_length(d.data)
-FROM (SELECT unnest(sqlc.arg(event_ids)::uuid[]) AS event_id, unnest(sqlc.arg(occurred_ats)::timestamptz[]) AS occurred_at, unnest(sqlc.arg(datas)::bytea[]) AS data) AS d
-ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING;
+INSERT INTO payload_spool (pack_key, "offset", data, size)
+SELECT d.pack_key, d.off, d.data, octet_length(d.data)
+FROM (SELECT unnest(sqlc.arg(pack_keys)::text[]) AS pack_key, unnest(sqlc.arg(offsets)::bigint[]) AS off, unnest(sqlc.arg(datas)::bytea[]) AS data) AS d
+ON CONFLICT (pack_key, "offset") DO NOTHING;
 
 -- name: SpooledPayload :one
-SELECT data FROM payload_spool WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3;
+SELECT data FROM payload_spool WHERE pack_key = $1 AND "offset" = $2;
 
--- name: ClaimSpool :many
--- One pack's worth, oldest first: the rows whose running size stays
--- under max_bytes (the first row always qualifies), at most max_rows.
--- The window runs over size only; data is read for the chosen rows. The
--- lock keeps another process from packing the same rows (they pack the
--- next batch instead).
-SELECT s.project_id, s.event_id, s.occurred_at, s.data FROM payload_spool s
-WHERE (s.project_id, s.event_id, s.occurred_at) IN (
-    SELECT project_id, event_id, occurred_at FROM (
-        SELECT project_id, event_id, occurred_at, size,
-               sum(size) OVER (ORDER BY created_at, event_id) AS running
-        FROM payload_spool ORDER BY created_at, event_id LIMIT sqlc.arg(max_rows)::int) AS w
-    WHERE running - size < sqlc.arg(max_bytes)::bigint)
-ORDER BY s.created_at, s.event_id
-FOR UPDATE SKIP LOCKED;
+-- name: ClosedPacks :many
+SELECT pack_key FROM packs WHERE closed ORDER BY created_at;
 
--- name: SetPayloadRefs :exec
-UPDATE events e SET payload_ref = r.ref
-FROM (SELECT unnest(sqlc.arg(project_ids)::bigint[]) AS project_id, unnest(sqlc.arg(event_ids)::uuid[]) AS event_id,
-             unnest(sqlc.arg(occurred_ats)::timestamptz[]) AS occurred_at, unnest(sqlc.arg(refs)::text[]) AS ref) AS r
-WHERE e.project_id = r.project_id AND e.event_id = r.event_id AND e.occurred_at = r.occurred_at;
+-- name: LockClosedPack :one
+-- Claims a closed pack for upload; another process's claim is skipped.
+SELECT pack_key FROM packs WHERE pack_key = $1 AND closed FOR UPDATE SKIP LOCKED;
 
--- name: DeleteSpooled :exec
-DELETE FROM payload_spool s
-USING (SELECT unnest(sqlc.arg(project_ids)::bigint[]) AS project_id, unnest(sqlc.arg(event_ids)::uuid[]) AS event_id,
-              unnest(sqlc.arg(occurred_ats)::timestamptz[]) AS occurred_at) AS r
-WHERE s.project_id = r.project_id AND s.event_id = r.event_id AND s.occurred_at = r.occurred_at;
+-- name: CloseOpenPacks :execrows
+-- Everything waiting goes out now (the CLI after an import or seed).
+UPDATE packs SET closed = true WHERE NOT closed;
+
+-- name: PackRows :many
+SELECT "offset", data FROM payload_spool WHERE pack_key = $1 ORDER BY "offset";
+
+-- name: DeletePack :exec
+DELETE FROM payload_spool WHERE pack_key = $1;
+
+-- name: DeletePackRow :exec
+DELETE FROM packs WHERE pack_key = $1;
 
 -- name: CountSpool :one
 SELECT count(*) FROM payload_spool;
 
--- name: SpoolReady :one
--- Whether a pack is due: max_bytes of payloads waiting, or max_rows of
--- them. Cheap (sizes only, no data), checked before claiming.
-SELECT (coalesce(sum(size), 0) >= sqlc.arg(max_bytes)::bigint OR count(*) >= sqlc.arg(max_rows)::int)::boolean AS ready
-FROM (SELECT size FROM payload_spool LIMIT sqlc.arg(max_rows)::int) AS s;
-
 -- name: ExpireSpool :execrows
--- Payloads whose events have been dropped by retention before a pack
--- filled up (a very quiet project).
+-- Rows older than retention: their events are gone (a pack that never
+-- filled on a very quiet project).
 DELETE FROM payload_spool WHERE created_at < $1;

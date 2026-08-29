@@ -21,7 +21,8 @@
 // Event payloads and symbol file bytes come from the object store and are
 // embedded ("payload", "data"); a row whose object is missing is exported
 // without it. Import writes symbol files back to the object store as it
-// goes and payloads into the spool (packed by the next PackPayloads).
+// goes and payloads into a pack (closed and uploaded by PackAll when the
+// command ends).
 //
 // Import is idempotent: events and sessions are inserted with
 // ON CONFLICT DO NOTHING, everything else is upserted on its natural key
@@ -431,7 +432,7 @@ type importer struct {
 	q        *sqlc.Queries
 	projects map[string]int64 // slug → id
 	events   []store.EventInsert
-	spool    []sqlc.SpoolPayloadsParams   // the events' payloads, written with the events batch
+	payloads [][]byte                     // events[i]'s gzipped payload (nil: none), spooled with the batch
 	batch    *pgx.Batch                   // sessions / issues / alert rows
 	dirtyE   map[int64]map[time.Time]bool // project → hours of events written (stats rollup)
 	dirtyS   map[int64]map[time.Time]bool // project → hours of sessions written
@@ -567,9 +568,11 @@ func (im *importer) line(b []byte) error {
 			}
 			fp = &id
 		}
+		var gz []byte
 		if len(r.Payload) > 0 && string(r.Payload) != "null" {
-			im.spool = append(im.spool, sqlc.SpoolPayloadsParams{ProjectID: pid, EventIds: []sentry.ID{eid}, OccurredAts: []time.Time{r.OccurredAt.Time}, Datas: [][]byte{blob.Gzip([]byte(r.Payload))}})
+			gz = blob.Gzip([]byte(r.Payload))
 		}
+		im.payloads = append(im.payloads, gz)
 		im.events = append(im.events, store.EventInsert{
 			OccurredAt: r.OccurredAt.Time, ProjectID: pid, EventID: eid, Level: r.Level, Message: r.Message, Platform: r.Platform,
 			Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID, DeviceModel: r.DeviceModel,
@@ -713,18 +716,25 @@ func (im *importer) flushEvents() error {
 	if len(im.events) == 0 {
 		return nil
 	}
-	rows := im.events
-	im.events = nil
-	if err := store.InsertEvents(im.ctx, im.tx, rows); err != nil {
-		return err
-	}
-	for _, sp := range im.spool {
-		if err := im.q.SpoolPayloads(im.ctx, sp); err != nil {
-			return err
+	rows, payloads := im.events, im.payloads
+	im.events, im.payloads = nil, nil
+	var withPayload [][]byte
+	var idx []int
+	for i, gz := range payloads {
+		if gz != nil {
+			withPayload = append(withPayload, gz)
+			idx = append(idx, i)
 		}
 	}
-	im.spool = nil
-	return nil
+	refs, err := store.SpoolPayloads(im.ctx, im.q, withPayload)
+	if err != nil {
+		return err
+	}
+	for j, i := range idx {
+		r := string(refs[j])
+		rows[i].PayloadRef = &r
+	}
+	return store.InsertEvents(im.ctx, im.tx, rows)
 }
 
 func (im *importer) flushBatch() error {

@@ -13,11 +13,15 @@ import (
 )
 
 // Payloads are stored in packs: one object holding many payloads, each
-// gzipped on its own (Gzip, at ingest — the spool already holds them
-// compressed), so the object store sees one PUT per batch (PUT requests
-// are what an S3 bill is made of) and a read is one ranged GET. The event
-// row holds the Ref of its payload. Packs are built from the payload_spool
-// table by retention.PackPayloads.
+// gzipped on its own (Gzip, at ingest), so the object store sees one PUT
+// per PackBytes of payloads (PUT requests are what an S3 bill is made of)
+// and a read is one ranged GET. Each process fills a pack of its own
+// (store.PackAllocator) and the event row holds the Ref of its payload
+// from the start; retention.PackPayloads uploads a pack once it is
+// closed.
+
+// PackBytes is the size at which a pack closes.
+const PackBytes = 8 << 20
 
 // Gzip compresses one payload for the spool and the pack.
 func Gzip(data []byte) []byte {
@@ -44,6 +48,9 @@ func Gunzip(data []byte) ([]byte, error) {
 // Ref locates one payload inside a pack: "<key>#<offset>#<length>".
 type Ref string
 
+// NewRef builds a Ref.
+func NewRef(key string, off, n int64) Ref { return Ref(fmt.Sprintf("%s#%d#%d", key, off, n)) }
+
 // ParseRef splits a Ref.
 func ParseRef(r string) (key string, off, n int64, ok bool) {
 	i := strings.LastIndexByte(r, '#')
@@ -62,29 +69,36 @@ func ParseRef(r string) (key string, off, n int64, ok bool) {
 	return r[:j], off, n, true
 }
 
-// PackKey names a pack by the UTC day it was built (so the events/
-// lifecycle rule applies) and a random id (so replicas never collide).
+// PackKey names a pack by the UTC day it was opened (so the events/
+// lifecycle rule applies) and a random id (so processes never collide).
 func PackKey(now time.Time) string {
 	b := make([]byte, 12)
 	rand.Read(b)
 	return fmt.Sprintf("%s%s/%s", PrefixEvents, now.UTC().Format("2006-01-02"), hex.EncodeToString(b))
 }
 
-// BuildPack concatenates already-gzipped payloads; refs[i] locates
-// members[i] in the pack under key.
-func BuildPack(key string, members [][]byte) (data []byte, refs []Ref) {
+// PackMember is one payload at its offset.
+type PackMember struct {
+	Off  int64
+	Data []byte
+}
+
+// AssemblePack lays members (sorted by Off) out at their offsets; a gap —
+// an offset handed out to an envelope that was rolled back — is
+// zero-filled, so every Ref stays right.
+func AssemblePack(members []PackMember) []byte {
 	var buf bytes.Buffer
-	refs = make([]Ref, len(members))
-	for i, m := range members {
-		off := buf.Len()
-		buf.Write(m)
-		refs[i] = Ref(fmt.Sprintf("%s#%d#%d", key, off, len(m)))
+	for _, m := range members {
+		if pad := m.Off - int64(buf.Len()); pad > 0 {
+			buf.Write(make([]byte, pad))
+		}
+		buf.Write(m.Data)
 	}
-	return buf.Bytes(), refs
+	return buf.Bytes()
 }
 
 // ReadRef fetches one payload by its Ref: a ranged GET of the pack, then
-// gunzip. ErrNotFound when the pack is gone (expired).
+// gunzip. ErrNotFound when the pack is not (or no longer) there.
 func ReadRef(ctx context.Context, s Store, ref string) ([]byte, error) {
 	key, off, n, ok := ParseRef(ref)
 	if !ok {

@@ -88,14 +88,20 @@ CREATE TABLE events (
 );
 
 
+CREATE TABLE packs (
+    pack_key    TEXT PRIMARY KEY,
+    next_offset BIGINT NOT NULL DEFAULT 0,
+    closed      BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE payload_spool (
-    project_id  BIGINT NOT NULL,
-    event_id    UUID NOT NULL,
-    occurred_at TIMESTAMPTZ NOT NULL,
-    data        BYTEA NOT NULL,
-    size        INTEGER NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (project_id, event_id, occurred_at)
+    pack_key   TEXT NOT NULL,
+    "offset"   BIGINT NOT NULL,
+    size       INTEGER NOT NULL,
+    data       BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (pack_key, "offset")
 );
 
 CREATE TABLE sessions (

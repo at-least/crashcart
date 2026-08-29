@@ -42,19 +42,26 @@ API, jobs); list pagination is a keyset cursor `(occurred_at, event_id)`.
 `releases` upsert (a no-op unless a new release / platform appears) → fold
 events by fingerprint → one `issues` upsert per distinct fingerprint →
 sampling decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events →
-payload spool → sessions → dirty-hour marks → jobs. The payloads go into
-`payload_spool` in the same transaction — as durable as the event row,
-nothing is ever lost — and every process drains the spool every 5 s
-(`retention.PackPayloads`): once 8 MB of payloads are waiting (their
-sizes are a column, so the check reads no data), claim the oldest rows up
-to that size with `SKIP LOCKED`, concatenate them (each was gzipped at
-ingest, so the spool is small and the packer does no compression) into
-one *pack* object, PUT it, set the events' `payload_ref`, delete the
-spool rows, commit. Nothing else triggers a pack: a quiet server keeps
-its payloads in the spool until 8 MB have gathered (the sweep drops the
-ones whose events retention already took), so the object store sees one
-PUT per 8 MB whatever the events' size, and no upload is bigger — PUT
-requests are what an S3 bill is made of. A failed PUT rolls the batch
+payloads → events → sessions → dirty-hour marks → jobs. The payloads
+(gzipped once, here) go into `payload_spool` in the same transaction —
+as durable as the event row, nothing is ever lost — at the place they
+will have in a *pack* object: the transaction claims the fullest open
+pack no other transaction is writing to (`packs`, `FOR UPDATE SKIP
+LOCKED`; none free → it opens one), advances the pack's byte counter by
+the envelope's total — the offsets — and closes the pack when that
+reaches 8 MB. So `events.payload_ref` (`<pack>#<offset>#<length>`) is
+written with the row, once; a rollback returns the bytes, so packs have
+no gaps; concurrent envelopes take different packs and never wait on
+each other; no pack belongs to a process, so a process dying leaves
+nothing to recover. Every process looks for closed packs every 5 s
+(`retention.PackPayloads`): lock the pack row (`SKIP LOCKED`), lay the
+spool rows out by offset, PUT the object, delete the rows and the pack,
+commit — a failed PUT rolls back for the next run. Nothing but size
+closes a pack: a quiet server keeps its payloads in the spool until 8 MB
+have gathered (the sweep drops the ones whose events retention already
+took), so the object store sees one PUT per 8 MB whatever the events'
+size, and no upload is bigger — PUT requests are what an S3 bill is made
+of. A failed PUT rolls the batch
 back for the next run; reads come from the spool until then, so the
 object store being down is invisible except for a growing spool. No
 aggregate row is written at ingest.
@@ -109,7 +116,9 @@ events of each issue are always stored; after that `sample_rate` of them;
 JSON exactly as the SDK sent it — is gzipped on its own and packed with
 its neighbours into `events/<day>/<pack id>`; `events.payload_ref` is
 `<key>#<offset>#<length>`, and a read is one ranged GET (`store.Payload`
-reads the spool while the ref is still NULL). Everything
+tries the spool first — a primary-key lookup on a small table — which
+also means "not in the spool" implies "already uploaded": no window in
+which a payload is in neither place). Everything
 filterable is a column or a `tags` key, extracted at ingest, so nothing
 ever queries inside a payload and it is never rewritten. Symbol files are
 at `symbols/<project>/<symbol_files.id>`, sentry-cli's upload chunks at
@@ -200,7 +209,8 @@ theme, and the SSE "new issues" banner.
 | users / user_sessions / api_keys | table | id / token_hash / id | viewer accounts, session cookies (hashed), API keys (hashed) |
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
 | events | weekly partitions + default | (project_id, event_id, occurred_at) | columns + `payload_ref` into a pack in the bucket |
-| payload_spool | table | (project_id, event_id, occurred_at) | payloads not yet packed (seconds to a minute; longer while the bucket is down) |
+| packs | table | pack_key | packs being filled (`next_offset`) or waiting for upload (`closed`) |
+| payload_spool | table | (pack_key, offset) | payloads of those packs, at their offsets |
 | sessions | weekly partitions + default | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
 | releases | table | (project_id, release) | every release seen, platforms, first_seen |
 | issues | table | (project_id, fingerprint) | stateful |
@@ -218,8 +228,9 @@ theme, and the SSE "new issues" banner.
 
 Non-exception event: 1 insert. Exception event: 1 insert + 1 issue upsert
 (+1 `stored_count` bump) + 0–1 job row; plus 1 spool insert per stored
-event (deleted again within a minute) and one dirty-hour upsert per hour
-an envelope touches; one object PUT per 1000 payloads or per minute.
+event (deleted when its pack is uploaded), one `packs` update and one
+dirty-hour upsert per hour an envelope touches; one object PUT per 8 MB
+of payloads.
 Symbolication via the worker adds one UPDATE of the small columns (the
 payload is never rewritten) and re-marks the hour. Rollup is per dirty
 hour, retention per partition.

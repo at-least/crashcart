@@ -18,7 +18,6 @@ import (
 	"github.com/crashcartapp/crashcart/internal/blob"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
@@ -408,60 +407,56 @@ func DirtyHours(ctx context.Context, st *store.Store) (int64, error) {
 
 // ── payload packs ──────────────────────────────────────────────────────
 
-const (
-	// PackInterval is how often each process looks at the payload spool.
-	PackInterval = 5 * time.Second
-	// PackBytes is what fills a pack and the trigger: a quiet server keeps
-	// its payloads in the spool until this much has gathered — readable
-	// from there, as durable as the events — so the object store sees one
-	// PUT per PackBytes of payloads whatever the events' size, and one
-	// upload never exceeds it.
-	PackBytes = 8 << 20
-	// PackRows caps a pack's payload count, so tiny payloads do not make a
-	// pack of tens of thousands.
-	PackRows = 5000
-)
+// PackInterval is how often each process looks for closed packs.
+const PackInterval = 5 * time.Second
 
-// PackPayloads moves one batch from payload_spool into a pack object:
-// claim the oldest rows (SKIP LOCKED, so processes share the spool),
-// build the pack, PUT it, set the events' payload_ref, delete the rows —
-// one transaction, so a failed PUT leaves everything for the next run
-// and a crash after the PUT only wastes an object (lifecycle expires it).
-// A batch under PackBytes (and PackRows) is left to grow, unless force.
-// Returns the number of payloads packed.
-func PackPayloads(ctx context.Context, st *store.Store, force bool) (int, error) {
-	if !force {
-		ready, err := st.SpoolReady(ctx, sqlc.SpoolReadyParams{MaxBytes: PackBytes, MaxRows: PackRows})
-		if err != nil || !ready {
-			return 0, err
-		}
+// PackPayloads uploads the closed packs: for each, lock its row (SKIP
+// LOCKED, so processes share the work), lay the spool rows out by offset,
+// PUT the object, delete the rows and the pack, commit. A failed PUT rolls
+// the pack back for the next run; a crash after the PUT only means the
+// same bytes are uploaded again. Returns how many payloads were packed.
+func PackPayloads(ctx context.Context, st *store.Store) (int, error) {
+	keys, err := st.ClosedPacks(ctx)
+	if err != nil {
+		return 0, err
 	}
+	total := 0
+	for _, key := range keys {
+		n, err := packOne(ctx, st, key)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
+func packOne(ctx context.Context, st *store.Store, key string) (int, error) {
 	n := 0
 	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		rows, err := q.ClaimSpool(ctx, sqlc.ClaimSpoolParams{MaxRows: PackRows, MaxBytes: PackBytes})
-		if err != nil || len(rows) == 0 {
+		if _, err := q.LockClosedPack(ctx, key); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil // another process has it, or already uploaded it
+			}
 			return err
 		}
-		payloads := make([][]byte, len(rows))
-		pids := make([]int64, len(rows))
-		eids := make([]sentry.ID, len(rows))
-		ats := make([]time.Time, len(rows))
-		for i, r := range rows {
-			payloads[i], pids[i], eids[i], ats[i] = r.Data, r.ProjectID, r.EventID, r.OccurredAt
-		}
-		key := blob.PackKey(time.Now())
-		data, refs := blob.BuildPack(key, payloads) // the spool holds them gzipped already
-		if err := st.Blobs.PutRaw(ctx, key, data); err != nil {
+		rows, err := q.PackRows(ctx, key)
+		if err != nil {
 			return err
 		}
-		strs := make([]string, len(refs))
-		for i, r := range refs {
-			strs[i] = string(r)
+		if len(rows) > 0 {
+			members := make([]blob.PackMember, len(rows))
+			for i, r := range rows {
+				members[i] = blob.PackMember{Off: r.Offset, Data: r.Data}
+			}
+			if err := st.Blobs.PutRaw(ctx, key, blob.AssemblePack(members)); err != nil {
+				return err
+			}
+			if err := q.DeletePack(ctx, key); err != nil {
+				return err
+			}
 		}
-		if err := q.SetPayloadRefs(ctx, sqlc.SetPayloadRefsParams{ProjectIds: pids, EventIds: eids, OccurredAts: ats, Refs: strs}); err != nil {
-			return err
-		}
-		if err := q.DeleteSpooled(ctx, sqlc.DeleteSpooledParams{ProjectIds: pids, EventIds: eids, OccurredAts: ats}); err != nil {
+		if err := q.DeletePackRow(ctx, key); err != nil {
 			return err
 		}
 		n = len(rows)
@@ -470,12 +465,13 @@ func PackPayloads(ctx context.Context, st *store.Store, force bool) (int, error)
 	return n, err
 }
 
-// PackAll drains the spool (after an import or seed, and at shutdown).
+// PackAll closes the open packs and uploads everything (the CLI after an
+// import or seed: the data should be in the bucket when the command
+// returns).
 func PackAll(ctx context.Context, st *store.Store) error {
-	for {
-		n, err := PackPayloads(ctx, st, true)
-		if err != nil || n == 0 {
-			return err
-		}
+	if _, err := st.CloseOpenPacks(ctx); err != nil {
+		return err
 	}
+	_, err := PackPayloads(ctx, st)
+	return err
 }

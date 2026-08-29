@@ -4,9 +4,10 @@
 //	POST /api/{project_id}/store/      (legacy single-event JSON)
 //
 // The DSN public key authenticates the request. Per envelope, one
-// transaction writes events, their payloads (payload_spool, drained into
-// the object store in batches by retention.PackPayloads), sessions and
-// the folded issue upserts. The only work deferred to the job worker is
+// transaction writes events — each with the place its payload has in a
+// pack (store.SpoolPayloads) — their payloads (payload_spool, uploaded
+// pack by pack by retention.PackPayloads), sessions and the folded issue
+// upserts. The only work deferred to the job worker is
 // symbolication that needs a symbol file not yet cached, and alert
 // delivery.
 package ingest
@@ -542,7 +543,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		}
 
 		rows := make([]store.EventInsert, 0, len(preps))
-		spool := sqlc.SpoolPayloadsParams{ProjectID: p.ID}
+		var payloads [][]byte
 		for _, pr := range preps {
 			if !pr.store {
 				res.Sampled++
@@ -554,9 +555,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			if pr.symbolicated {
 				symbols, _ = json.Marshal(pr.frames)
 			}
-			spool.EventIds = append(spool.EventIds, ev.EventID)
-			spool.OccurredAts = append(spool.OccurredAts, ev.Timestamp.UTC())
-			spool.Datas = append(spool.Datas, blob.Gzip(ev.Raw)) // compressed once here; the pack is a concatenation
+			payloads = append(payloads, blob.Gzip(ev.Raw)) // compressed once, here
 			rows = append(rows, store.EventInsert{
 				OccurredAt: ev.Timestamp.UTC(), ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message,
 				Platform: nilIfEmpty(ev.Platform), Environment: nilIfEmpty(ev.Environment), Release: nilIfEmpty(ev.Release),
@@ -571,14 +570,21 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
 			}
 		}
+		// Payloads into a pack (the rows carry where): as late as possible,
+		// since the pack's lock is held from here to commit.
+		refs, err := store.SpoolPayloads(ctx, q, payloads)
+		if err != nil {
+			return err
+		}
+		for i := range rows {
+			r := string(refs[i])
+			rows[i].PayloadRef = &r
+		}
 		if err := store.InsertEvents(ctx, tx, rows); err != nil {
 			return fmt.Errorf("insert events: %w", err)
 		}
 		res.Stored = len(rows)
 		if len(rows) > 0 {
-			if err := q.SpoolPayloads(ctx, spool); err != nil {
-				return fmt.Errorf("spool payloads: %w", err)
-			}
 			hours := map[time.Time]bool{}
 			var buckets []time.Time
 			for _, r := range rows {

@@ -60,12 +60,15 @@ container/symbolicate/  Python + llvm-symbolizer sidecar
   `schema.sql` (it is the plain-SQL mirror sqlc parses; the stats views appear as tables).
 - Hand-written SQL only in: `schema.sql`, `internal/store` (dynamic filters),
   `internal/export`, `internal/retention` (partitions, rollup).
-- Bytes live in the object store, not in Postgres for long: an event's
-  payload is gzipped and written to `payload_spool` in the ingest
-  transaction (`SpoolPayloads`), and `retention.PackPayloads` (every 5 s in every
-  process, SKIP LOCKED; a pack per 8 MB of gzipped payloads, nothing else triggers it) moves batches into pack objects and sets
-  `events.payload_ref`; read with `store.Payload(ctx, event)` (spool or
-  pack; nil when neither). A symbol file's data is at
+- Bytes live in the object store, not in Postgres for long: in the ingest
+  transaction `store.SpoolPayloads` claims an open pack (`packs`, SKIP
+  LOCKED), reserves the offsets and writes the gzipped payloads to
+  `payload_spool`; the returned refs go into `events.payload_ref` with the
+  row (written once). `retention.PackPayloads` (every 5 s in every process)
+  uploads closed packs (8 MB; nothing else closes one) and deletes their
+  rows. Read with `store.Payload(ctx, event)` — spool first, then a ranged
+  GET; nil when the pack has expired. Packs have no owner: never add
+  per-process state for them. A symbol file's data is at
   `blob.SymbolKey(project, id)`, sentry-cli chunks at `blob.ChunkKey(sha1)`.
   Retention of objects is the bucket's lifecycle rules. CLI commands that
   write events (`seed`, `import`) call `retention.PackAll` at the end.

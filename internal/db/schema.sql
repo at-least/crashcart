@@ -87,9 +87,9 @@ CREATE TABLE projects (
 -- DEFAULT partition catches what no weekly partition covers — a device with
 -- a wrong clock — so an insert never fails for want of a partition; the
 -- partition job moves such rows into a real partition when it creates one.
--- The payload (the event as the SDK sent it) goes through payload_spool
--- into a pack of many payloads in the object store; payload_ref says
--- which and where.
+-- The payload (the event as the SDK sent it) sits in payload_spool until
+-- its pack of many payloads is uploaded; payload_ref says which pack and
+-- where, from the start.
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (partition key)
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
@@ -112,7 +112,7 @@ CREATE TABLE events (
     symbolicated   BOOLEAN NOT NULL DEFAULT false,
     tags           JSONB NOT NULL DEFAULT '{}'::jsonb,
     symbols        JSONB,                            -- symbolicated frames (written once)
-    payload_ref    TEXT,                             -- blob.Ref of the raw event in its pack (NULL: still in payload_spool, or never stored)
+    payload_ref    TEXT,                             -- blob.Ref of the raw event in its pack (written with the row; NULL: never stored)
     PRIMARY KEY (project_id, event_id, occurred_at)  -- a resent envelope lands on the same key
 ) PARTITION BY RANGE (occurred_at);
 CREATE TABLE events_default PARTITION OF events DEFAULT;
@@ -123,24 +123,36 @@ CREATE INDEX events_project_crash ON events (project_id, occurred_at DESC) WHERE
 CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filters are `tags @> {k: v}`
 
 
--- ── payload spool ──────────────────────────────────────────────────────
--- The raw payload of a stored event, written in the ingest transaction
--- (so it is exactly as durable as the event row) and drained a batch at a
--- time into a pack object in the object store (retention.PackPayloads),
--- which then sets events.payload_ref and deletes the row. The table only
--- ever holds the last few seconds of payloads — longer if the object
--- store is down, which is the point.
+-- ── payload packs and spool ────────────────────────────────────────────
+-- The raw payload of a stored event, gzipped, is written in the ingest
+-- transaction (so it is exactly as durable as the event row) at the place
+-- it will have in its pack object. packs are the packs being filled: the
+-- transaction claims the fullest open one nobody else is writing to
+-- (FOR UPDATE SKIP LOCKED; none free → it opens one), advances
+-- next_offset — its offset, the same value events.payload_ref carries, so
+-- the event row is written once; a rollback returns the bytes, so there
+-- are no gaps — and closes the pack when it reaches blob.PackBytes.
+-- retention.PackPayloads (any process) uploads closed packs and deletes
+-- their rows. No pack belongs to a process: nothing to recover when one
+-- dies. The spool only ever holds the packs being filled — longer if
+-- the object store is down, which is the point.
+
+CREATE TABLE packs (
+    pack_key    TEXT PRIMARY KEY,                    -- the pack object's key (events/<day>/<id>)
+    next_offset BIGINT NOT NULL DEFAULT 0,           -- bytes reserved so far
+    closed      BOOLEAN NOT NULL DEFAULT false,      -- full: waiting for upload
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX packs_open ON packs (next_offset DESC) WHERE NOT closed;
 
 CREATE TABLE payload_spool (
-    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    event_id    UUID NOT NULL,
-    occurred_at TIMESTAMPTZ NOT NULL,
-    data        BYTEA NOT NULL,                      -- the payload, gzipped (as it will sit in the pack)
-    size        INTEGER NOT NULL,                    -- octet_length(data); the pack trigger sums it without touching data
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (project_id, event_id, occurred_at)
+    pack_key   TEXT NOT NULL,                        -- the pack object's key (events/<day>/<id>)
+    "offset"   BIGINT NOT NULL,                      -- where the payload sits in it
+    size       INTEGER NOT NULL,                     -- octet_length(data)
+    data       BYTEA NOT NULL,                       -- the payload, gzipped
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (pack_key, "offset")
 );
-CREATE INDEX payload_spool_created ON payload_spool (created_at);
 
 -- ── sessions (release health) ──────────────────────────────────────────
 
