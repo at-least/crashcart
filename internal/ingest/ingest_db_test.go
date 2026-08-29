@@ -65,7 +65,7 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if iss.EventCount != 3 || iss.StoredCount != 2 || iss.Status != "unresolved" || *iss.LastRelease != "1.0" || iss.Title != "NullPointerException" {
+	if iss.EventCount != 3 || iss.StoredCount != 2 || iss.Status != "unresolved" || *iss.LastRelease != "1.0" || iss.Title != "NullPointerException: boom" {
 		t.Fatalf("issue = %+v", iss)
 	}
 	var n int

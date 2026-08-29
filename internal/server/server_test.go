@@ -72,6 +72,12 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("ingest without key: %d", res.StatusCode)
 	}
 
+	// Browser SDKs preflight when they add headers: the SDK endpoint must answer.
+	res, _ = do("OPTIONS", fmt.Sprintf("/api/%d/envelope/", p.ID), nil, map[string]string{"Origin": "https://app.example", "Access-Control-Request-Method": "POST"})
+	if res.StatusCode != 204 || res.Header.Get("Access-Control-Allow-Origin") != "*" || !strings.Contains(res.Header.Get("Access-Control-Allow-Headers"), "X-Sentry-Auth") {
+		t.Fatalf("preflight: %d %v", res.StatusCode, res.Header)
+	}
+
 	// JSON API: auth, then the issue-centric reads.
 	if res, _ := do("GET", "/api/projects/shop/issues", nil, nil); res.StatusCode != 401 {
 		t.Fatalf("api without bearer: %d", res.StatusCode)

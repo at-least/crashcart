@@ -21,15 +21,23 @@ func Fingerprint(e *Event, frames []Frame) string {
 	if len(e.SDKFingerprint) > 0 {
 		sig = "sdk:" + strings.Join(e.SDKFingerprint, "|")
 	} else {
-		// Prefer in-app frames; fall back to all frames when the SDK marks none.
-		var sel []Frame
+		// Prefer in-app frames; fall back to all frames when the SDK marks
+		// none. SDK-internal and pseudo frames never contribute — Dart
+		// marks its own package in_app and pads async stacks with
+		// "<asynchronous suspension>", which would make every error from
+		// one entry point look alike.
+		var sel, all []Frame
 		for _, f := range frames {
+			if isSDKFrame(f) {
+				continue
+			}
+			all = append(all, f)
 			if f.IsInApp() {
 				sel = append(sel, f)
 			}
 		}
 		if len(sel) == 0 {
-			sel = frames
+			sel = all
 		}
 		if len(sel) > 5 {
 			sel = sel[len(sel)-5:]
@@ -61,14 +69,24 @@ func Fingerprint(e *Event, frames []Frame) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// IssueTitle is the human title for the event's issue.
+// IssueTitle is the human title for the event's issue: the exception type,
+// the screen it happened in when known, and a short form of the message so
+// two "Error" issues can be told apart in a list.
 func (e *Event) IssueTitle() string {
 	t := e.ErrorType
 	if t == "" {
 		t = "Unknown"
 	}
 	if e.Screen != "" {
-		return t + " in " + e.Screen
+		t += " in " + e.Screen
+	}
+	if len(e.Exceptions) > e.Primary {
+		if v := strings.TrimSpace(e.Exceptions[e.Primary].Value); v != "" {
+			if i := strings.IndexByte(v, '\n'); i >= 0 {
+				v = v[:i]
+			}
+			t += ": " + truncate(v, 80)
+		}
 	}
 	return t
 }
@@ -117,6 +135,23 @@ func (e *Event) NeedsSymbolication() bool {
 			if f.Colno > 0 && strings.Contains(f.Filename, ".min.") {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// isSDKFrame reports frames that belong to a Sentry SDK or are stack
+// placeholders rather than code.
+func isSDKFrame(f Frame) bool {
+	if strings.HasPrefix(f.Function, "<") && strings.HasSuffix(f.Function, ">") { // <asynchronous suspension>
+		return true
+	}
+	if f.Package == "sentry" || strings.HasPrefix(f.Package, "sentry_") {
+		return true
+	}
+	for _, p := range []string{f.Filename, f.AbsPath, f.Module} {
+		if strings.HasPrefix(p, "package:sentry") || strings.Contains(p, "/sentry_sdk/") || strings.HasPrefix(p, "io.sentry.") || strings.HasPrefix(p, "Sentry.") || strings.Contains(p, "/@sentry/") {
+			return true
 		}
 	}
 	return false

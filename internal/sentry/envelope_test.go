@@ -48,7 +48,7 @@ func TestParseCrashEvent(t *testing.T) {
 	if loc := ErrorLocation(e.Frames()); loc != "CartFragment.java:142" || len(e.Frames()) != 3 {
 		t.Errorf("error location = %q, frames = %d", loc, len(e.Frames()))
 	}
-	if e.IssueTitle() != "NullPointerException in CartFragment" {
+	if e.IssueTitle() != "NullPointerException in CartFragment: Attempt to invoke virtual method" {
 		t.Errorf("title = %q", e.IssueTitle())
 	}
 	fp := Fingerprint(e, e.Frames())
@@ -177,5 +177,31 @@ func TestProguardImageUUID(t *testing.T) {
 	ev := ParseEvent("", now, []byte(`{"platform":"java","debug_meta":{"images":[{"type":"proguard","uuid":"4828693C-D841-38E1-A119-AD9BE85355AB"}]},"exception":{"values":[{"type":"E","stacktrace":{"frames":[{"module":"a.b","function":"c","lineno":1}]}}]}}`), now)
 	if len(ev.DebugImages) != 1 || ev.DebugImages[0].DebugID != "4828693C-D841-38E1-A119-AD9BE85355AB" || !ev.NeedsSymbolication() {
 		t.Fatalf("images = %+v", ev.DebugImages)
+	}
+}
+
+func TestThreadFallbackAndSDKFrames(t *testing.T) {
+	// .NET: exception without stack, current thread carries it.
+	ev := ParseEvent("", now, []byte(`{"platform":"csharp","exception":{"values":[{"type":"InvalidOperationException","value":"handled boom"}]},
+	 "threads":{"values":[{"id":1,"current":true,"stacktrace":{"frames":[{"function":"Main","filename":"Program.cs","lineno":22,"in_app":true}]}}]}}`), now)
+	if loc := ErrorLocation(ev.Frames()); loc != "Program.cs:22" {
+		t.Fatalf("thread fallback location = %q", loc)
+	}
+	if ev.Handled == nil || !*ev.Handled {
+		t.Fatalf("missing mechanism should mean handled: %v", ev.Handled)
+	}
+	// Dart: two different errors from one entry point must not share a fingerprint.
+	mk := func(fn string) *Event {
+		return ParseEvent("", now, []byte(`{"platform":"other","sdk":{"name":"sentry.dart"},"exception":{"values":[{"type":"StateError","stacktrace":{"frames":[
+		  {"filename":"dart.dart","function":"main.<fn>","lineno":20,"in_app":true},
+		  {"function":"<asynchronous suspension>"},
+		  {"abs_path":"package:sentry/src/sentry.dart","function":"Sentry.init","in_app":true,"package":"sentry"},
+		  {"function":"<asynchronous suspension>"},
+		  {"abs_path":"package:sentry/src/integrations/run_zoned_guarded_integration.dart","function":"runZonedGuarded","in_app":true,"package":"sentry"},
+		  {"filename":"dart.dart","function":"`+fn+`","lineno":30,"in_app":true}]}}]}}`), now)
+	}
+	a, b := mk("loadCart"), mk("checkout")
+	if Fingerprint(a, a.Frames()) == Fingerprint(b, b.Frames()) {
+		t.Fatal("SDK/pseudo frames dominated the fingerprint")
 	}
 }

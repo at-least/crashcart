@@ -306,6 +306,7 @@ type rawEvent struct {
 	Threads *struct {
 		Values []struct {
 			Crashed    bool `json:"crashed"`
+			Current    bool `json:"current"`
 			Stacktrace *struct {
 				Frames []Frame `json:"frames"`
 			} `json:"stacktrace"`
@@ -410,10 +411,28 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 		if ev.Handled == nil {
 			ev.Handled = ev.Exceptions[root].Handled
 		}
+		if ev.Handled == nil {
+			// Every SDK marks its unhandled paths with handled:false
+			// explicitly; a captureException without a mechanism is a
+			// caught exception.
+			handled := true
+			ev.Handled = &handled
+		}
 		if len(ev.Exceptions[root].Frames) == 0 && re.Threads != nil {
-			for _, t := range re.Threads.Values {
-				if t.Crashed && t.Stacktrace != nil {
-					ev.Exceptions[root].Frames = t.Stacktrace.Frames
+			// .NET sends a never-thrown exception without a stack and the
+			// capturing thread's stack under threads; native SDKs mark the
+			// crashed thread.
+			for _, pick := range []func(crashed, current bool) bool{
+				func(c, _ bool) bool { return c },
+				func(_, cur bool) bool { return cur },
+			} {
+				for _, t := range re.Threads.Values {
+					if pick(t.Crashed, t.Current) && t.Stacktrace != nil && len(t.Stacktrace.Frames) > 0 {
+						ev.Exceptions[root].Frames = t.Stacktrace.Frames
+						break
+					}
+				}
+				if len(ev.Exceptions[root].Frames) > 0 {
 					break
 				}
 			}
