@@ -1,6 +1,7 @@
 package sentry
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -258,5 +259,52 @@ func TestBareArraysAndMessageEvents(t *testing.T) {
 	env := Parse([]byte("{}\n"+`{"type":"event"}`+"\n"+`not json`+"\n"), now)
 	if env.Invalid != 1 || len(env.Events) != 0 {
 		t.Fatalf("invalid = %d events = %d", env.Invalid, len(env.Events))
+	}
+}
+
+func TestAnonymousFramesAreCode(t *testing.T) {
+	ev := ParseEvent("", now, []byte(`{"platform":"node","exception":{"values":[{"type":"Error","value":"unhandled boom","mechanism":{"type":"auto.node.onuncaughtexception","handled":false},"stacktrace":{"frames":[{"filename":"/x/index.ts","function":"<anonymous>","lineno":16,"in_app":true,"module":"index.ts"}]}}]}}`), now)
+	if loc := ErrorLocation(ev.Frames()); loc != "index.ts:16" {
+		t.Fatalf("anonymous frame location = %q", loc)
+	}
+	ev = ParseEvent("", now, []byte(`{"platform":"java","level":"info","message":"hello","threads":{"values":[{"current":true,"stacktrace":{"frames":[{"module":"smoke.Main","function":"main","filename":"Main.java","lineno":20},{"module":"java.lang.Thread","function":"getStackTrace","filename":"Thread.java","lineno":1619}]}}]}}`), now)
+	if loc := ErrorLocation(ev.Frames()); loc != "Main.java:20" {
+		t.Fatalf("java message location = %q", loc)
+	}
+}
+
+func TestLocationAndGroupingRefinements(t *testing.T) {
+	// Rust: the unwinder frame is in_app but has no file; user code wins.
+	ev := ParseEvent("", now, []byte(`{"platform":"native","exception":{"values":[{"type":"panic","value":"unhandled boom","stacktrace":{"frames":[
+	  {"abs_path":"/x/src/main.rs","filename":"main.rs","function":"sdkrust::main::{closure#1}","lineno":37,"in_app":true,"package":"sdkrust"},
+	  {"function":"__rustc::rust_begin_unwind","in_app":true,"package":"__rustc"},
+	  {"abs_path":"/c/sentry-panic-0.49.2/src/lib.rs","filename":"lib.rs","function":"sentry_panic::panic_handler","lineno":128,"in_app":true}]}}]}}`), now)
+	if loc := ErrorLocation(ev.Frames()); loc != "main.rs:37" {
+		t.Fatalf("rust location = %q", loc)
+	}
+	// Go panic: a message event is titled by its message.
+	ev = ParseEvent("", now, []byte(`{"platform":"go","level":"fatal","message":"unhandled boom"}`), now)
+	if ev.IssueTitle() != "unhandled boom" {
+		t.Fatalf("message title = %q", ev.IssueTitle())
+	}
+	// Dart: two throw sites in one entry point are two issues.
+	mk := func(line int) *Event {
+		return ParseEvent("", now, []byte(fmt.Sprintf(`{"platform":"other","exception":{"values":[{"type":"StateError","value":"x","stacktrace":{"frames":[
+		  {"abs_path":"package:sentry/src/sentry.dart","function":"Sentry.init","in_app":true,"package":"sentry"},
+		  {"filename":"<asynchronous suspension>"},
+		  {"filename":"dart.dart","function":"main.<fn>","lineno":%d,"in_app":true}]}}]}}`, line)), now)
+	}
+	a, b := mk(25), mk(32)
+	if Fingerprint(a, a.Frames()) == Fingerprint(b, b.Frames()) {
+		t.Fatal("single-frame stacks must keep the line number")
+	}
+	// …but multi-frame stacks still ignore line numbers.
+	mk2 := func(line int) *Event {
+		return ParseEvent("", now, []byte(fmt.Sprintf(`{"platform":"java","exception":{"values":[{"type":"E","stacktrace":{"frames":[
+		  {"filename":"A.java","function":"a","lineno":1,"in_app":true},{"filename":"B.java","function":"b","lineno":%d,"in_app":true}]}}]}}`, line)), now)
+	}
+	c, d := mk2(10), mk2(11)
+	if Fingerprint(c, c.Frames()) != Fingerprint(d, d.Frames()) {
+		t.Fatal("line numbers must not split multi-frame stacks")
 	}
 }

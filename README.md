@@ -171,12 +171,28 @@ accepted and dropped.
 
 ## Verified against
 
-Exercised end to end (real clients, not hand-built envelopes): sentry-python
-2.68 (gzip envelopes), @sentry/node 10.72, sentry-android-core 8.14 on an
-API 35 emulator (crash cache resend, ProGuard/R8 mapping with inlined
-frames), the Sentry Android Gradle plugin 4.14 (automatic mapping upload)
-and sentry-cli 3.7 (`debug-files upload`, `upload-proguard`, chunked
-upload protocol). Not yet: iOS/Cocoa SDK with a dSYM sidecar.
+Exercised end to end with real clients (not hand-built envelopes), each
+sending a message, a handled exception with user/tag/breadcrumb, and an
+unhandled crash through the SDK's own crash path:
+
+| SDK | Version | Notes |
+|---|---|---|
+| sentry-python | 2.68 | gzip-compressed envelopes |
+| @sentry/node | 10.72 | |
+| @sentry/browser | 10.72 | real Chromium, CORS + preflight |
+| @sentry/bun | 10.72 | |
+| sentry-go | 0.49 | bare-array `exception`/`threads`, panics as message events |
+| sentry-rust | 0.49 | `sentry_panic` frames filtered out of the location |
+| sentry-java | 8.54 | plain JVM, chained exceptions |
+| sentry-android-core | 8.14 | API 35 emulator, crash-cache resend, R8 mapping with inlined frames |
+| Sentry Android Gradle plugin | 4.14 | automatic ProGuard mapping upload |
+| sentry-dotnet | 6.9 | exception without frames → thread stack |
+| sentry-dart | 9.28 | async placeholders and SDK frames excluded from grouping |
+| sentry-native | master (inproc) | address-only frames grouped by image+offset |
+| sentry-cli | 3.7 | `debug-files upload`, `upload-proguard`, chunked upload |
+
+Not yet: Cocoa/iOS (needs macOS for the dSYM sidecar), Unity/Unreal/Godot,
+Ruby, PHP, Elixir, React Native, Flutter.
 
 ## Operations
 

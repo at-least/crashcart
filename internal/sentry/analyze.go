@@ -28,24 +28,6 @@ func Fingerprint(e *Event, frames []Frame) string {
 		// Sentry's message grouping.
 		sig = "msg:" + e.Platform + ":" + normalizeMessage(e.Message) + ":" + strings.Join(frameSignature(e, frames), "|")
 	} else {
-		// Prefer in-app frames; fall back to all frames when the SDK marks
-		// none. SDK-internal and pseudo frames never contribute — Dart
-		// marks its own package in_app and pads async stacks with
-		// "<asynchronous suspension>", which would make every error from
-		// one entry point look alike.
-		var sel, all []Frame
-		for _, f := range frames {
-			if isSDKFrame(f) {
-				continue
-			}
-			all = append(all, f)
-			if f.IsInApp() {
-				sel = append(sel, f)
-			}
-		}
-		if len(sel) == 0 {
-			sel = all
-		}
 		sig = e.Platform + ":" + e.ErrorType + ":" + strings.Join(frameSignature(e, frames), "|")
 	}
 	sum := sha256.Sum256([]byte(sig))
@@ -73,6 +55,10 @@ func frameSignature(e *Event, frames []Frame) []string {
 	if len(sel) > 5 {
 		sel = sel[len(sel)-5:]
 	}
+	// Line numbers are normally left out so edits do not split issues; when
+	// the whole stack collapses to one code frame (Dart's async entry
+	// point, a script body) the line is all that tells throw sites apart.
+	keepLine := len(all) <= 1
 	parts := make([]string, 0, len(sel))
 	for _, f := range sel {
 		file := f.Filename
@@ -91,6 +77,9 @@ func frameSignature(e *Event, frames []Frame) []string {
 		}
 		if file == "" {
 			file = "?"
+		}
+		if keepLine && f.Lineno > 0 {
+			fn += ":" + strconv.Itoa(f.Lineno)
 		}
 		parts = append(parts, baseName(file)+":"+fn)
 	}
@@ -145,6 +134,10 @@ func parseHex(s string) (uint64, bool) {
 func (e *Event) IssueTitle() string {
 	t := e.ErrorType
 	if t == "" {
+		// A message event (Go panic, captureMessage at error level).
+		if m := strings.TrimSpace(e.Message); m != "" && m != "(no message)" {
+			return truncate(strings.SplitN(m, "\n", 2)[0], 100)
+		}
 		t = "Unknown"
 	}
 	if e.Screen != "" {
@@ -164,18 +157,32 @@ func (e *Event) IssueTitle() string {
 // ErrorLocation is "File.ext:line" of the deepest in-app frame (or the
 // innermost frame overall when nothing is marked in-app); "" without frames.
 func ErrorLocation(frames []Frame) string {
-	var root, last *Frame
+	// Innermost in-app frame with a file and line wins; then any in-app
+	// frame; then the innermost frame with a file and line; then whatever
+	// is innermost. Runtime frames (__rustc, std) rarely carry a file.
+	var located, inApp, anyLocated, last *Frame
 	for i := range frames {
-		if isSDKFrame(frames[i]) {
+		f := &frames[i]
+		if isSDKFrame(*f) || isRuntimeFrame(*f) {
 			continue
 		}
-		last = &frames[i]
-		if frames[i].IsInApp() {
-			root = &frames[i]
+		last = f
+		hasFile := (f.Filename != "" || f.AbsPath != "") && f.Lineno > 0
+		if hasFile {
+			anyLocated = f
+		}
+		if f.IsInApp() {
+			inApp = f
+			if hasFile {
+				located = f
+			}
 		}
 	}
-	if root == nil {
-		root = last
+	root := located
+	for _, c := range []*Frame{inApp, anyLocated, last} {
+		if root == nil {
+			root = c
+		}
 	}
 	if root == nil {
 		return ""
@@ -220,8 +227,21 @@ func (e *Event) NeedsSymbolication() bool {
 // isSDKFrame reports frames that belong to a Sentry SDK or are stack
 // placeholders rather than code.
 func isSDKFrame(f Frame) bool {
-	if strings.HasPrefix(f.Function, "<") && strings.HasSuffix(f.Function, ">") { // <asynchronous suspension>
+	// Placeholders such as "<asynchronous suspension>" (Dart puts it in the
+	// file name with no function, some SDKs in the function with no file);
+	// "<anonymous>" with a file:line is real code.
+	pseudo := func(v string) bool { return strings.HasPrefix(v, "<") && strings.HasSuffix(v, ">") }
+	if pseudo(f.Function) && f.Filename == "" && f.AbsPath == "" && f.Lineno == 0 {
 		return true
+	}
+	if f.Function == "" && f.Lineno == 0 && (pseudo(f.Filename) || pseudo(f.AbsPath)) {
+		return true
+	}
+	if f.Function == "" && f.Filename == "" && f.AbsPath == "" && f.Module == "" && f.InstrAddr == "" {
+		return true // an empty frame carries no identity
+	}
+	if f.Module == "java.lang.Thread" && f.Function == "getStackTrace" {
+		return true // the stack-capture call itself (Java message events)
 	}
 	if f.Package == "sentry" || strings.HasPrefix(f.Package, "sentry_") || strings.HasPrefix(f.Package, "sentry-") {
 		return true
@@ -236,6 +256,17 @@ func isSDKFrame(f Frame) bool {
 		}
 	}
 	return false
+}
+
+// isRuntimeFrame reports language-runtime frames that sit between the
+// crash and user code (Rust's unwinder, Go's panic machinery).
+func isRuntimeFrame(f Frame) bool {
+	switch f.Package {
+	case "__rustc", "std", "core", "alloc":
+		return true
+	}
+	return strings.HasPrefix(f.Function, "__rustc::") || strings.HasPrefix(f.Function, "std::panicking::") ||
+		strings.HasPrefix(f.Function, "core::panicking::") || f.Function == "gopanic" || strings.HasPrefix(f.Function, "runtime.")
 }
 
 func baseName(p string) string {
