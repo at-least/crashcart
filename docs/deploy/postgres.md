@@ -38,6 +38,6 @@ Take the connection URL as `DATABASE_URL`:
 DATABASE_URL=postgres://user:pass@host/crashcart?sslmode=require
 ```
 
-Compression, chunk retention (`RETENTION_DAYS`, `COMPRESS_AFTER`) and the
+Compression, chunk retention (`RETENTION_DAYS`, `COMPRESS_AFTER`, `CHUNK_INTERVAL`) and the
 stats refresh are TimescaleDB policies — they run inside the database and
 need no cron on your side. See [Configuration](./configuration).

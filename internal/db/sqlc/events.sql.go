@@ -14,17 +14,27 @@ import (
 )
 
 const existingEventIDs = `-- name: ExistingEventIDs :many
-SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::uuid[])
+SELECT event_id FROM events
+WHERE project_id = $1 AND event_id = ANY($2::uuid[]) AND occurred_at >= $3::timestamptz AND occurred_at < $4::timestamptz
 `
 
 type ExistingEventIDsParams struct {
 	ProjectID int64       `json:"project_id"`
 	Column2   []sentry.ID `json:"column_2"`
+	FromAt    time.Time   `json:"from_at"`
+	ToAt      time.Time   `json:"to_at"`
 }
 
-// Which of these event_ids are already stored (resent envelopes).
+// Which of these event_ids are already stored (resent envelopes). A resend
+// carries the SDK's own timestamp, so the window is the envelope's own
+// time range: only the chunks it spans are read.
 func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsParams) ([]sentry.ID, error) {
-	rows, err := q.db.Query(ctx, existingEventIDs, arg.ProjectID, arg.Column2)
+	rows, err := q.db.Query(ctx, existingEventIDs,
+		arg.ProjectID,
+		arg.Column2,
+		arg.FromAt,
+		arg.ToAt,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -52,9 +62,52 @@ type GetEventParams struct {
 	EventID   sentry.ID `json:"event_id"`
 }
 
-// By Sentry event_id (the newest row when a resend carried another timestamp).
+// By Sentry event_id alone (the viewer and the API: URLs carry only the
+// id). Without a time this touches every chunk; the newest row wins when
+// a resend carried another timestamp.
 func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, error) {
 	row := q.db.QueryRow(ctx, getEvent, arg.ProjectID, arg.EventID)
+	var i Event
+	err := row.Scan(
+		&i.OccurredAt,
+		&i.ProjectID,
+		&i.EventID,
+		&i.Level,
+		&i.Message,
+		&i.Platform,
+		&i.Environment,
+		&i.Release,
+		&i.DeviceID,
+		&i.DeviceModel,
+		&i.OsVersion,
+		&i.Screen,
+		&i.ErrorType,
+		&i.ErrorLocation,
+		&i.Handled,
+		&i.SdkName,
+		&i.UserID,
+		&i.Fingerprint,
+		&i.Symbolicated,
+		&i.Tags,
+		&i.Payload,
+		&i.Symbols,
+	)
+	return i, err
+}
+
+const getEventAt = `-- name: GetEventAt :one
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, payload, symbols FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3
+`
+
+type GetEventAtParams struct {
+	ProjectID  int64     `json:"project_id"`
+	EventID    sentry.ID `json:"event_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// By primary key: the time lets the planner open one chunk. Jobs carry it.
+func (q *Queries) GetEventAt(ctx context.Context, arg GetEventAtParams) (Event, error) {
+	row := q.db.QueryRow(ctx, getEventAt, arg.ProjectID, arg.EventID, arg.OccurredAt)
 	var i Event
 	err := row.Scan(
 		&i.OccurredAt,
@@ -152,7 +205,7 @@ func (q *Queries) IssueUsers(ctx context.Context, arg IssueUsersParams) ([]Issue
 
 const setEventSymbols = `-- name: SetEventSymbols :exec
 UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, error_location = $5
-WHERE project_id = $1 AND event_id = $2
+WHERE project_id = $1 AND event_id = $2 AND occurred_at = $6
 `
 
 type SetEventSymbolsParams struct {
@@ -161,6 +214,7 @@ type SetEventSymbolsParams struct {
 	Symbols       json.RawMessage `json:"symbols"`
 	Fingerprint   *sentry.ID      `json:"fingerprint"`
 	ErrorLocation *string         `json:"error_location"`
+	OccurredAt    time.Time       `json:"occurred_at"`
 }
 
 func (q *Queries) SetEventSymbols(ctx context.Context, arg SetEventSymbolsParams) error {
@@ -170,6 +224,7 @@ func (q *Queries) SetEventSymbols(ctx context.Context, arg SetEventSymbolsParams
 		arg.Symbols,
 		arg.Fingerprint,
 		arg.ErrorLocation,
+		arg.OccurredAt,
 	)
 	return err
 }

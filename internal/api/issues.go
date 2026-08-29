@@ -111,7 +111,7 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		end := to.Truncate(time.Hour).Add(time.Hour)
 		sp, err := h.Store.IssueSparklines(r.Context(), sqlc.IssueSparklinesParams{
-			ProjectID: p.ID, Fingerprints: fps, FromAt: end.Add(-sparklineHours * time.Hour), ToAt: end, Width: 3600,
+			ProjectID: p.ID, Fingerprints: fps, FromAt: end.Add(-sparklineHours * time.Hour), ToAt: end, Width: hourly,
 		})
 		if err != nil {
 			h.fail(w, err)
@@ -176,7 +176,7 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		out.Users = users[0].Users
 	}
 	hlo := from.Truncate(time.Hour)
-	tl, err := h.Store.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: p.ID, Fingerprint: fp, FromAt: hlo, ToAt: to, Width: 3600})
+	tl, err := h.Store.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: p.ID, Fingerprint: fp, FromAt: hlo, ToAt: to, Width: hourly})
 	if err != nil {
 		h.fail(w, err)
 		return

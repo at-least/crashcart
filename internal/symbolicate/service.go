@@ -270,12 +270,13 @@ func (s *Service) Invalidate(projectID int64, release string) {
 	}
 }
 
-// Event symbolicates one stored event (job kind "symbolicate"). It returns
-// nil when nothing can be resolved yet (the event stays unsymbolicated —
-// a later upload re-queues it); only sidecar / database failures are
-// errors, so the job retries.
-func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID) error {
-	row, err := s.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: projectID, EventID: eventID})
+// Event symbolicates one stored event (job kind "symbolicate"; the args
+// carry the event's time, so only its chunk is read). It returns nil when
+// nothing can be resolved yet (the event stays unsymbolicated — a later
+// upload re-queues it); only sidecar / database failures are errors, so
+// the job retries.
+func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID, at time.Time) error {
+	row, err := s.Store.GetEventAt(ctx, sqlc.GetEventAtParams{ProjectID: projectID, EventID: eventID, OccurredAt: at})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // dropped by retention, or never stored
 	}
@@ -313,7 +314,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID)
 	}
 	return s.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		if err := q.SetEventSymbols(ctx, sqlc.SetEventSymbolsParams{
-			ProjectID: projectID, EventID: eventID, Symbols: symbols,
+			ProjectID: projectID, EventID: eventID, OccurredAt: row.OccurredAt, Symbols: symbols,
 			Fingerprint: newFP.Ptr(), ErrorLocation: nilIfEmpty(location),
 		}); err != nil {
 			return err

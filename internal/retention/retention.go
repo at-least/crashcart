@@ -19,45 +19,79 @@ import (
 // history, independent of RETENTION_DAYS.
 const AggregateRetentionDays = 400
 
-// hypertables carry the RETENTION_DAYS / COMPRESS_AFTER policies.
+// AggregateCompressAfter is the age at which aggregate chunks are
+// compressed: well past the refresh windows, so the policies never write
+// into compressed chunks (a whole-range refresh after import still can).
+const AggregateCompressAfter = 30 * 24 * time.Hour
+
+// hypertables carry the RETENTION_DAYS / COMPRESS_AFTER policies and the
+// CHUNK_INTERVAL chunk width.
 var hypertables = []string{"events", "sessions"}
 
-// aggregates keep AggregateRetentionDays of buckets.
-var aggregates = []string{"event_stats_hourly", "issue_stats_hourly", "release_health_daily"}
+// aggregates keep AggregateRetentionDays of buckets. In refresh order:
+// event_stats_daily rolls up event_stats_hourly.
+var aggregates = []string{"event_stats_hourly", "event_stats_daily", "issue_stats_hourly", "release_health_daily"}
 
-// Reconcile (re)creates the compression and retention policies so they
-// match RETENTION_DAYS / COMPRESS_AFTER. Idempotent; run at startup.
+// Reconcile sets the compression and retention policies of the hypertables
+// and the aggregates, and the hypertables' chunk width, from RETENTION_DAYS
+// / COMPRESS_AFTER / CHUNK_INTERVAL. An existing policy is altered in place
+// (its job id and run statistics survive); the chunk width applies to new
+// chunks only, so the setting can follow the traffic at any time.
+// Idempotent; run at startup.
 func Reconcile(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
 	days := cfg.RetentionDays
 	if days < 1 {
 		days = 30
 	}
-	dropAfter := interval(time.Duration(days) * 24 * time.Hour)
 	compressAfter := cfg.CompressAfter
 	if compressAfter <= 0 {
 		compressAfter = 48 * time.Hour
 	}
-	for _, t := range hypertables {
-		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("SELECT remove_retention_policy('%s', if_exists => true)", t)); err != nil {
-			return fmt.Errorf("remove retention policy %s: %w", t, err)
-		}
-		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("SELECT add_retention_policy('%s', $1::interval)", t), dropAfter); err != nil {
-			return fmt.Errorf("add retention policy %s: %w", t, err)
-		}
-		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("SELECT remove_compression_policy('%s', if_exists => true)", t)); err != nil {
-			return fmt.Errorf("remove compression policy %s: %w", t, err)
-		}
-		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("SELECT add_compression_policy('%s', $1::interval)", t), interval(compressAfter)); err != nil {
-			return fmt.Errorf("add compression policy %s: %w", t, err)
-		}
-		log.Info("retention: policies set", "table", t, "retention_days", days, "compress_after", compressAfter)
+	chunk := cfg.ChunkInterval
+	if chunk <= 0 {
+		chunk = 7 * 24 * time.Hour
 	}
-	aggAfter := interval(AggregateRetentionDays * 24 * time.Hour)
-	for _, a := range aggregates {
-		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("SELECT add_retention_policy('%s', $1::interval, if_not_exists => true)", a), aggAfter); err != nil {
-			return fmt.Errorf("add retention policy %s: %w", a, err)
+	for _, t := range hypertables {
+		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("SELECT set_chunk_time_interval('%s', $1::interval)", t), interval(chunk)); err != nil {
+			return fmt.Errorf("set chunk interval %s: %w", t, err)
 		}
-		log.Info("retention: policy set", "aggregate", a, "retention_days", AggregateRetentionDays)
+		if err := setPolicy(ctx, st, t, "retention", time.Duration(days)*24*time.Hour); err != nil {
+			return err
+		}
+		if err := setPolicy(ctx, st, t, "compression", compressAfter); err != nil {
+			return err
+		}
+		log.Info("retention: policies set", "table", t, "retention_days", days, "compress_after", compressAfter, "chunk_interval", chunk)
+	}
+	for _, a := range aggregates {
+		if err := setPolicy(ctx, st, a, "retention", AggregateRetentionDays*24*time.Hour); err != nil {
+			return err
+		}
+		if err := setPolicy(ctx, st, a, "compression", AggregateCompressAfter); err != nil {
+			return err
+		}
+		log.Info("retention: policies set", "aggregate", a, "retention_days", AggregateRetentionDays, "compress_after", AggregateCompressAfter)
+	}
+	return nil
+}
+
+// policyWindowKey is the config key of each policy kind's window.
+var policyWindowKey = map[string]string{"retention": "drop_after", "compression": "compress_after"}
+
+// setPolicy alters the window of the existing retention / compression
+// policy of a hypertable or aggregate, or adds the policy. The job is
+// found by its procedure and the target's name (the jobs view lists an
+// aggregate's policies under the aggregate's own name).
+func setPolicy(ctx context.Context, st *store.Store, target, kind string, window time.Duration) error {
+	tag, err := st.Pool.Exec(ctx, `SELECT alter_job(job_id, config => config || jsonb_build_object($3::text, $4::text))
+		FROM timescaledb_information.jobs
+		WHERE proc_name = $1 AND hypertable_schema = current_schema() AND hypertable_name = $2`,
+		"policy_"+kind, target, policyWindowKey[kind], interval(window))
+	if err == nil && tag.RowsAffected() == 0 {
+		_, err = st.Pool.Exec(ctx, fmt.Sprintf("SELECT add_%s_policy('%s', $1::interval)", kind, target), interval(window))
+	}
+	if err != nil {
+		return fmt.Errorf("%s policy %s: %w", kind, target, err)
 	}
 	return nil
 }

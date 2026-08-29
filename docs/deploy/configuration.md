@@ -27,6 +27,7 @@ uses API keys, both managed in the viewer (**Account**) or with
 | `RETENTION_DAYS` | `30` | Days to keep raw events and sessions. Issues and statistics are kept longer |
 | `PII_REDACT` | `false` | Scrub emails, phone numbers, tokens and user ids before storing events |
 | `COMPRESS_AFTER` | `48h` | How long events stay editable. Symbol uploads re-symbolicate events newer than this; with TimescaleDB, older data is compressed |
+| `CHUNK_INTERVAL` | `168h` (7 days) | Width of the TimescaleDB chunks that hold events and sessions. Keep a chunk (with its indexes) within about a quarter of the database's memory: `168h` suits up to a few tens of thousands of events a day, `24h` a few hundred thousand. Applies to new chunks; every query pays a little per chunk in the window, so do not go narrower than the volume needs |
 
 Changing a data setting and restarting is enough — it applies to existing
 data too.

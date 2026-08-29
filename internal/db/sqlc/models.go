@@ -371,6 +371,17 @@ type Event struct {
 	Symbols       json.RawMessage `json:"symbols"`
 }
 
+type EventStatsDaily struct {
+	Bucket    time.Time  `json:"bucket"`
+	ProjectID int64      `json:"project_id"`
+	Release   string     `json:"release"`
+	Platform  string     `json:"platform"`
+	Level     EventLevel `json:"level"`
+	Events    int64      `json:"events"`
+	Crashes   int64      `json:"crashes"`
+	Errors    int64      `json:"errors"`
+}
+
 type EventStatsHourly struct {
 	Bucket    time.Time  `json:"bucket"`
 	ProjectID int64      `json:"project_id"`

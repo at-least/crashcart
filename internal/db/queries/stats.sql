@@ -1,7 +1,8 @@
 -- Chart queries take a window [from_at, to_at) (from_at bucket-aligned)
--- and a bucket width in seconds; they fold the hourly aggregates with
--- crashcart_bucket and gap-fill with crashcart_buckets, so every bucket
--- of the window comes back, in order.
+-- and a bucket width in seconds. They read crashcart_event_stats (the
+-- aggregate that matches the width), fold with crashcart_bucket and
+-- gap-fill with crashcart_buckets, so every bucket of the window comes
+-- back, in order. The totals take the width for the same reason.
 
 -- name: Timeline :many
 -- Events / crashes per bucket, split into the top `top` releases (by
@@ -10,9 +11,7 @@
 WITH s AS (
     SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, release,
            sum(events) AS events, sum(crashes) AS crashes
-    FROM event_stats_hourly
-    WHERE project_id = sqlc.arg(project_id)::bigint
-      AND bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
+    FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
     GROUP BY 1, 2),
 ranked AS (
     SELECT release, row_number() OVER (ORDER BY sum(crashes) DESC, sum(events) DESC, release) AS rank
@@ -35,13 +34,11 @@ ORDER BY b, se.rank;
 SELECT COALESCE(sum(events), 0)::bigint AS events,
        COALESCE(sum(crashes), 0)::bigint AS crashes,
        COALESCE(sum(errors), 0)::bigint AS errors
-FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND bucket < $3;
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint);
 
 -- name: LevelTotals :many
 SELECT level, sum(events)::bigint AS events
-FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
 GROUP BY level;
 
 -- name: ReleaseStats :many
@@ -51,17 +48,16 @@ SELECT s.release,
        COALESCE(r.platforms, '{}'::text[])::text[] AS platforms,
        COALESCE(r.first_seen, min(s.bucket))::timestamptz AS first_seen, max(s.bucket)::timestamptz AS last_seen,
        sum(s.events)::bigint AS events, sum(s.crashes)::bigint AS crashes, sum(s.errors)::bigint AS errors
-FROM event_stats_hourly s
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS s
 LEFT JOIN releases r ON r.project_id = s.project_id AND r.release = s.release
-WHERE s.project_id = $1 AND s.bucket >= $2 AND s.bucket < $3 AND s.release <> ''
+WHERE s.release <> ''
 GROUP BY s.release, r.platforms, r.first_seen ORDER BY max(s.bucket) DESC, s.release;
 
 -- name: ReleaseTimeline :many
 WITH h AS (
     SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, sum(events) AS events, sum(crashes) AS crashes
-    FROM event_stats_hourly
-    WHERE project_id = sqlc.arg(project_id)::bigint AND release = sqlc.arg(release)::text
-      AND bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
+    FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
+    WHERE release = sqlc.arg(release)::text
     GROUP BY 1)
 SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events, COALESCE(h.crashes, 0)::bigint AS crashes
 FROM crashcart_buckets(sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS b
@@ -71,6 +67,8 @@ ORDER BY b;
 -- name: LatestReleaseHealth :one
 -- The most recently active release in the window (by events; ties by
 -- name) with its session totals over the same window (0 without sessions).
+-- hour_from is the event window start aligned to `width`, day_from the
+-- day-aligned start for the daily session aggregate.
 SELECT e.release,
        COALESCE((SELECT sum(h.total) FROM release_health_daily h
                   WHERE h.project_id = e.project_id AND h.release = e.release
@@ -78,9 +76,8 @@ SELECT e.release,
        COALESCE((SELECT sum(h.crashed) FROM release_health_daily h
                   WHERE h.project_id = e.project_id AND h.release = e.release
                     AND h.bucket >= sqlc.arg(day_from)::timestamptz AND h.bucket < sqlc.arg(to_at)::timestamptz), 0)::bigint AS crashed
-FROM event_stats_hourly e
-WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.release <> ''
-  AND e.bucket >= sqlc.arg(hour_from)::timestamptz AND e.bucket < sqlc.arg(to_at)::timestamptz
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(hour_from)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS e
+WHERE e.release <> ''
 GROUP BY e.project_id, e.release
 ORDER BY max(e.bucket) DESC, e.release DESC
 LIMIT 1;
@@ -104,8 +101,7 @@ FROM recent FULL OUTER JOIN baseline USING (project_id);
 -- name: PlatformTotals :many
 -- Raw SDK platforms seen in a window (for the "expected vs received" check).
 SELECT platform, sum(events)::bigint AS events
-FROM event_stats_hourly
-WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
 GROUP BY platform ORDER BY events DESC;
 
 -- name: AddProjectUsage :one

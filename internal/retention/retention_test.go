@@ -17,7 +17,7 @@ func TestReconcile(t *testing.T) {
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
 	log := slog.Default()
-	cfg := config.Config{RetentionDays: 14, CompressAfter: 36 * time.Hour}
+	cfg := config.Config{RetentionDays: 14, CompressAfter: 36 * time.Hour, ChunkInterval: 3 * 24 * time.Hour}
 	if err := Reconcile(ctx, st, cfg, log); err != nil {
 		t.Fatal(err)
 	}
@@ -41,10 +41,13 @@ func TestReconcile(t *testing.T) {
 	if n := count(hyper, "policy_compression"); n != 2 {
 		t.Errorf("compression policies = %d", n)
 	}
-	agg := `SELECT count(*) FROM timescaledb_information.jobs WHERE proc_name = 'policy_retention' AND hypertable_schema = current_schema()
-	        AND hypertable_name IN ('event_stats_hourly', 'issue_stats_hourly', 'release_health_daily')`
-	if n := count(agg); n != 3 {
+	agg := `SELECT count(*) FROM timescaledb_information.jobs WHERE proc_name = $1 AND hypertable_schema = current_schema()
+	        AND hypertable_name IN ('event_stats_hourly', 'event_stats_daily', 'issue_stats_hourly', 'release_health_daily')`
+	if n := count(agg, "policy_retention"); n != 4 {
 		t.Errorf("aggregate retention policies = %d", n)
+	}
+	if n := count(agg, "policy_compression"); n != 4 {
+		t.Errorf("aggregate compression policies = %d", n)
 	}
 	// The configured windows landed as intervals.
 	window := func(proc, key string) string {
@@ -60,7 +63,23 @@ func TestReconcile(t *testing.T) {
 	if got := window("policy_compression", "compress_after"); got != "36:00:00" {
 		t.Errorf("compress_after = %q, want 36:00:00", got)
 	}
-	// Changing the configuration replaces the policies.
+	// The chunk width followed CHUNK_INTERVAL.
+	var width string
+	if err := st.Pool.QueryRow(ctx, `SELECT time_interval::text FROM timescaledb_information.dimensions WHERE hypertable_schema = current_schema() AND hypertable_name = 'sessions'`).Scan(&width); err != nil {
+		t.Fatal(err)
+	}
+	if width != "3 days" {
+		t.Errorf("chunk interval = %q, want 3 days", width)
+	}
+	// Changing the configuration alters the policies in place: same job.
+	jobID := func() int64 {
+		var id int64
+		if err := st.Pool.QueryRow(ctx, `SELECT job_id FROM timescaledb_information.jobs WHERE proc_name = 'policy_retention' AND hypertable_schema = current_schema() AND hypertable_name = 'events'`).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	before := jobID()
 	cfg.RetentionDays = 7
 	if err := Reconcile(ctx, st, cfg, log); err != nil {
 		t.Fatal(err)
@@ -70,6 +89,9 @@ func TestReconcile(t *testing.T) {
 	}
 	if got := window("policy_retention", "drop_after"); got != "7 days" {
 		t.Errorf("drop_after after change = %q", got)
+	}
+	if after := jobID(); after != before {
+		t.Errorf("retention policy job replaced: %d → %d", before, after)
 	}
 }
 
@@ -152,5 +174,19 @@ func TestRefreshAggregates(t *testing.T) {
 	}
 	if crashes != 1 {
 		t.Fatalf("crashes after refresh = %d, want 1", crashes)
+	}
+	// The daily roll-up followed, and the chart queries see the same
+	// numbers at either grain.
+	from, to := old.Add(-72*time.Hour).UTC().Truncate(24*time.Hour), time.Now()
+	hourly, err := st.Totals(ctx, sqlc.TotalsParams{ProjectID: 1, FromAt: from, ToAt: to, Width: 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daily, err := st.Totals(ctx, sqlc.TotalsParams{ProjectID: 1, FromAt: from, ToAt: to, Width: 86400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hourly.Crashes != 1 || daily != hourly {
+		t.Fatalf("totals hourly %+v daily %+v", hourly, daily)
 	}
 }

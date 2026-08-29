@@ -46,7 +46,7 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, Bucket: from.Truncate(time.Hour), Bucket_2: to})
+	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: from.Truncate(time.Hour), ToAt: to, Width: hourly})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -116,7 +116,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	hi := to
 	hlo, dlo := from.Truncate(time.Hour), from.Truncate(24*time.Hour)
 
-	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, Bucket: hlo, Bucket_2: hi})
+	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi, Width: hourly})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -153,7 +153,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	rel.CrashFreeRate = crashFreeRate(rel.Sessions.Total, rel.Sessions.Crashed)
 
-	tl, err := h.Store.ReleaseTimeline(ctx, sqlc.ReleaseTimelineParams{ProjectID: p.ID, Release: version, FromAt: hlo, ToAt: hi, Width: 3600})
+	tl, err := h.Store.ReleaseTimeline(ctx, sqlc.ReleaseTimelineParams{ProjectID: p.ID, Release: version, FromAt: hlo, ToAt: hi, Width: hourly})
 	if err != nil {
 		h.fail(w, err)
 		return

@@ -197,6 +197,21 @@ CREATE TABLE event_stats_hourly (
     errors     BIGINT NOT NULL
 );
 
+CREATE TABLE event_stats_daily (
+    bucket     TIMESTAMPTZ NOT NULL,
+    project_id BIGINT NOT NULL,
+    release    TEXT NOT NULL,
+    platform   TEXT NOT NULL,
+    level      event_level NOT NULL,
+    events     BIGINT NOT NULL,
+    crashes    BIGINT NOT NULL,
+    errors     BIGINT NOT NULL
+);
+
+CREATE FUNCTION crashcart_event_stats(pid BIGINT, from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT)
+RETURNS SETOF event_stats_hourly
+LANGUAGE SQL STABLE AS $$ SELECT NULL $$;
+
 CREATE TABLE issue_stats_hourly (
     bucket      TIMESTAMPTZ NOT NULL,
     project_id  BIGINT NOT NULL,

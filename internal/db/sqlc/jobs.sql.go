@@ -163,7 +163,7 @@ func (q *Queries) EnqueueJobs(ctx context.Context, arg EnqueueJobsParams) error 
 
 const enqueueSymbolicateRelease = `-- name: EnqueueSymbolicateRelease :execrows
 INSERT INTO jobs (kind, project_id, args)
-SELECT 'symbolicate', e.project_id, jsonb_build_object('event', replace(e.event_id::text, '-', ''))
+SELECT 'symbolicate', e.project_id, jsonb_build_object('event', replace(e.event_id::text, '-', ''), 'at', e.occurred_at)
 FROM events e
 WHERE e.project_id = $1 AND e.release = $2 AND e.symbolicated = false AND e.fingerprint IS NOT NULL
   AND e.occurred_at >= $3

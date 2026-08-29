@@ -21,6 +21,7 @@ type Config struct {
 
 	RetentionDays    int
 	CompressAfter    time.Duration
+	ChunkInterval    time.Duration // hypertable chunk width (events, sessions)
 	AlertInterval    time.Duration
 	Workers          int
 	SymbolicateURL   string // dSYM sidecar
@@ -56,11 +57,17 @@ func Load() (Config, error) {
 	if c.CompressAfter, err = durEnv("COMPRESS_AFTER", 48*time.Hour); err != nil {
 		return c, err
 	}
+	if c.ChunkInterval, err = durEnv("CHUNK_INTERVAL", 7*24*time.Hour); err != nil {
+		return c, err
+	}
 	if c.AlertInterval, err = durEnv("ALERT_INTERVAL", 10*time.Minute); err != nil {
 		return c, err
 	}
 	if c.RetentionDays < 1 {
 		return c, fmt.Errorf("RETENTION_DAYS must be >= 1")
+	}
+	if c.ChunkInterval < time.Hour {
+		return c, fmt.Errorf("CHUNK_INTERVAL must be >= 1h")
 	}
 	return c, nil
 }

@@ -196,11 +196,12 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
 			var a struct {
 				Event sentry.ID `json:"event"`
+				At    time.Time `json:"at"`
 			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return err
 			}
-			return syms.Event(ctx, j.ProjectID, a.Event)
+			return syms.Event(ctx, j.ProjectID, a.Event, a.At)
 		},
 		"resymbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
 			var a struct {

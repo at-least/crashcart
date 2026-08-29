@@ -259,14 +259,15 @@ CREATE TRIGGER issues_notify_regression AFTER UPDATE OF status ON issues
 
 -- ── hypertables, compression, continuous aggregates ────────────────────
 
-SELECT create_hypertable('events', 'occurred_at', chunk_time_interval => INTERVAL '1 day', if_not_exists => true);
+-- Chunk width: the CHUNK_INTERVAL default; internal/retention sets it from the environment at startup.
+SELECT create_hypertable('events', 'occurred_at', chunk_time_interval => INTERVAL '7 days', if_not_exists => true);
 ALTER TABLE events SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'project_id, fingerprint',
     timescaledb.compress_orderby = 'occurred_at DESC'
 );
 
-SELECT create_hypertable('sessions', 'started_at', chunk_time_interval => INTERVAL '1 day', if_not_exists => true);
+SELECT create_hypertable('sessions', 'started_at', chunk_time_interval => INTERVAL '7 days', if_not_exists => true);
 ALTER TABLE sessions SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'project_id, release',
@@ -314,7 +315,43 @@ FROM sessions
 GROUP BY 1, 2, 3
 WITH NO DATA;
 
--- Refresh: every 5 minutes, re-materialize the last 3 hours / 3 days.
+-- Daily roll-up of the hourly events aggregate (a continuous aggregate on
+-- a continuous aggregate): the 30 / 90-day charts read one row per day
+-- instead of folding 24 hourly rows. Same dimensions, summed.
+CREATE MATERIALIZED VIEW IF NOT EXISTS event_stats_daily
+WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
+SELECT time_bucket(INTERVAL '1 day', bucket) AS bucket,
+       project_id, release, platform, level,
+       sum(events)::bigint AS events, sum(crashes)::bigint AS crashes, sum(errors)::bigint AS errors
+FROM event_stats_hourly
+GROUP BY 1, 2, 3, 4, 5
+WITH NO DATA;
+
+-- crashcart_event_stats is the chart queries' one source: the hourly
+-- aggregate for bucket widths below a day, the daily roll-up from a day up
+-- (a day bucket implies a day-aligned from_at). Inlined into the caller,
+-- so the width test is a constant per branch and the planner drops the
+-- other one.
+CREATE FUNCTION crashcart_event_stats(pid BIGINT, from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT)
+RETURNS SETOF event_stats_hourly
+LANGUAGE SQL STABLE AS $$
+    SELECT bucket, project_id, release, platform, level, events, crashes, errors FROM event_stats_hourly
+    WHERE width < 86400 AND project_id = pid AND bucket >= from_at AND bucket < to_at
+    UNION ALL
+    SELECT bucket, project_id, release, platform, level, events, crashes, errors FROM event_stats_daily
+    WHERE width >= 86400 AND project_id = pid AND bucket >= from_at AND bucket < to_at
+$$;
+
+-- The aggregates keep 400 days; their older chunks are compressed (policy
+-- added by internal/retention). A refresh into a compressed region works,
+-- it is just slower — only import / seed do that.
+ALTER MATERIALIZED VIEW event_stats_hourly   SET (timescaledb.compress, timescaledb.compress_segmentby = 'project_id', timescaledb.compress_orderby = 'bucket');
+ALTER MATERIALIZED VIEW event_stats_daily    SET (timescaledb.compress, timescaledb.compress_segmentby = 'project_id', timescaledb.compress_orderby = 'bucket');
+ALTER MATERIALIZED VIEW issue_stats_hourly   SET (timescaledb.compress, timescaledb.compress_segmentby = 'project_id', timescaledb.compress_orderby = 'bucket');
+ALTER MATERIALIZED VIEW release_health_daily SET (timescaledb.compress, timescaledb.compress_segmentby = 'project_id', timescaledb.compress_orderby = 'bucket');
+
+-- Refresh: every 5 minutes, re-materialize the last 3 hours / 3 days; the
+-- daily roll-up hourly, from the hourly aggregate.
 SELECT add_continuous_aggregate_policy('event_stats_hourly',
     start_offset => INTERVAL '3 hours', end_offset => INTERVAL '1 minute',
     schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
@@ -324,6 +361,9 @@ SELECT add_continuous_aggregate_policy('issue_stats_hourly',
 SELECT add_continuous_aggregate_policy('release_health_daily',
     start_offset => INTERVAL '3 days', end_offset => INTERVAL '1 minute',
     schedule_interval => INTERVAL '5 minutes', if_not_exists => true);
+SELECT add_continuous_aggregate_policy('event_stats_daily',
+    start_offset => INTERVAL '3 days', end_offset => INTERVAL '1 hour',
+    schedule_interval => INTERVAL '1 hour', if_not_exists => true);
 
 -- Retention and compression policies are reconciled at startup from
 -- RETENTION_DAYS (see internal/retention), not fixed here.

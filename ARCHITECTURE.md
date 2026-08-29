@@ -42,13 +42,17 @@ sessions → jobs. Aggregates are *not* touched at ingest.
 
 **Aggregates are continuous aggregates.** `event_stats_hourly`,
 `issue_stats_hourly`, `release_health_daily` are TimescaleDB continuous
-aggregates with real-time aggregation on. They are functions of the raw
+aggregates with real-time aggregation on; `event_stats_daily` is a
+continuous aggregate on `event_stats_hourly` (the 30 / 90-day charts read
+one row per day instead of folding 24). They are functions of the raw
 tables: nothing to keep consistent, adding a dimension is a new view with
-history, import never recomputes them. The chart queries fold them into
-buckets of any width (`crashcart_bucket`), gap-fill (`crashcart_buckets`),
-rank the top releases and fold the rest into "other" — all in SQL, so the
-API and the viewer share one query per chart and the Go side only maps
-rows. Issue breakdowns (release / OS / device / environment / `tags.<key>`)
+history, import never recomputes them. The chart queries read
+`crashcart_event_stats(project, from, to, width)` — an inlined SQL function
+that is the hourly aggregate below a day's width and the daily roll-up from
+a day up, so the planner keeps one branch — fold into buckets of any width
+(`crashcart_bucket`), gap-fill (`crashcart_buckets`), rank the top releases
+and fold the rest into "other" — all in SQL, so the API and the viewer
+share one query per chart and the Go side only maps rows. Issue breakdowns (release / OS / device / environment / `tags.<key>`)
 are one scan with a `LATERAL VALUES` unpivot and a window function. Tag
 filters are containment (`tags @> {k: v}`) on a GIN index.
 
@@ -87,14 +91,20 @@ event in a single `INSERT … SELECT`), which may move them to a new issue.
 **Compression + retention are policies.** Chunks older than `COMPRESS_AFTER`
 (48 h) are compressed (`segmentby project_id, fingerprint`; typically
 10–20× on Sentry payloads). Retention drops whole chunks after
-`RETENTION_DAYS`; hourly/daily aggregates keep 400 days. Policies are
-reconciled from the environment at startup (`internal/retention`).
+`RETENTION_DAYS` (so up to one chunk width longer); the aggregates keep
+400 days and are compressed after 30 days (past every refresh window). The chunk width is `CHUNK_INTERVAL` (7 days: right for
+self-hosters at tens of thousands of events a day, and every query pays
+planning time per chunk in its window; a busier deployment narrows it to
+fit a chunk in a quarter of memory). Policies and the chunk width are
+reconciled from the environment at startup (`internal/retention`): an
+existing policy is altered in place (its job keeps its id and history),
+and the width applies to new chunks only, so it can follow the traffic.
 
 **Jobs live in Postgres.** `jobs` + `UPDATE … SKIP LOCKED RETURNING`: a
 worker leases a batch (`locked_until`, attempt counted) in one short
 transaction, runs the handlers with nothing held open (they make HTTP
 calls), then deletes or reschedules each job. An expired lease — the worker
-died — makes the job claimable again. Kinds: `symbolicate {event}`,
+died — makes the job claimable again. Kinds: `symbolicate {event, at}` (the time keeps the lookup to one chunk),
 `resymbolicate {release}`, `alert {type, fingerprint}`. Retries with
 backoff; after 8 attempts a job is dead: never claimed again, kept with its
 `last_error` for a week (`DeadJobs`), then dropped. A partial unique index
@@ -138,7 +148,7 @@ theme, and the SSE "new issues" banner.
 |---|---|---|---|
 | users / user_sessions / api_keys | table | id / token_hash / id | viewer accounts, session cookies (hashed), API keys (hashed) |
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
-| events | hypertable (1 day chunks) | (project_id, event_id, occurred_at) | compressed after 48 h |
+| events | hypertable (`CHUNK_INTERVAL` chunks, 7 days) | (project_id, event_id, occurred_at) | compressed after 48 h |
 | sessions | hypertable | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
 | releases | table | (project_id, release) | every release seen, platforms, first_seen |
 | issues | table | (project_id, fingerprint) | stateful |
@@ -147,6 +157,7 @@ theme, and the SSE "new issues" banner.
 | jobs | table | id | queue |
 | alert_rules / alert_channels | table | | per project |
 | event_stats_hourly | cagg | bucket, project, release, platform, level | events / crashes / errors |
+| event_stats_daily | cagg on event_stats_hourly | bucket, project, release, platform, level | the same, per day; `crashcart_event_stats(…)` picks one by width |
 | issue_stats_hourly | cagg | bucket, project, fingerprint | sparklines |
 | release_health_daily | cagg | bucket, project, release | total / crashed / errored sessions |
 

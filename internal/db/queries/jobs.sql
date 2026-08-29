@@ -48,7 +48,7 @@ SELECT * FROM jobs WHERE project_id = $1 AND attempts >= 8 ORDER BY id DESC LIMI
 -- (bounded, newest first) in a single statement: one NOTIFY, and each
 -- event then retries on its own.
 INSERT INTO jobs (kind, project_id, args)
-SELECT 'symbolicate', e.project_id, jsonb_build_object('event', replace(e.event_id::text, '-', ''))
+SELECT 'symbolicate', e.project_id, jsonb_build_object('event', replace(e.event_id::text, '-', ''), 'at', e.occurred_at)
 FROM events e
 WHERE e.project_id = $1 AND e.release = $2 AND e.symbolicated = false AND e.fingerprint IS NOT NULL
   AND e.occurred_at >= $3

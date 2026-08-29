@@ -42,11 +42,11 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 	cards := make([]PortalCard, 0, len(projects))
 	for _, p := range projects {
 		c := PortalCard{P: p, CrashFree: "n/a"}
-		if t, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, Bucket: n.Add(-day).Truncate(time.Hour), Bucket_2: n}); err == nil {
+		if t, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, FromAt: n.Add(-day).Truncate(time.Hour), ToAt: n, Width: 3600}); err == nil {
 			c.Crashes24h = t.Crashes
 		}
 		c.LatestRelease, c.CrashFree = w.latestHealth(ctx, p.ID, n, 30)
-		c.Received, c.Mismatch = w.receivedPlatforms(ctx, p, n.Add(-7*day).Truncate(time.Hour), n)
+		c.Received, c.Mismatch = w.receivedPlatforms(ctx, p, Window{From: n.Add(-7 * day).Truncate(time.Hour), To: n, Width: time.Hour})
 		counts, _ := w.Store.CountIssuesByStatus(ctx, p.ID)
 		for _, row := range counts {
 			if row.Status == "unresolved" || row.Status == "triaged" || row.Status == "regression" {
@@ -62,8 +62,8 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 // window (most events first) and whether any is not what the project
 // declares. The aggregate only has the raw platform, so the family is
 // derived without the SDK name — close enough for a warning.
-func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, from, to time.Time) ([]string, bool) {
-	rows, err := w.Store.PlatformTotals(ctx, sqlc.PlatformTotalsParams{ProjectID: p.ID, Bucket: from, Bucket_2: to})
+func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, win Window) ([]string, bool) {
+	rows, err := w.Store.PlatformTotals(ctx, sqlc.PlatformTotalsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To, Width: win.Seconds()})
 	if err != nil {
 		return nil, false
 	}
@@ -93,8 +93,8 @@ func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, from, to ti
 // latestHealth finds the release with the most recent activity in the last
 // days and its crash-free session rate over the same span.
 func (w *Web) latestHealth(ctx context.Context, projectID int64, n time.Time, days int) (release, rate string) {
-	from := n.Add(-time.Duration(days) * day).Truncate(day)
-	lr, err := w.Store.LatestReleaseHealth(ctx, sqlc.LatestReleaseHealthParams{ProjectID: projectID, HourFrom: from, DayFrom: from, ToAt: n})
+	win := Window{From: n.Add(-time.Duration(days) * day).Truncate(day), To: n, Width: day}
+	lr, err := w.Store.LatestReleaseHealth(ctx, sqlc.LatestReleaseHealthParams{ProjectID: projectID, HourFrom: win.From, DayFrom: win.From, ToAt: n, Width: win.Seconds()})
 	if err != nil {
 		return "", "n/a"
 	}
@@ -136,13 +136,13 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 	n := now()
 	win := s.Window(n)
 	var d OverviewData
-	d.Received, d.Mismatch = w.receivedPlatforms(ctx, p, win.From, win.To)
+	d.Received, d.Mismatch = w.receivedPlatforms(ctx, p, win)
 	if p.DailyQuota > 0 {
 		d.Today, _ = w.Store.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: n.UTC().Truncate(day)})
 		d.QuotaReached = d.Today >= int64(p.DailyQuota)
 	}
 	d.LatestRelease, d.CrashFree = w.latestHealth(ctx, p.ID, n, win.Days)
-	totals, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, Bucket: win.From, Bucket_2: win.To})
+	totals, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To, Width: win.Seconds()})
 	if err != nil {
 		w.fail(rw, r, err)
 		return
@@ -630,7 +630,7 @@ func (r ReleaseRow) Adoption() string  { return percent(r.Sessions, r.TotalSessi
 func (r ReleaseRow) CrashFree() string { return crashFree(r.Sessions, r.Crashed) }
 
 func (w *Web) releaseRows(ctx context.Context, p sqlc.Project, win Window) ([]ReleaseRow, error) {
-	stats, err := w.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, Bucket: win.From, Bucket_2: win.To})
+	stats, err := w.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To, Width: win.Seconds()})
 	if err != nil {
 		return nil, err
 	}

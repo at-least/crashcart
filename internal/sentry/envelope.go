@@ -400,6 +400,9 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	if ev.Timestamp.After(now.Add(time.Hour)) {
 		ev.Timestamp = now
 	}
+	// Microseconds, like the TIMESTAMPTZ it is stored as, so the stored
+	// occurred_at equals this value exactly.
+	ev.Timestamp = ev.Timestamp.UTC().Truncate(time.Microsecond)
 	// The SDK's event_id (a 32-hex UUID per the protocol), the envelope
 	// header's, or — no usable id — one derived from the body, so a resend
 	// still lands on the same row.

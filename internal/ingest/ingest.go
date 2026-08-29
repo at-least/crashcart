@@ -372,10 +372,17 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		// counted twice.
 		if len(preps) > 0 {
 			ids := make([]sentry.ID, len(preps))
+			from, to := preps[0].ev.Timestamp, preps[0].ev.Timestamp
 			for i, pr := range preps {
 				ids[i] = pr.ev.EventID
+				if pr.ev.Timestamp.Before(from) {
+					from = pr.ev.Timestamp
+				}
+				if pr.ev.Timestamp.After(to) {
+					to = pr.ev.Timestamp
+				}
 			}
-			existing, err := q.ExistingEventIDs(ctx, sqlc.ExistingEventIDsParams{ProjectID: p.ID, Column2: ids})
+			existing, err := q.ExistingEventIDs(ctx, sqlc.ExistingEventIDsParams{ProjectID: p.ID, Column2: ids, FromAt: from, ToAt: to.Add(time.Microsecond)})
 			if err != nil {
 				return fmt.Errorf("dedupe: %w", err)
 			}
@@ -546,7 +553,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				Tags: tags, Payload: ev.Raw, Symbols: symbols,
 			})
 			if pr.retry && pr.fingerprint != "" {
-				args, _ := json.Marshal(map[string]any{"event": ev.EventID})
+				args, _ := json.Marshal(map[string]any{"event": ev.EventID, "at": ev.Timestamp})
 				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
 			}
 		}

@@ -1,10 +1,16 @@
 -- name: GetEvent :one
--- By Sentry event_id (the newest row when a resend carried another timestamp).
+-- By Sentry event_id alone (the viewer and the API: URLs carry only the
+-- id). Without a time this touches every chunk; the newest row wins when
+-- a resend carried another timestamp.
 SELECT * FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1;
+
+-- name: GetEventAt :one
+-- By primary key: the time lets the planner open one chunk. Jobs carry it.
+SELECT * FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3;
 
 -- name: SetEventSymbols :exec
 UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, error_location = $5
-WHERE project_id = $1 AND event_id = $2;
+WHERE project_id = $1 AND event_id = $2 AND occurred_at = $6;
 
 -- name: IssueUsers :many
 -- Distinct users per issue in a window (index: project_id, fingerprint, occurred_at).
@@ -18,5 +24,8 @@ SELECT (SELECT e.event_id FROM events e WHERE e.project_id = sqlc.arg(project_id
        (SELECT e.event_id FROM events e WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.fingerprint = sqlc.arg(fingerprint)::uuid ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest;
 
 -- name: ExistingEventIDs :many
--- Which of these event_ids are already stored (resent envelopes).
-SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::uuid[]);
+-- Which of these event_ids are already stored (resent envelopes). A resend
+-- carries the SDK's own timestamp, so the window is the envelope's own
+-- time range: only the chunks it spans are read.
+SELECT event_id FROM events
+WHERE project_id = $1 AND event_id = ANY($2::uuid[]) AND occurred_at >= sqlc.arg(from_at)::timestamptz AND occurred_at < sqlc.arg(to_at)::timestamptz;

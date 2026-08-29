@@ -39,9 +39,9 @@ Community build (see [The database](/deploy/postgres)).
 
 ## `retention`
 
-Reconciles the compression and retention policies with the current
-`COMPRESS_AFTER` / `RETENTION_DAYS`, runs one retention sweep, and on plain
-Postgres rolls up the hourly statistics. Exits when done — for cron.
+Reconciles the compression and retention policies and the chunk width with
+the current `COMPRESS_AFTER` / `RETENTION_DAYS` / `CHUNK_INTERVAL` and runs
+one retention sweep. Exits when done — for cron.
 
 ## `alerts`
 
