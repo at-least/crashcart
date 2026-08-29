@@ -43,20 +43,35 @@ export default defineConfig({
           text: 'Install',
           items: [
             { text: 'Which edition?', link: '/deploy/which-edition' },
+          ],
+        },
+        {
+          text: 'Go edition · your own Postgres (TimescaleDB)',
+          items: [
             { text: 'Docker Compose on a VPS', link: '/deploy/docker' },
             { text: 'Go binary + systemd', link: '/deploy/binary' },
             { text: 'Kubernetes', link: '/deploy/kubernetes' },
+          ],
+        },
+        {
+          text: 'Go edition · managed Postgres (plain)',
+          items: [
             { text: 'Fly.io + Neon', link: '/deploy/fly' },
-            { text: 'Serverless (Cloudflare Workers + D1)', link: '/deploy/serverless' },
-            { text: 'Before going live', link: '/deploy/checklist' },
+            { text: 'Managed Postgres providers', link: '/deploy/managed-postgres' },
+          ],
+        },
+        {
+          text: 'Serverless edition · Cloudflare (D1)',
+          items: [
+            { text: 'Cloudflare Workers + D1', link: '/deploy/serverless' },
           ],
         },
         {
           text: 'Operate',
           items: [
+            { text: 'Before going live', link: '/deploy/checklist' },
             { text: 'Configuration', link: '/deploy/configuration' },
             { text: 'Postgres options', link: '/deploy/postgres' },
-            { text: 'Managed Postgres providers', link: '/deploy/managed-postgres' },
             { text: 'Operations', link: '/deploy/operations' },
           ],
         },

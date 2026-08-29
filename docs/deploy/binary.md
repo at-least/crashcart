@@ -4,6 +4,15 @@ Run CrashCart as a plain service on a Linux host, with Postgres installed
 on the same machine or provided by a managed service. Prefer containers?
 See [Docker Compose on a VPS](./docker).
 
+::: info Storage: Go edition, plain Postgres or TimescaleDB
+`apt install postgresql` gives plain Postgres — fine to a few million
+events a month. For compressed storage at higher volume, install
+[TimescaleDB's package](https://docs.tigerdata.com/self-hosted/latest/install/installation-linux/)
+for your distro before step 2, or use [Docker Compose](./docker), which
+ships it. A managed Postgres runs in plain mode. See
+[three ways your data is stored](./which-edition#timescaledb-and-compression).
+:::
+
 ## 1. Get the binary
 
 Download the latest release for your platform — a single static binary

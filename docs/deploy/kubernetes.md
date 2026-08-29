@@ -4,6 +4,14 @@ CrashCart as a Deployment behind an Ingress, with Postgres either managed
 or as a small in-cluster StatefulSet. The manifests below were applied as
 written on a fresh cluster.
 
+::: info Storage: depends on the Postgres you point it at
+The in-cluster `postgres.yaml` below runs TimescaleDB: compressed
+storage, free retention. A managed Postgres (Neon, RDS, Cloud SQL, …)
+runs in plain mode — simpler to operate, but no compression, comfortable
+to a few million events a month. See
+[three ways your data is stored](./which-edition#timescaledb-and-compression).
+:::
+
 **You need**
 
 - A cluster with an ingress controller (the manifests assume
@@ -134,8 +142,8 @@ file.
 `postgres.yaml` — an in-cluster TimescaleDB for small installs:
 
 ```yaml
-# In-cluster TimescaleDB for small installs. For anything serious use a
-# managed Postgres and skip this file.
+# In-cluster TimescaleDB. Give it a StorageClass you trust; or use a
+# managed Postgres (plain mode, no compression) and skip this file.
 apiVersion: v1
 kind: Service
 metadata:

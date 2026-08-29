@@ -4,6 +4,13 @@
 is CrashCart on Cloudflare Workers, with D1 as the database and R2 for
 blobs. Same SDK setup, same viewer, same export format.
 
+::: info Storage: Cloudflare D1
+Uncompressed rows, 10 GB per database, and expiring old data is a billed
+write. About a million events a month on the $5 Workers Paid plan; a few
+million with tuning. See
+[three ways your data is stored](./which-edition#timescaledb-and-compression).
+:::
+
 ## When to use it
 
 Nothing to run, free for small apps, $5/month for most others. See

@@ -5,6 +5,13 @@ scales to zero when idle; the database is a free
 [Neon](https://neon.tech) Postgres. For a small app this costs nothing or
 close to it. Every step below has been run as written.
 
+::: info Storage: Go edition, plain Postgres
+Neon ships TimescaleDB without compression, so CrashCart runs in plain
+mode: full-size rows, batched retention — fine to a few million events a
+month. Neon's free plan holds 0.5 GB. See
+[three ways your data is stored](./which-edition#timescaledb-and-compression).
+:::
+
 **You need**
 
 - The `flyctl` CLI, logged in (`curl -L https://fly.io/install.sh | sh`,
