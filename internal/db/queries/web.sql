@@ -16,7 +16,8 @@ SELECT * FROM issues WHERE project_id = $1 AND last_release = $2 AND status NOT 
 ORDER BY event_count DESC LIMIT $3;
 
 -- name: LatestIssueEvent :one
-SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at DESC LIMIT 1;
-
--- name: OldestIssueEvent :one
-SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at ASC LIMIT 1;
+-- Bounded to the issue's own [first_seen, last_seen] so only those
+-- partitions are read (the issue row is the exact range of its events).
+SELECT * FROM events WHERE project_id = $1 AND fingerprint = $2
+  AND occurred_at >= sqlc.arg(from_at)::timestamptz AND occurred_at < sqlc.arg(to_at)::timestamptz
+ORDER BY occurred_at DESC LIMIT 1;

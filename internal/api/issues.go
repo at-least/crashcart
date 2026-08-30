@@ -191,7 +191,7 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	rng, err := h.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp})
+	rng, err := h.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp, FromAt: issue.FirstSeen, ToAt: issue.LastSeen.Add(time.Second)})
 	if err != nil {
 		h.fail(w, err)
 		return

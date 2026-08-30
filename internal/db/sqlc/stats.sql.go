@@ -45,9 +45,12 @@ func (q *Queries) CountDirtyStats(ctx context.Context) (int32, error) {
 
 const crashSpikeInputs = `-- name: CrashSpikeInputs :many
 WITH recent AS (
-    SELECT project_id, count(*) AS n FROM events
-    WHERE occurred_at >= $1::timestamptz AND crashcart_is_crash(level, handled)
-    GROUP BY project_id),
+    -- Per project (every events index leads with project_id: this is the
+    -- events_project_crash index per project, not a scan of the partition).
+    SELECT p.id AS project_id,
+           (SELECT count(*) FROM events e WHERE e.project_id = p.id AND e.occurred_at >= $1::timestamptz
+              AND crashcart_is_crash(e.level, e.handled)) AS n
+    FROM projects p),
 baseline AS (
     SELECT project_id, sum(crashes) AS n FROM event_stats_hourly
     WHERE bucket >= $2::timestamptz AND bucket < $3::timestamptz
@@ -55,6 +58,7 @@ baseline AS (
 SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
        COALESCE(recent.n, 0)::bigint AS recent, COALESCE(baseline.n, 0)::bigint AS baseline
 FROM recent FULL OUTER JOIN baseline USING (project_id)
+WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0
 `
 
 type CrashSpikeInputsParams struct {

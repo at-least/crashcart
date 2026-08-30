@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/crashcartapp/crashcart/internal/sentry"
 )
@@ -46,16 +47,27 @@ func (q *Queries) IssuesIntroducedPerRelease(ctx context.Context, projectID int6
 }
 
 const latestIssueEvent = `-- name: LatestIssueEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at DESC LIMIT 1
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND fingerprint = $2
+  AND occurred_at >= $3::timestamptz AND occurred_at < $4::timestamptz
+ORDER BY occurred_at DESC LIMIT 1
 `
 
 type LatestIssueEventParams struct {
 	ProjectID   int64      `json:"project_id"`
 	Fingerprint *sentry.ID `json:"fingerprint"`
+	FromAt      time.Time  `json:"from_at"`
+	ToAt        time.Time  `json:"to_at"`
 }
 
+// Bounded to the issue's own [first_seen, last_seen] so only those
+// partitions are read (the issue row is the exact range of its events).
 func (q *Queries) LatestIssueEvent(ctx context.Context, arg LatestIssueEventParams) (Event, error) {
-	row := q.db.QueryRow(ctx, latestIssueEvent, arg.ProjectID, arg.Fingerprint)
+	row := q.db.QueryRow(ctx, latestIssueEvent,
+		arg.ProjectID,
+		arg.Fingerprint,
+		arg.FromAt,
+		arg.ToAt,
+	)
 	var i Event
 	err := row.Scan(
 		&i.OccurredAt,
@@ -185,43 +197,4 @@ func (q *Queries) ListIssuesPresentIn(ctx context.Context, arg ListIssuesPresent
 		return nil, err
 	}
 	return items, nil
-}
-
-const oldestIssueEvent = `-- name: OldestIssueEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND fingerprint = $2 ORDER BY occurred_at ASC LIMIT 1
-`
-
-type OldestIssueEventParams struct {
-	ProjectID   int64      `json:"project_id"`
-	Fingerprint *sentry.ID `json:"fingerprint"`
-}
-
-func (q *Queries) OldestIssueEvent(ctx context.Context, arg OldestIssueEventParams) (Event, error) {
-	row := q.db.QueryRow(ctx, oldestIssueEvent, arg.ProjectID, arg.Fingerprint)
-	var i Event
-	err := row.Scan(
-		&i.OccurredAt,
-		&i.ProjectID,
-		&i.EventID,
-		&i.Level,
-		&i.Message,
-		&i.Platform,
-		&i.Environment,
-		&i.Release,
-		&i.DeviceID,
-		&i.DeviceModel,
-		&i.OsVersion,
-		&i.Screen,
-		&i.ErrorType,
-		&i.ErrorLocation,
-		&i.Handled,
-		&i.SdkName,
-		&i.UserID,
-		&i.Fingerprint,
-		&i.Symbolicated,
-		&i.Tags,
-		&i.Symbols,
-		&i.Payload,
-	)
-	return i, err
 }

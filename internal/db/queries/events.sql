@@ -19,9 +19,13 @@ FROM events WHERE project_id = $1 AND fingerprint = ANY($2::uuid[]) AND occurred
 GROUP BY fingerprint;
 
 -- name: IssueEventRange :one
--- Newest and oldest stored event of an issue (NULL when none are stored).
-SELECT (SELECT e.event_id FROM events e WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.fingerprint = sqlc.arg(fingerprint)::uuid ORDER BY e.occurred_at DESC LIMIT 1)::uuid AS latest,
-       (SELECT e.event_id FROM events e WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.fingerprint = sqlc.arg(fingerprint)::uuid ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest;
+-- Newest and oldest stored event of an issue (NULL when none are stored),
+-- within the issue's own [first_seen, last_seen] so only those partitions
+-- are read.
+SELECT (SELECT e.event_id FROM events e WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.fingerprint = sqlc.arg(fingerprint)::uuid
+          AND e.occurred_at >= sqlc.arg(from_at)::timestamptz AND e.occurred_at < sqlc.arg(to_at)::timestamptz ORDER BY e.occurred_at DESC LIMIT 1)::uuid AS latest,
+       (SELECT e.event_id FROM events e WHERE e.project_id = sqlc.arg(project_id)::bigint AND e.fingerprint = sqlc.arg(fingerprint)::uuid
+          AND e.occurred_at >= sqlc.arg(from_at)::timestamptz AND e.occurred_at < sqlc.arg(to_at)::timestamptz ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest;
 
 -- name: ExistingEventIDs :many
 -- Which of these event_ids are already stored (resent envelopes). A resend

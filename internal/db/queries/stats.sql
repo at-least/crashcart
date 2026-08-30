@@ -87,16 +87,20 @@ LIMIT 1;
 -- top of the hour does not matter) vs. the 24 full hourly buckets before
 -- that hour. Projects with no crashes in either are omitted.
 WITH recent AS (
-    SELECT project_id, count(*) AS n FROM events
-    WHERE occurred_at >= sqlc.arg(recent_from)::timestamptz AND crashcart_is_crash(level, handled)
-    GROUP BY project_id),
+    -- Per project (every events index leads with project_id: this is the
+    -- events_project_crash index per project, not a scan of the partition).
+    SELECT p.id AS project_id,
+           (SELECT count(*) FROM events e WHERE e.project_id = p.id AND e.occurred_at >= sqlc.arg(recent_from)::timestamptz
+              AND crashcart_is_crash(e.level, e.handled)) AS n
+    FROM projects p),
 baseline AS (
     SELECT project_id, sum(crashes) AS n FROM event_stats_hourly
     WHERE bucket >= sqlc.arg(baseline_from)::timestamptz AND bucket < sqlc.arg(baseline_to)::timestamptz
     GROUP BY project_id)
 SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
        COALESCE(recent.n, 0)::bigint AS recent, COALESCE(baseline.n, 0)::bigint AS baseline
-FROM recent FULL OUTER JOIN baseline USING (project_id);
+FROM recent FULL OUTER JOIN baseline USING (project_id)
+WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0;
 
 -- name: PlatformTotals :many
 -- Raw SDK platforms seen in a window (for the "expected vs received" check).

@@ -439,14 +439,17 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 	n := now()
 	win := s.Window(n)
 	d := IssueData{Issue: is}
-	if ev, err := w.Store.LatestIssueEvent(ctx, sqlc.LatestIssueEventParams{ProjectID: p.ID, Fingerprint: &fp}); err == nil {
+	// The issue row is the exact time range of its events: lookups stay
+	// within it (one or two partitions, not all of them).
+	seenFrom, seenTo := is.FirstSeen, is.LastSeen.Add(time.Second)
+	if ev, err := w.Store.LatestIssueEvent(ctx, sqlc.LatestIssueEventParams{ProjectID: p.ID, Fingerprint: &fp, FromAt: seenFrom, ToAt: seenTo}); err == nil {
 		d.Latest = &ev
 		d.Stacks = stacksOf(ev, w.payload(ctx, ev))
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		w.fail(rw, r, err)
 		return
 	}
-	if nb, err := w.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp}); err == nil {
+	if nb, err := w.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp, FromAt: seenFrom, ToAt: seenTo}); err == nil {
 		d.LatestID, d.OldestID = string(nb.Latest), string(nb.Oldest)
 	}
 	if users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []sentry.ID{fp}, OccurredAt: win.From, OccurredAt_2: win.To}); err == nil && len(users) > 0 {
@@ -483,7 +486,8 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 		token = "level-fatal"
 	}
 	d.Chart = singleChart("events", token, points, win)
-	d.Events, d.More, err = w.Store.ListEvents(ctx, store.EventFilter{ProjectID: p.ID, Fingerprint: fp, Before: s.Cursor(), Limit: 25})
+	// The list covers the page's window, like the chart and the breakdowns.
+	d.Events, d.More, err = w.Store.ListEvents(ctx, store.EventFilter{ProjectID: p.ID, Fingerprint: fp, From: win.From, To: win.To, Before: s.Cursor(), Limit: 25})
 	if err != nil {
 		w.fail(rw, r, err)
 		return

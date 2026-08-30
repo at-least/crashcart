@@ -113,13 +113,14 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 // CheckSpikes evaluates the crash_spike rule of every project (scheduler).
 func (n *Notifier) CheckSpikes(ctx context.Context) error {
 	// "recent" is the exact last hour from the raw table; the baseline is
-	// the ~24 hourly buckets before it. Bucket keys are start times, so
-	// `bucket < recentFrom` includes the partial bucket the recent hour
-	// starts in: no gap between the two. One query covers every project.
+	// the 24 full hourly buckets before the bucket the recent hour starts
+	// in (that partial bucket would count its crashes on both sides).
+	// One query covers every project.
 	now := time.Now().UTC()
 	recentFrom := now.Add(-time.Hour)
+	baselineTo := recentFrom.Truncate(time.Hour)
 	rows, err := n.Store.CrashSpikeInputs(ctx, sqlc.CrashSpikeInputsParams{
-		RecentFrom: recentFrom, BaselineFrom: recentFrom.Truncate(time.Hour).Add(-24 * time.Hour), BaselineTo: recentFrom,
+		RecentFrom: recentFrom, BaselineFrom: baselineTo.Add(-24 * time.Hour), BaselineTo: baselineTo,
 	})
 	if err != nil {
 		return err

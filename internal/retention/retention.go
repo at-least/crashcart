@@ -303,9 +303,11 @@ type dirtyKey struct {
 	gen     int64
 }
 
-func rollup(ctx context.Context, st *store.Store, dirtyTable string, cutoff time.Time, recompute func(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time) error) (int, error) {
+func rollup(ctx context.Context, st *store.Store, dirtyTable string, cutoff time.Time, recompute func(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time, lo, hi time.Time) error) (int, error) {
+	// Newest first: with a backlog (an import), the hours the viewer is
+	// looking at become clean first.
 	rows, err := st.Pool.Query(ctx, fmt.Sprintf(`SELECT project_id, bucket, gen FROM %s
-		WHERE bucket < date_trunc('hour', now()) ORDER BY bucket LIMIT $1`, dirtyTable), RollupBatch)
+		WHERE bucket < date_trunc('hour', now()) ORDER BY bucket DESC LIMIT $1`, dirtyTable), RollupBatch)
 	if err != nil {
 		return 0, err
 	}
@@ -330,7 +332,18 @@ func rollup(ctx context.Context, st *store.Store, dirtyTable string, cutoff time
 		}
 	}
 	if len(pids) > 0 {
-		if err := pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error { return recompute(ctx, tx, pids, buckets) }); err != nil {
+		// The batch's time range as constants, so the planner prunes the
+		// raw table to those partitions whatever join it picks.
+		lo, hi := buckets[0], buckets[0]
+		for _, b := range buckets {
+			if b.Before(lo) {
+				lo = b
+			}
+			if b.After(hi) {
+				hi = b
+			}
+		}
+		if err := pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error { return recompute(ctx, tx, pids, buckets, lo, hi.Add(time.Hour)) }); err != nil {
 			return 0, fmt.Errorf("rollup %s: %w", dirtyTable, err)
 		}
 	}
@@ -341,7 +354,7 @@ func rollup(ctx context.Context, st *store.Store, dirtyTable string, cutoff time
 	return len(keys), nil
 }
 
-func rollupEvents(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time) error {
+func rollupEvents(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time, lo, hi time.Time) error {
 	for _, q := range []string{
 		`DELETE FROM event_stats_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`,
@@ -351,6 +364,7 @@ func rollupEvents(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.T
 		        count(*) FILTER (WHERE e.level = 'error' AND e.handled IS NOT false)
 		 FROM unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 JOIN events e ON e.project_id = k.project_id AND e.occurred_at >= k.bucket AND e.occurred_at < k.bucket + INTERVAL '1 hour'
+		   AND e.occurred_at >= $3 AND e.occurred_at < $4
 		 GROUP BY 1, 2, 3, 4, 5`,
 		`DELETE FROM issue_stats_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`,
@@ -358,17 +372,22 @@ func rollupEvents(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.T
 		 SELECT k.bucket, k.project_id, e.fingerprint, count(*)
 		 FROM unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 JOIN events e ON e.project_id = k.project_id AND e.occurred_at >= k.bucket AND e.occurred_at < k.bucket + INTERVAL '1 hour'
+		   AND e.occurred_at >= $3 AND e.occurred_at < $4
 		 WHERE e.fingerprint IS NOT NULL
 		 GROUP BY 1, 2, 3`,
 	} {
-		if _, err := tx.Exec(ctx, q, pids, buckets); err != nil {
+		args := []any{pids, buckets}
+		if strings.Contains(q, "$3") {
+			args = append(args, lo, hi)
+		}
+		if _, err := tx.Exec(ctx, q, args...); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func rollupSessions(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time) error {
+func rollupSessions(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time, lo, hi time.Time) error {
 	for _, q := range []string{
 		`DELETE FROM release_health_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`,
@@ -378,9 +397,14 @@ func rollupSessions(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time
 		        COALESCE(sum(s.count) FILTER (WHERE s.status IN ('errored', 'abnormal')), 0)
 		 FROM unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 JOIN sessions s ON s.project_id = k.project_id AND s.started_at >= k.bucket AND s.started_at < k.bucket + INTERVAL '1 hour'
+		   AND s.started_at >= $3 AND s.started_at < $4
 		 GROUP BY 1, 2, 3`,
 	} {
-		if _, err := tx.Exec(ctx, q, pids, buckets); err != nil {
+		args := []any{pids, buckets}
+		if strings.Contains(q, "$3") {
+			args = append(args, lo, hi)
+		}
+		if _, err := tx.Exec(ctx, q, args...); err != nil {
 			return err
 		}
 	}

@@ -137,13 +137,17 @@ func (q *Queries) GetEventAt(ctx context.Context, arg GetEventAtParams) (Event, 
 }
 
 const issueEventRange = `-- name: IssueEventRange :one
-SELECT (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid ORDER BY e.occurred_at DESC LIMIT 1)::uuid AS latest,
-       (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest
+SELECT (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
+          AND e.occurred_at >= $3::timestamptz AND e.occurred_at < $4::timestamptz ORDER BY e.occurred_at DESC LIMIT 1)::uuid AS latest,
+       (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
+          AND e.occurred_at >= $3::timestamptz AND e.occurred_at < $4::timestamptz ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest
 `
 
 type IssueEventRangeParams struct {
 	ProjectID   int64     `json:"project_id"`
 	Fingerprint sentry.ID `json:"fingerprint"`
+	FromAt      time.Time `json:"from_at"`
+	ToAt        time.Time `json:"to_at"`
 }
 
 type IssueEventRangeRow struct {
@@ -151,9 +155,16 @@ type IssueEventRangeRow struct {
 	Oldest sentry.ID `json:"oldest"`
 }
 
-// Newest and oldest stored event of an issue (NULL when none are stored).
+// Newest and oldest stored event of an issue (NULL when none are stored),
+// within the issue's own [first_seen, last_seen] so only those partitions
+// are read.
 func (q *Queries) IssueEventRange(ctx context.Context, arg IssueEventRangeParams) (IssueEventRangeRow, error) {
-	row := q.db.QueryRow(ctx, issueEventRange, arg.ProjectID, arg.Fingerprint)
+	row := q.db.QueryRow(ctx, issueEventRange,
+		arg.ProjectID,
+		arg.Fingerprint,
+		arg.FromAt,
+		arg.ToAt,
+	)
 	var i IssueEventRangeRow
 	err := row.Scan(&i.Latest, &i.Oldest)
 	return i, err

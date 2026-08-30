@@ -185,6 +185,9 @@ CREATE TABLE issues (
 );
 CREATE INDEX issues_project_last_seen ON issues (project_id, last_seen DESC);
 CREATE INDEX issues_project_status ON issues (project_id, status, last_seen DESC);
+CREATE INDEX issues_project_first_seen ON issues (project_id, first_seen DESC);   -- "new issues since" (SSE, overview)
+CREATE INDEX issues_project_first_release ON issues (project_id, first_release); -- release pages
+CREATE INDEX issues_project_last_release ON issues (project_id, last_release);
 
 -- ── symbol files ───────────────────────────────────────────────────────
 
@@ -325,6 +328,10 @@ CREATE TABLE issue_stats_hourly_rolled (
     PRIMARY KEY (project_id, fingerprint, bucket)
 );
 CREATE INDEX issue_stats_hourly_rolled_bucket ON issue_stats_hourly_rolled (project_id, bucket);
+-- Expiry (bucket < cutoff, every sweep) and the all-project spike baseline
+-- filter on bucket alone.
+CREATE INDEX event_stats_hourly_rolled_expiry ON event_stats_hourly_rolled (bucket);
+CREATE INDEX issue_stats_hourly_rolled_expiry ON issue_stats_hourly_rolled (bucket);
 CREATE TABLE release_health_hourly_rolled (
     bucket     TIMESTAMPTZ NOT NULL,
     project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
@@ -334,6 +341,7 @@ CREATE TABLE release_health_hourly_rolled (
     errored    BIGINT NOT NULL,
     PRIMARY KEY (project_id, bucket, release)
 );
+CREATE INDEX release_health_hourly_rolled_expiry ON release_health_hourly_rolled (bucket);
 
 -- The live half of each view: the dirty hours, aggregated from the raw
 -- rows. (A dirty key joins its hour of events through the
@@ -394,4 +402,4 @@ CREATE TABLE crashcart_schema (
     version    INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO crashcart_schema (version) VALUES (2);
+INSERT INTO crashcart_schema (version) VALUES (3);
