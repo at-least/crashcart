@@ -18,9 +18,9 @@ ORDER BY event_count DESC LIMIT $3;
 -- The portal: one query per statistic across every project, not four per
 -- project.
 
--- name: PortalCrashes :many
--- Crashes per project in a window (one row per project).
-SELECT project_id, sum(crashes)::bigint AS crashes
+-- name: PortalUnhandled :many
+-- Unhandled per project in a window (one row per project).
+SELECT project_id, sum(unhandled)::bigint AS unhandled
 FROM event_stats_hourly WHERE bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
 GROUP BY 1;
 

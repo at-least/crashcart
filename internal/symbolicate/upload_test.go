@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
@@ -26,6 +28,32 @@ func TestUpload(t *testing.T) {
 	}
 	if f, err := st.SymbolFileByDebugID(ctx, sqlc.SymbolFileByDebugIDParams{ProjectID: p.ID, DebugID: rows[0].DebugID}); err != nil || f.Filename != "App" {
 		t.Fatalf("lookup by debug id: %+v %v", f, err)
+	}
+	// Without a release (sentry-cli debug-files upload) every build's dSYM
+	// is named after the binary: the rows must not replace each other.
+	for _, u := range [][]byte{uuidA, uuidB, uuidB} {
+		if _, err := s.Upload(ctx, p.ID, "", "", "App", fakeMachO(0x0100000c, u)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	st.Pool.QueryRow(ctx, "SELECT count(*) FROM symbol_files WHERE kind = 'dsym' AND release IS NULL").Scan(&n)
+	if n != 2 {
+		t.Fatalf("release-less dSYM rows = %d, want one per build", n)
+	}
+	// A zip that unpacks past the total bound is refused before anything is stored.
+	var zb bytes.Buffer
+	bigZip := zip.NewWriter(&zb)
+	for i := range 5 {
+		w, _ := bigZip.Create(fmt.Sprintf("m%d.txt", i))
+		w.Write(bytes.Repeat([]byte("com.example.A -> a:\n"), (MaxZipTotal/5+1)/20+1))
+	}
+	bigZip.Close()
+	if _, err := s.Upload(ctx, p.ID, "9.9", "", "maps.zip", zb.Bytes()); err == nil || !strings.Contains(err.Error(), "unpacks") {
+		t.Fatalf("oversized zip: %v", err)
+	}
+	if n, _ := st.SymbolFileExists(ctx, sqlc.SymbolFileExistsParams{ProjectID: p.ID, Kind: "proguard", Release: "9.9"}); n {
+		t.Fatal("a refused zip must store nothing")
 	}
 	if n, _ := st.CountJobs(ctx); n != 1 {
 		t.Fatalf("resymbolicate job expected, jobs = %d", n)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,32 +18,32 @@ import (
 
 // EventInsert is one row for InsertEvents.
 type EventInsert struct {
-	OccurredAt    time.Time
-	ProjectID     int64
-	EventID       sentry.ID
-	Level         string
-	Message       string
-	Platform      *string
-	Environment   *string
-	Release       *string
-	DeviceID      *string
-	DeviceModel   *string
-	OSVersion     *string
-	Screen        *string
-	ErrorType     *string
-	ErrorLocation *string
-	Handled       *bool
-	SDKName       *string
-	UserID        *string
-	Fingerprint   *sentry.ID
-	Symbolicated  bool
-	Tags          json.RawMessage
-	Symbols       json.RawMessage
-	Payload       []byte // the raw event, gzipped (nil: none)
+	OccurredAt   time.Time
+	ProjectID    int64
+	EventID      sentry.ID
+	Level        string
+	Message      string
+	Platform     *string
+	Environment  *string
+	Release      *string
+	DeviceID     *string
+	DeviceModel  *string
+	OSVersion    *string
+	Transaction  *string
+	ErrorType    *string
+	Culprit      *string
+	Handled      *bool
+	SDKName      *string
+	UserID       *string
+	Fingerprint  *sentry.ID
+	Symbolicated bool
+	Tags         json.RawMessage
+	Symbols      json.RawMessage
+	Payload      []byte // the raw event, gzipped (nil: none)
 }
 
 const insertEventSQL = `INSERT INTO events (occurred_at, project_id, event_id, level, message, platform, environment, release,
-	device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id,
+	device_id, device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id,
 	fingerprint, symbolicated, tags, symbols, payload)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 	ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING`
@@ -59,18 +60,20 @@ func InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
 	hours := map[int64][]time.Time{}
 	for _, r := range rows {
 		b.Queue(insertEventSQL, r.OccurredAt, r.ProjectID, r.EventID, r.Level, r.Message, r.Platform, r.Environment, r.Release,
-			r.DeviceID, r.DeviceModel, r.OSVersion, r.Screen, r.ErrorType, r.ErrorLocation, r.Handled, r.SDKName, r.UserID,
+			r.DeviceID, r.DeviceModel, r.OSVersion, r.Transaction, r.ErrorType, r.Culprit, r.Handled, r.SDKName, r.UserID,
 			r.Fingerprint, r.Symbolicated, r.Tags, r.Symbols, r.Payload)
 		hours[r.ProjectID] = addHour(hours[r.ProjectID], r.OccurredAt)
 	}
 	return runBatch(ctx, tx, b, markEventHours, hours)
 }
 
+// The dirty marks insert in bucket order (ORDER BY): the upsert locks one
+// row per hour until commit, and two envelopes spanning the same hours in
+// opposite orders would otherwise deadlock. The sqlc MarkEventStatsDirty /
+// MarkSessionStatsDirty are the same statements for callers without a batch.
 const (
-	markEventHoursSQL   = `INSERT INTO event_stats_dirty (project_id, bucket) SELECT $1, unnest($2::timestamptz[]) ON CONFLICT (project_id, bucket) DO UPDATE SET gen = event_stats_dirty.gen + 1`
-	markSessionHoursSQL = `INSERT INTO session_stats_dirty (project_id, bucket) SELECT $1, unnest($2::timestamptz[]) ON CONFLICT (project_id, bucket) DO UPDATE SET gen = session_stats_dirty.gen + 1`
-	markEventHours      = markEventHoursSQL
-	markSessionHours    = markSessionHoursSQL
+	markEventHours   = `INSERT INTO event_stats_dirty (project_id, bucket) SELECT $1, b FROM unnest($2::timestamptz[]) AS b ORDER BY b ON CONFLICT (project_id, bucket) DO UPDATE SET gen = event_stats_dirty.gen + 1`
+	markSessionHours = `INSERT INTO session_stats_dirty (project_id, bucket) SELECT $1, b FROM unnest($2::timestamptz[]) AS b ORDER BY b ON CONFLICT (project_id, bucket) DO UPDATE SET gen = session_stats_dirty.gen + 1`
 )
 
 // addHour appends t's UTC hour to hs unless it is there (a batch spans
@@ -145,12 +148,12 @@ type EventFilter struct {
 	DeviceID    string
 	DeviceModel string
 	OSVersion   string
-	Screen      string
+	Transaction string
 	Fingerprint sentry.ID
 	Location    string
 	Query       string            // message ILIKE %q%
 	Tags        map[string]string // tags->>k = v
-	Crash       bool              // fatal or unhandled only
+	Handled     string            // "true" | "false" (exception.mechanism.handled) | "" = any
 	Before      Cursor            // keyset cursor: rows after it in newest-first order
 	Limit       int
 }
@@ -159,7 +162,7 @@ type EventFilter struct {
 var filterColumns = map[string]string{
 	"level": "level", "release": "release", "environment": "environment", "platform": "platform",
 	"error_type": "error_type", "user_id": "user_id", "device_id": "device_id", "device_model": "device_model",
-	"os_version": "os_version", "screen": "screen", "fingerprint": "fingerprint", "error_location": "error_location",
+	"os_version": "os_version", "transaction": "transaction", "fingerprint": "fingerprint", "culprit": "culprit",
 }
 
 func (f EventFilter) where() (string, []any) {
@@ -180,13 +183,15 @@ func (f EventFilter) where() (string, []any) {
 		args = append(args, f.Before.At, f.Before.EventID)
 		w = append(w, fmt.Sprintf("(occurred_at, event_id) < ($%d, $%d)", len(args)-1, len(args)))
 	}
-	for col, v := range map[string]string{
-		"level": f.Level, "release": f.Release, "environment": f.Environment, "platform": f.Platform,
-		"error_type": f.ErrorType, "user_id": f.UserID, "device_id": f.DeviceID, "device_model": f.DeviceModel,
-		"os_version": f.OSVersion, "screen": f.Screen, "error_location": f.Location,
+	// A fixed order (and sorted tag keys below): the same filters must
+	// produce the same SQL text, or the statement cache misses each time.
+	for _, cv := range [...]struct{ col, v string }{
+		{"level", f.Level}, {"release", f.Release}, {"environment", f.Environment}, {"platform", f.Platform},
+		{"error_type", f.ErrorType}, {"user_id", f.UserID}, {"device_id", f.DeviceID}, {"device_model", f.DeviceModel},
+		{"os_version", f.OSVersion}, {"transaction", f.Transaction}, {"culprit", f.Location},
 	} {
-		if v != "" {
-			add(filterColumns[col]+" = ?", v)
+		if cv.v != "" {
+			add(filterColumns[cv.col]+" = ?", cv.v)
 		}
 	}
 	if f.Fingerprint != "" {
@@ -195,12 +200,15 @@ func (f EventFilter) where() (string, []any) {
 	if q := clip(f.Query, MaxFilterLen); q != "" {
 		add("message ILIKE ?", "%"+escapeLike(q)+"%")
 	}
-	if f.Crash {
-		w = append(w, "crashcart_is_crash(level, handled)")
+	switch f.Handled {
+	case "false":
+		w = append(w, "handled = false")
+	case "true":
+		w = append(w, "handled = true")
 	}
-	for k, v := range f.Tags {
+	for _, k := range slices.Sorted(maps.Keys(f.Tags)) {
 		// Containment, so the GIN index (jsonb_path_ops) serves it.
-		kv, _ := json.Marshal(map[string]string{k: v})
+		kv, _ := json.Marshal(map[string]string{k: f.Tags[k]})
 		add("tags @> ?::jsonb", kv)
 	}
 	return strings.Join(w, " AND "), args
@@ -224,30 +232,30 @@ func escapeLike(s string) string {
 }
 
 const eventListColumns = `occurred_at, project_id, event_id, level, message, platform, environment, release, device_id,
-	device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags`
+	device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated, tags`
 
 // EventRow is the list projection (no payload / breadcrumbs / symbols).
 type EventRow struct {
-	OccurredAt    time.Time       `json:"occurred_at"`
-	ProjectID     int64           `json:"project_id"`
-	EventID       sentry.ID       `json:"event_id"`
-	Level         string          `json:"level"`
-	Message       string          `json:"message"`
-	Platform      *string         `json:"platform"`
-	Environment   *string         `json:"environment"`
-	Release       *string         `json:"release"`
-	DeviceID      *string         `json:"device_id"`
-	DeviceModel   *string         `json:"device_model"`
-	OSVersion     *string         `json:"os_version"`
-	Screen        *string         `json:"screen"`
-	ErrorType     *string         `json:"error_type"`
-	ErrorLocation *string         `json:"error_location"`
-	Handled       *bool           `json:"handled"`
-	SDKName       *string         `json:"sdk_name"`
-	UserID        *string         `json:"user_id"`
-	Fingerprint   *sentry.ID      `json:"fingerprint"`
-	Symbolicated  bool            `json:"symbolicated"`
-	Tags          json.RawMessage `json:"tags"`
+	OccurredAt   time.Time       `json:"occurred_at"`
+	ProjectID    int64           `json:"project_id"`
+	EventID      sentry.ID       `json:"event_id"`
+	Level        string          `json:"level"`
+	Message      string          `json:"message"`
+	Platform     *string         `json:"platform"`
+	Environment  *string         `json:"environment"`
+	Release      *string         `json:"release"`
+	DeviceID     *string         `json:"device_id"`
+	DeviceModel  *string         `json:"device_model"`
+	OSVersion    *string         `json:"os_version"`
+	Transaction  *string         `json:"transaction"`
+	ErrorType    *string         `json:"error_type"`
+	Culprit      *string         `json:"culprit"`
+	Handled      *bool           `json:"handled"`
+	SDKName      *string         `json:"sdk_name"`
+	UserID       *string         `json:"user_id"`
+	Fingerprint  *sentry.ID      `json:"fingerprint"`
+	Symbolicated bool            `json:"symbolicated"`
+	Tags         json.RawMessage `json:"tags"`
 }
 
 // ListEvents returns newest-first rows matching f. Limit defaults to 50 and
@@ -296,7 +304,7 @@ type Breakdown struct {
 // breakdownColumns is the allowlist for Breakdown.
 var breakdownColumns = map[string]bool{
 	"release": true, "os_version": true, "device_model": true, "environment": true, "platform": true,
-	"screen": true, "error_location": true, "level": true, "user_id": true, "sdk_name": true,
+	"transaction": true, "culprit": true, "level": true, "user_id": true, "sdk_name": true,
 }
 
 // Breakdown returns the top values of one column among rows matching f.

@@ -27,8 +27,6 @@ package export
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,13 +38,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // Format is the NDJSON format version written in the _meta line.
-const Format = 1
+const Format = 2 // 2: transaction / culprit / unhandled_spike (was screen / error_location / crash_spike)
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
@@ -123,7 +122,8 @@ type issueRow struct {
 	Title            string   `json:"title"`
 	Level            string   `json:"level"`
 	ErrorType        *string  `json:"error_type,omitempty"`
-	Screen           *string  `json:"screen,omitempty"`
+	Transaction      *string  `json:"transaction,omitempty"`
+	Screen           *string  `json:"screen,omitempty"` // format 1 name of transaction (read only)
 	Platform         *string  `json:"platform,omitempty"`
 	Status           string   `json:"status"`
 	StatusBy         *string  `json:"status_by,omitempty"`
@@ -152,9 +152,11 @@ type eventRow struct {
 	DeviceID      *string         `json:"device_id,omitempty"`
 	DeviceModel   *string         `json:"device_model,omitempty"`
 	OSVersion     *string         `json:"os_version,omitempty"`
-	Screen        *string         `json:"screen,omitempty"`
+	Transaction   *string         `json:"transaction,omitempty"`
+	Screen        *string         `json:"screen,omitempty"` // format 1 name of transaction (read only)
 	ErrorType     *string         `json:"error_type,omitempty"`
-	ErrorLocation *string         `json:"error_location,omitempty"`
+	Culprit       *string         `json:"culprit,omitempty"`
+	ErrorLocation *string         `json:"error_location,omitempty"` // format 1 name of culprit (read only)
 	Handled       *bool           `json:"handled,omitempty"`
 	SDKName       *string         `json:"sdk_name,omitempty"`
 	UserID        *string         `json:"user_id,omitempty"`
@@ -235,11 +237,11 @@ func at(t time.Time) ts { return ts{t.UTC()} }
 // ── export ─────────────────────────────────────────────────────────────
 
 const (
-	selectIssues = `SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count,
+	selectIssues = `SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count,
 	first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
 	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
-	os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
+	os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
 	symbols, payload FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectReleases    = `SELECT project_id, release, platforms, first_seen FROM releases WHERE project_id = $1 ORDER BY release`
@@ -259,7 +261,16 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	enc := json.NewEncoder(bw)
 	enc.SetEscapeHTML(false)
 
-	projects, err := exportProjects(ctx, st, opt)
+	// One repeatable-read snapshot for every table: an ingest committing
+	// while the export runs cannot leave the file with events whose issue
+	// or release row is missing.
+	tx, err := st.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+
+	projects, err := exportProjects(ctx, tx, opt)
 	if err != nil {
 		return err
 	}
@@ -267,7 +278,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		return err
 	}
 	if opt.Project == "" {
-		if err := exportAccounts(ctx, st, enc); err != nil {
+		if err := exportAccounts(ctx, tx, enc); err != nil {
 			return err
 		}
 	}
@@ -281,17 +292,17 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	// Per table, per project: the order of Tables is the order of the file.
 	for _, p := range projects {
-		if err := stream(ctx, st, selectReleases, func(r sqlc.Release) error {
+		if err := stream(ctx, tx, selectReleases, func(r sqlc.Release) error {
 			return enc.Encode(releaseRow{T: "releases", Project: p.Slug, Release: r.Release, Platforms: r.Platforms, FirstSeen: at(r.FirstSeen)})
 		}, p.ID); err != nil {
 			return fmt.Errorf("export releases: %w", err)
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectIssues, func(r sqlc.Issue) error {
+		if err := stream(ctx, tx, selectIssues, func(r sqlc.Issue) error {
 			return enc.Encode(issueRow{
 				T: "issues", Project: p.Slug, Fingerprint: string(r.Fingerprint), Title: r.Title, Level: string(r.Level),
-				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: string(r.Status), StatusBy: r.StatusBy,
+				ErrorType: r.ErrorType, Transaction: r.Transaction, Platform: r.Platform, Status: string(r.Status), StatusBy: r.StatusBy,
 				EventCount: r.EventCount, StoredCount: r.StoredCount, FirstSeen: at(r.FirstSeen), LastSeen: at(r.LastSeen),
 				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, Releases: r.Releases, ResolvedReleases: r.ResolvedReleases,
 				CreatedAt: at(r.CreatedAt), UpdatedAt: at(r.UpdatedAt),
@@ -301,7 +312,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectEvents, func(r sqlc.Event) error {
+		if err := stream(ctx, tx, selectEvents, func(r sqlc.Event) error {
 			payload, err := store.Payload(r)
 			if err != nil {
 				return fmt.Errorf("payload %s: %w", r.EventID, err)
@@ -309,8 +320,8 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 			return enc.Encode(eventRow{
 				T: "events", Project: p.Slug, OccurredAt: at(r.OccurredAt), EventID: string(r.EventID), Level: string(r.Level), Message: r.Message,
 				Platform: r.Platform, Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID,
-				DeviceModel: r.DeviceModel, OSVersion: r.OsVersion, Screen: r.Screen, ErrorType: r.ErrorType,
-				ErrorLocation: r.ErrorLocation, Handled: r.Handled, SDKName: r.SdkName, UserID: r.UserID,
+				DeviceModel: r.DeviceModel, OSVersion: r.OsVersion, Transaction: r.Transaction, ErrorType: r.ErrorType,
+				Culprit: r.Culprit, Handled: r.Handled, SDKName: r.SdkName, UserID: r.UserID,
 				Fingerprint: idStr(r.Fingerprint), Symbolicated: r.Symbolicated, Tags: r.Tags,
 				Payload: json.RawMessage(payload), Symbols: r.Symbols,
 			})
@@ -319,14 +330,14 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectSessions, func(r sqlc.Session) error {
+		if err := stream(ctx, tx, selectSessions, func(r sqlc.Session) error {
 			return enc.Encode(sessionRow{T: "sessions", Project: p.Slug, StartedAt: at(r.StartedAt), SID: r.Sid, Release: r.Release, Environment: r.Environment, Status: string(r.Status), Count: r.Count})
 		}, p.ID); err != nil {
 			return fmt.Errorf("export sessions: %w", err)
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectSymbolFiles, func(r sqlc.SymbolFile) error {
+		if err := stream(ctx, tx, selectSymbolFiles, func(r sqlc.SymbolFile) error {
 			return enc.Encode(symbolFileRow{
 				T: "symbol_files", Project: p.Slug, Kind: string(r.Kind), Release: strOr(r.Release), DebugID: r.DebugID,
 				Filename: r.Filename, Size: r.Size, Data: r.Data, UploadedAt: at(r.UploadedAt),
@@ -336,7 +347,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectAlertRules, func(r sqlc.AlertRule) error {
+		if err := stream(ctx, tx, selectAlertRules, func(r sqlc.AlertRule) error {
 			var lt *ts
 			if r.LastTriggered != nil {
 				v := at(*r.LastTriggered)
@@ -348,7 +359,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectAlertChannels, func(r sqlc.AlertChannel) error {
+		if err := stream(ctx, tx, selectAlertChannels, func(r sqlc.AlertChannel) error {
 			return enc.Encode(alertChannelRow{T: "alert_channels", Project: p.Slug, Kind: string(r.Kind), Config: r.Config, CreatedAt: at(r.CreatedAt)})
 		}, p.ID); err != nil {
 			return fmt.Errorf("export alert_channels: %w", err)
@@ -357,15 +368,15 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	return bw.Flush()
 }
 
-func exportProjects(ctx context.Context, st *store.Store, opt Options) ([]sqlc.Project, error) {
+func exportProjects(ctx context.Context, tx pgx.Tx, opt Options) ([]sqlc.Project, error) {
 	if opt.Project != "" {
-		p, err := st.GetProject(ctx, opt.Project)
+		p, err := sqlc.New(tx).GetProject(ctx, opt.Project)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("project %q not found", opt.Project)
 		}
 		return []sqlc.Project{p}, err
 	}
-	r, err := st.Pool.Query(ctx, "SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects ORDER BY slug")
+	r, err := tx.Query(ctx, "SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects ORDER BY slug")
 	if err != nil {
 		return nil, err
 	}
@@ -373,12 +384,12 @@ func exportProjects(ctx context.Context, st *store.Store, opt Options) ([]sqlc.P
 }
 
 // exportAccounts writes the users and API keys (full exports only).
-func exportAccounts(ctx context.Context, st *store.Store, enc *json.Encoder) error {
+func exportAccounts(ctx context.Context, tx pgx.Tx, enc *json.Encoder) error {
 	type user struct {
 		Email, Name, PasswordHash string
 		CreatedAt                 time.Time
 	}
-	if err := stream(ctx, st, selectUsers, func(u user) error {
+	if err := stream(ctx, tx, selectUsers, func(u user) error {
 		return enc.Encode(userRow{T: "users", Email: u.Email, Name: u.Name, PasswordHash: u.PasswordHash, CreatedAt: at(u.CreatedAt)})
 	}); err != nil {
 		return fmt.Errorf("export users: %w", err)
@@ -392,7 +403,7 @@ func exportAccounts(ctx context.Context, st *store.Store, enc *json.Encoder) err
 		LastUsed  *time.Time
 		Revoked   *time.Time
 	}
-	if err := stream(ctx, st, selectAPIKeys, func(k key) error {
+	if err := stream(ctx, tx, selectAPIKeys, func(k key) error {
 		r := apiKeyRow{T: "api_keys", Name: k.Name, KeyHash: k.KeyHash, Prefix: k.Prefix, CreatedBy: k.CreatedBy, CreatedAt: at(k.CreatedAt)}
 		if k.LastUsed != nil {
 			v := at(*k.LastUsed)
@@ -409,10 +420,15 @@ func exportAccounts(ctx context.Context, st *store.Store, enc *json.Encoder) err
 	return nil
 }
 
+// querier is what stream reads from: the export's snapshot transaction.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // stream runs sql and hands each row (scanned by position into T) to fn,
 // one at a time: nothing is loaded whole.
-func stream[T any](ctx context.Context, st *store.Store, sql string, fn func(T) error, args ...any) error {
-	rows, err := st.Pool.Query(ctx, sql, args...)
+func stream[T any](ctx context.Context, q querier, sql string, fn func(T) error, args ...any) error {
+	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return err
 	}
@@ -451,11 +467,11 @@ const (
 	    sample_keep_first = EXCLUDED.sample_keep_first, sample_rate = EXCLUDED.sample_rate,
 	    daily_quota = EXCLUDED.daily_quota, created_at = EXCLUDED.created_at
 	RETURNING id`
-	upsertIssue = `INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count,
+	upsertIssue = `INSERT INTO issues (project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count,
 	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 	ON CONFLICT (project_id, fingerprint) DO UPDATE SET title = EXCLUDED.title, level = EXCLUDED.level, status_by = EXCLUDED.status_by,
-	    error_type = EXCLUDED.error_type, screen = EXCLUDED.screen, platform = EXCLUDED.platform, status = EXCLUDED.status,
+	    error_type = EXCLUDED.error_type, transaction = EXCLUDED.transaction, platform = EXCLUDED.platform, status = EXCLUDED.status,
 	    event_count = GREATEST(issues.event_count, EXCLUDED.event_count), stored_count = GREATEST(issues.stored_count, EXCLUDED.stored_count), first_seen = EXCLUDED.first_seen,
 	    last_seen = EXCLUDED.last_seen, first_release = EXCLUDED.first_release, last_release = EXCLUDED.last_release,
 	    releases = EXCLUDED.releases, resolved_releases = EXCLUDED.resolved_releases, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
@@ -596,7 +612,7 @@ func (im *importer) line(b []byte) error {
 			return errors.New("projects row without slug")
 		}
 		if r.PublicKey == "" {
-			r.PublicKey = newKey()
+			r.PublicKey = auth.NewProjectKey()
 		}
 		if r.SampleRate <= 0 {
 			r.SampleRate = 1
@@ -632,6 +648,9 @@ func (im *importer) line(b []byte) error {
 		if err := json.Unmarshal(b, &r); err != nil {
 			return err
 		}
+		if r.Transaction == nil {
+			r.Transaction = r.Screen // format 1
+		}
 		pid, err := im.project(r.Project)
 		if err != nil {
 			return err
@@ -643,13 +662,19 @@ func (im *importer) line(b []byte) error {
 		if !ok {
 			return fmt.Errorf("issues row: fingerprint %q is not a 32-hex id", r.Fingerprint)
 		}
-		im.batch.Queue(upsertIssue, pid, fp, r.Title, r.Level, r.ErrorType, r.Screen, r.Platform, r.Status, r.StatusBy,
+		im.batch.Queue(upsertIssue, pid, fp, r.Title, r.Level, r.ErrorType, r.Transaction, r.Platform, r.Status, r.StatusBy,
 			r.EventCount, r.StoredCount, tsOrNow(r.FirstSeen), tsOrNow(r.LastSeen), r.FirstRelease, r.LastRelease,
 			nonNilStrings(r.Releases), r.ResolvedReleases, tsOrNow(r.CreatedAt), tsOrNow(r.UpdatedAt))
 	case "events":
 		var r eventRow
 		if err := json.Unmarshal(b, &r); err != nil {
 			return err
+		}
+		if r.Transaction == nil {
+			r.Transaction = r.Screen // format 1
+		}
+		if r.Culprit == nil {
+			r.Culprit = r.ErrorLocation
 		}
 		pid, err := im.project(r.Project)
 		if err != nil {
@@ -677,7 +702,7 @@ func (im *importer) line(b []byte) error {
 		im.events = append(im.events, store.EventInsert{
 			OccurredAt: r.OccurredAt.Time, ProjectID: pid, EventID: eid, Level: r.Level, Message: r.Message, Platform: r.Platform,
 			Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID, DeviceModel: r.DeviceModel,
-			OSVersion: r.OSVersion, Screen: r.Screen, ErrorType: r.ErrorType, ErrorLocation: r.ErrorLocation,
+			OSVersion: r.OSVersion, Transaction: r.Transaction, ErrorType: r.ErrorType, Culprit: r.Culprit,
 			Handled: r.Handled, SDKName: r.SDKName, UserID: r.UserID, Fingerprint: fp,
 			Symbolicated: r.Symbolicated, Tags: orJSON(r.Tags, "{}"),
 			Symbols: r.Symbols, Payload: gz,
@@ -719,6 +744,9 @@ func (im *importer) line(b []byte) error {
 		if err := json.Unmarshal(b, &r); err != nil {
 			return err
 		}
+		if r.Type == "crash_spike" {
+			r.Type = "unhandled_spike" // format 1
+		}
 		pid, err := im.project(r.Project)
 		if err != nil {
 			return err
@@ -759,7 +787,7 @@ func (im *importer) project(slug string) (int64, error) {
 	}
 	p, err := im.q.GetProject(im.ctx, slug)
 	if errors.Is(err, pgx.ErrNoRows) {
-		p, err = im.q.CreateProject(im.ctx, sqlc.CreateProjectParams{Slug: slug, Name: slug, PublicKey: newKey()})
+		p, err = im.q.CreateProject(im.ctx, sqlc.CreateProjectParams{Slug: slug, Name: slug, PublicKey: auth.NewProjectKey()})
 	}
 	if err != nil {
 		return 0, fmt.Errorf("project %q: %w", slug, err)
@@ -831,12 +859,6 @@ func tsOrNow(v ts) time.Time {
 		return time.Now().UTC()
 	}
 	return v.Time
-}
-
-func newKey() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 func nonNilStrings(s []string) []string {

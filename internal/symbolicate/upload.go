@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path"
@@ -16,8 +17,14 @@ import (
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
 
-// MaxUpload caps one symbol upload (and one zip entry).
-const MaxUpload = 50 << 20
+// MaxUpload caps one symbol upload (and one zip entry); a zip may unpack
+// to MaxZipTotal over at most MaxZipEntries files (a 50 MB deflate of
+// thousands of 50 MB entries is not a symbol upload).
+const (
+	MaxUpload     = 50 << 20
+	MaxZipTotal   = 4 * MaxUpload
+	MaxZipEntries = 256
+)
 
 // UploadError is a caller mistake (bad kind, empty or malformed file);
 // HTTP handlers map it to 400.
@@ -68,6 +75,20 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 		if err != nil {
 			return nil, UploadError("invalid zip: " + err.Error())
 		}
+		if len(zr.File) > MaxZipEntries {
+			return nil, UploadError(fmt.Sprintf("zip has more than %d entries", MaxZipEntries))
+		}
+		// Bound the whole archive before storing anything (the directory's
+		// sizes first; the bytes actually read are counted again below, as
+		// a header can lie).
+		var declared uint64
+		for _, f := range zr.File {
+			declared += f.UncompressedSize64
+		}
+		if declared > MaxZipTotal {
+			return nil, UploadError("zip unpacks to more than 200 MB")
+		}
+		total := 0
 		for _, f := range zr.File {
 			name := path.Clean("/" + strings.ReplaceAll(f.Name, "\\", "/"))[1:]
 			if f.FileInfo().IsDir() || name == "" || strings.HasPrefix(name, "__MACOSX/") || strings.HasPrefix(path.Base(name), ".") {
@@ -87,6 +108,9 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 			}
 			if len(content) > MaxUpload {
 				return nil, UploadError("zip entry too large: " + name)
+			}
+			if total += len(content); total > MaxZipTotal {
+				return nil, UploadError("zip unpacks to more than 200 MB")
 			}
 			if len(content) == 0 {
 				continue
@@ -145,6 +169,15 @@ func classify(name string, data []byte) string {
 func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte, debugID *string) (sqlc.UpsertSymbolFileRow, error) {
 	if debugID == nil {
 		debugID = DebugIDFor(kind, name, data)
+	}
+	// A dSYM uploaded without a release (sentry-cli debug-files upload)
+	// is named after the binary — "App" for every build — and the row key
+	// is (project, kind, release, filename): build 2.1 would replace 2.0's
+	// dSYM while 2.0 is still crashing in the field. The debug id makes
+	// the name unique per build (and keeps the "App." prefix the release
+	// lookup matches on, should the row be tagged with a release later).
+	if release == "" && kind == KindDSYM && debugID != nil && !strings.Contains(name, *debugID) {
+		name = name + "." + *debugID
 	}
 	return s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
 		ProjectID: projectID, Kind: sqlc.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: debugID,

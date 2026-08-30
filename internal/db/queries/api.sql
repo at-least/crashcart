@@ -10,3 +10,7 @@ GROUP BY first_release;
 -- name: CountRegressions :one
 -- Issues currently in 'regression' that were seen in the window.
 SELECT count(*) FROM issues WHERE project_id = $1 AND status = 'regression' AND last_seen >= $2;
+
+-- name: CountRegressionsIn :one
+-- Issues currently in 'regression' that were seen in [from, to).
+SELECT count(*) FROM issues WHERE project_id = $1 AND status = 'regression' AND last_seen >= sqlc.arg(from_at) AND last_seen < sqlc.arg(to_at);

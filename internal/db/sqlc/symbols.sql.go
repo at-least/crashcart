@@ -303,6 +303,41 @@ func (q *Queries) SymbolFilesForRelease(ctx context.Context, arg SymbolFilesForR
 	return items, nil
 }
 
+const symbolFilesVersion = `-- name: SymbolFilesVersion :one
+SELECT count(*)::bigint AS n, COALESCE(max(uploaded_at), 'epoch'::timestamptz)::timestamptz AS latest
+FROM symbol_files
+WHERE project_id = $1 AND kind = $2
+  AND (($3::text <> '' AND debug_id = $3::text)
+    OR ($3::text = '' AND release = $4::text))
+`
+
+type SymbolFilesVersionParams struct {
+	ProjectID int64      `json:"project_id"`
+	Kind      SymbolKind `json:"kind"`
+	DebugID   string     `json:"debug_id"`
+	Release   string     `json:"release"`
+}
+
+type SymbolFilesVersionRow struct {
+	N      int64     `json:"n"`
+	Latest time.Time `json:"latest"`
+}
+
+// The rows behind one mapping cache key (a release and kind, or a debug
+// id), as a count and the latest upload: a cached mapping is served while
+// this is unchanged.
+func (q *Queries) SymbolFilesVersion(ctx context.Context, arg SymbolFilesVersionParams) (SymbolFilesVersionRow, error) {
+	row := q.db.QueryRow(ctx, symbolFilesVersion,
+		arg.ProjectID,
+		arg.Kind,
+		arg.DebugID,
+		arg.Release,
+	)
+	var i SymbolFilesVersionRow
+	err := row.Scan(&i.N, &i.Latest)
+	return i, err
+}
+
 const upsertSymbolFile = `-- name: UpsertSymbolFile :one
 INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

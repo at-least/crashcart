@@ -5,11 +5,12 @@ package web
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
+
 import (
 	"strings"
 
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
@@ -137,14 +138,14 @@ func Portal(cards []PortalCard) templ.Component {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</div></header><section data-slot=\"card-content\" class=\"portal-stats\"><div><span class=\"stat-k\">Crashes 24h</span><span class=\"stat-v\" data-level=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</div></header><section data-slot=\"card-content\" class=\"portal-stats\"><div><span class=\"stat-k\">Unhandled 24h</span><span class=\"stat-v\" data-level=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var8 string
-				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(crashLevel(c.Crashes24h))
+				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(unhandledLevel(c.Unhandled24h))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/portal.templ`, Line: 38, Col: 108}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/portal.templ`, Line: 38, Col: 116}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
@@ -155,9 +156,9 @@ func Portal(cards []PortalCard) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var9 string
-				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(compact(c.Crashes24h))
+				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(compact(c.Unhandled24h))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/portal.templ`, Line: 38, Col: 134}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/portal.templ`, Line: 38, Col: 144}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
@@ -264,7 +265,7 @@ func Portal(cards []PortalCard) templ.Component {
 	})
 }
 
-func crashLevel(n int64) string {
+func unhandledLevel(n int64) string {
 	if n > 0 {
 		return "fatal"
 	}

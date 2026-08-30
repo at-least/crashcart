@@ -119,7 +119,7 @@ func event(id, ts, level, release, user, typ string, handled bool, lineno int, e
 		id, ts, level, release, user, typ, handled, lineno, extra)
 }
 
-// seed ingests: two fatal crashes of one issue (2.4.1, two users), one
+// seed ingests: two fatal unhandled of one issue (2.4.1, two users), one
 // handled error of another issue (2.4.0), one info message, and sessions.
 func (e *env) seed(p sqlc.Project) {
 	e.t.Helper()
@@ -189,8 +189,16 @@ func TestProjectsAndAuth(t *testing.T) {
 	req.Host = "public.example.org"
 	rec = httptest.NewRecorder()
 	e.mux.ServeHTTP(rec, req)
+	// Without TRUST_PROXY the forwarded scheme is the client's claim: ignored.
+	if !strings.Contains(rec.Body.String(), `"dsn":"http://`) || !strings.Contains(rec.Body.String(), "@public.example.org/") {
+		t.Errorf("forwarded dsn without trusted proxy: %s", rec.Body.String())
+	}
+	trusted := http.NewServeMux()
+	(&Handler{Store: e.in.Store, Cfg: config.Config{TrustProxy: true}, Log: slog.Default()}).Register(trusted)
+	rec = httptest.NewRecorder()
+	trusted.ServeHTTP(rec, req)
 	if !strings.Contains(rec.Body.String(), `"dsn":"https://`) || !strings.Contains(rec.Body.String(), "@public.example.org/") {
-		t.Errorf("forwarded dsn: %s", rec.Body.String())
+		t.Errorf("forwarded dsn behind trusted proxy: %s", rec.Body.String())
 	}
 	rec, out = e.do("PATCH", "/api/projects/demo", map[string]any{"name": "Renamed", "sample_rate": 0.5, "sample_keep_first": 10})
 	if rec.Code != 200 || out["name"] != "Renamed" || out["sample_rate"] != 0.5 || out["sample_keep_first"] != float64(10) {
@@ -247,7 +255,7 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	// overview
 	ov := e.get("/api/projects/demo/overview?days=1", 200)
 	tot := ov["totals"].(map[string]any)
-	if tot["events"] != float64(4) || tot["crashes"] != float64(2) || tot["errors"] != float64(1) {
+	if tot["events"] != float64(4) || tot["unhandled"] != float64(2) || tot["errors"] != float64(1) {
 		t.Errorf("totals = %v", tot)
 	}
 	if ov["new_issues"] != float64(2) || ov["regressions"] != float64(0) {
@@ -349,9 +357,16 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	if len(ev["events"].([]any)) != 4 || ev["more"] != false || ev["next_before"] != nil {
 		t.Errorf("events = %v", ev)
 	}
-	if q := e.get("/api/projects/demo/events?crash=1", 200); len(q["events"].([]any)) != 2 {
-		t.Errorf("crash filter = %v", q)
+	if q := e.get("/api/projects/demo/events?handled=false", 200); len(q["events"].([]any)) != 2 {
+		t.Errorf("handled=false filter = %v", q)
 	}
+	if q := e.get("/api/projects/demo/events?handled=no", 200); len(q["events"].([]any)) != 2 { // Sentry's tag value
+		t.Errorf("handled=no filter = %v", q)
+	}
+	if q := e.get("/api/projects/demo/events?handled=true", 200); len(q["events"].([]any)) != 1 {
+		t.Errorf("handled=true filter = %v", q)
+	}
+	e.get("/api/projects/demo/events?handled=maybe", 400)
 	if q := e.get("/api/projects/demo/events?tag.build=43", 200); len(q["events"].([]any)) != 1 {
 		t.Errorf("tag filter = %v", q)
 	}
@@ -417,7 +432,7 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 		byName[m["release"].(string)] = m
 	}
 	r241 := byName["2.4.1"]
-	if r241["events"] != float64(3) || r241["crashes"] != float64(2) || r241["new_issues"] != float64(1) {
+	if r241["events"] != float64(3) || r241["unhandled"] != float64(2) || r241["new_issues"] != float64(1) {
 		t.Errorf("2.4.1 = %v", r241)
 	}
 	if s := r241["sessions"].(map[string]any); s["total"] != float64(11) || s["crashed"] != float64(1) {
@@ -438,10 +453,10 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	}
 	var tsum float64
 	for _, pt := range rd["timeline"].([]any) {
-		tsum += pt.(map[string]any)["crashes"].(float64)
+		tsum += pt.(map[string]any)["unhandled"].(float64)
 	}
 	if tsum != 2 {
-		t.Errorf("release timeline crashes = %v", tsum)
+		t.Errorf("release timeline unhandled = %v", tsum)
 	}
 	e.get("/api/projects/demo/releases/9.9.9", 404)
 }

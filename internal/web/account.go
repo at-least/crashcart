@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -17,8 +18,18 @@ import (
 
 // ── sign in ──
 
+// LoginRateLimit bounds password posts (sign-in, setup) per client IP and
+// minute: enough for a team behind one NAT to mistype, far too few to
+// guess a password (each attempt is a bcrypt verification, too).
+var LoginRateLimit = 30
+
 func (w *Web) loginPage(rw http.ResponseWriter, r *http.Request) {
-	if n, _ := w.Store.CountUsers(r.Context()); n == 0 {
+	n, err := w.Store.CountUsers(r.Context())
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	if n == 0 {
 		redirect(rw, r, "/setup")
 		return
 	}
@@ -41,8 +52,14 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	// The same failure for an unknown email and a wrong password.
-	if err != nil || !auth.CheckPassword(u.PasswordHash, r.PostForm.Get("password")) {
+	// The same failure — and the same bcrypt cost — for an unknown email
+	// and a wrong password, so neither the body nor the latency says
+	// whether the address has an account.
+	hash := dummyHash
+	if err == nil {
+		hash = u.PasswordHash
+	}
+	if !auth.CheckPassword(hash, r.PostForm.Get("password")) || err != nil {
 		LoginFailures.Inc()
 		rw.WriteHeader(http.StatusUnauthorized)
 		w.render(rw, r, withChildren(Layout("Sign in · CrashCart"), Login(next, "Wrong email or password.")))
@@ -57,6 +74,16 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 	redirect(rw, r, next)
 }
 
+// dummyHash is verified against when the email has no account: the same
+// work as a real check, so timing does not reveal which emails exist.
+var dummyHash = func() string {
+	h, err := auth.HashPassword("not a real password")
+	if err != nil {
+		panic(err)
+	}
+	return h
+}()
+
 // LoginFailures counts wrong email / password attempts (brute force shows
 // here before it shows anywhere else).
 var LoginFailures = metrics.NewCounter("crashcart_web_login_failures_total", "Sign-in attempts refused (unknown email or wrong password).")
@@ -66,9 +93,14 @@ func (w *Web) logout(rw http.ResponseWriter, r *http.Request) {
 	redirect(rw, r, "/login")
 }
 
-// safeNext keeps the post-login target on this site.
+// safeNext keeps the post-login target on this site: a path, not a URL.
+// "//host" is scheme-relative and "/\host" is the same thing to a browser
+// (the WHATWG parser treats a backslash as a slash), so both are refused.
 func safeNext(s string) string {
-	if s == "" || !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") {
+	if !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") || strings.HasPrefix(s, "/\\") {
+		return "/"
+	}
+	if u, err := url.Parse(s); err != nil || u.Scheme != "" || u.Host != "" {
 		return "/"
 	}
 	return s
@@ -77,25 +109,33 @@ func safeNext(s string) string {
 // ── first user ──
 
 func (w *Web) setupPage(rw http.ResponseWriter, r *http.Request) {
-	if n, _ := w.Store.CountUsers(r.Context()); n > 0 {
+	n, err := w.Store.CountUsers(r.Context())
+	if err != nil { // fail closed: an error must not open the setup form
+		w.fail(rw, r, err)
+		return
+	}
+	if n > 0 {
 		redirect(rw, r, "/login")
 		return
 	}
 	w.render(rw, r, withChildren(Layout("Set up · CrashCart"), Setup("")))
 }
 
+// setup creates the first user. The "no user yet" check and the insert
+// are one serialized transaction (store.CreateFirstUser), so two setup
+// posts racing on a fresh install cannot both succeed.
 func (w *Web) setup(rw http.ResponseWriter, r *http.Request) {
-	if n, _ := w.Store.CountUsers(r.Context()); n > 0 {
-		redirect(rw, r, "/login")
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(rw, "bad form", http.StatusBadRequest)
 		return
 	}
-	u, msg, err := w.createUser(r, r.PostForm.Get("email"), r.PostForm.Get("name"), r.PostForm.Get("password"))
+	u, msg, err := w.createUser(r, r.PostForm.Get("email"), r.PostForm.Get("name"), r.PostForm.Get("password"), true)
 	if err != nil {
 		w.fail(rw, r, err)
+		return
+	}
+	if u.ID == 0 && msg == "" { // someone else got there first
+		redirect(rw, r, "/login")
 		return
 	}
 	if msg != "" {
@@ -113,7 +153,9 @@ func (w *Web) setup(rw http.ResponseWriter, r *http.Request) {
 }
 
 // createUser validates and creates a user; msg is the user-facing problem.
-func (w *Web) createUser(r *http.Request, email, name, password string) (sqlc.User, string, error) {
+// With first set the user is created only while there is none (a zero
+// user and no msg means one already existed).
+func (w *Web) createUser(r *http.Request, email, name, password string, first bool) (sqlc.User, string, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !strings.Contains(email, "@") || len(email) > 254 {
 		return sqlc.User{}, "A valid email is required.", nil
@@ -125,7 +167,13 @@ func (w *Web) createUser(r *http.Request, email, name, password string) (sqlc.Us
 	if err != nil {
 		return sqlc.User{}, "", err
 	}
-	u, err := w.Store.CreateUser(r.Context(), sqlc.CreateUserParams{Email: email, Name: strings.TrimSpace(name), PasswordHash: hash})
+	params := sqlc.CreateUserParams{Email: email, Name: strings.TrimSpace(name), PasswordHash: hash}
+	var u sqlc.User
+	if first {
+		u, _, err = w.Store.CreateFirstUser(r.Context(), params)
+	} else {
+		u, err = w.Store.CreateUser(r.Context(), params)
+	}
 	if err != nil && strings.Contains(err.Error(), "users_email_key") {
 		return sqlc.User{}, "That email already has an account.", nil
 	}
@@ -165,7 +213,7 @@ func (w *Web) accountUserAdd(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "bad form", http.StatusBadRequest)
 		return
 	}
-	_, msg, err := w.createUser(r, r.PostForm.Get("email"), r.PostForm.Get("name"), r.PostForm.Get("password"))
+	_, msg, err := w.createUser(r, r.PostForm.Get("email"), r.PostForm.Get("name"), r.PostForm.Get("password"), false)
 	if err != nil {
 		w.fail(rw, r, err)
 		return

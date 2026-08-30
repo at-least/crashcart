@@ -66,6 +66,8 @@ func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-w.Stopping:
+			return
 		case <-keep.C:
 			fmt.Fprint(rw, ": ping\n\n")
 			flusher.Flush()

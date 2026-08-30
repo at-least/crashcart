@@ -5,10 +5,8 @@ package web
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import (
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
-)
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
 
 // Layout is the HTML document: anti-flash theme script (reads the stored
 // theme before first paint so dark mode never flashes light), stylesheet,

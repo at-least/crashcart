@@ -127,7 +127,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("issue detail users = %d, want 3: %s", detail.Users, body)
 	}
 	res, body = do("GET", "/api/projects/shop/overview", nil, auth)
-	if res.StatusCode != 200 || !strings.Contains(body, `"crashes":3`) || !strings.Contains(body, `"new_issues":1`) {
+	if res.StatusCode != 200 || !strings.Contains(body, `"unhandled":3`) || !strings.Contains(body, `"new_issues":1`) {
 		t.Fatalf("overview: %d %s", res.StatusCode, body)
 	}
 	res, body = do("GET", "/api/projects/shop/releases", nil, auth)
@@ -146,7 +146,7 @@ func TestEndToEnd(t *testing.T) {
 	env2 := `{"event_id":"h2"}` + "\n" + crashItem("2.4.1", 9)
 	do("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), strings.NewReader(env2), map[string]string{"X-Sentry-Auth": "Sentry sentry_key=dsnkey"})
 	res, body = do("GET", "/api/projects/shop/issues/"+fp, nil, auth)
-	if !strings.Contains(body, `"status":"regression"`) {
+	if res.StatusCode != 200 || !strings.Contains(body, `"status":"regression"`) {
 		t.Fatalf("regression: %s", body)
 	}
 
@@ -166,7 +166,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 	res, body = do("GET", "/p/shop/issues/"+fp, nil, signedIn)
-	if !strings.Contains(body, "CartFragment.java") || !strings.Contains(body, "Pixel 8") {
+	if res.StatusCode != 200 || !strings.Contains(body, "CartFragment.java") || !strings.Contains(body, "Pixel 8") {
 		t.Errorf("issue page lacks stack/breakdown: %.300s", body)
 	}
 	form := strings.NewReader("fp=" + fp + "&status=ignored")

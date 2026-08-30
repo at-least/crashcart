@@ -16,9 +16,9 @@ import (
 type AlertType string
 
 const (
-	AlertTypeNewIssue   AlertType = "new_issue"
-	AlertTypeRegression AlertType = "regression"
-	AlertTypeCrashSpike AlertType = "crash_spike"
+	AlertTypeNewIssue       AlertType = "new_issue"
+	AlertTypeRegression     AlertType = "regression"
+	AlertTypeUnhandledSpike AlertType = "unhandled_spike"
 )
 
 func (e *AlertType) Scan(src interface{}) error {
@@ -352,28 +352,28 @@ type CrashcartSchema struct {
 }
 
 type Event struct {
-	OccurredAt    time.Time       `json:"occurred_at"`
-	ProjectID     int64           `json:"project_id"`
-	EventID       sentry.ID       `json:"event_id"`
-	Level         EventLevel      `json:"level"`
-	Message       string          `json:"message"`
-	Platform      *string         `json:"platform"`
-	Environment   *string         `json:"environment"`
-	Release       *string         `json:"release"`
-	DeviceID      *string         `json:"device_id"`
-	DeviceModel   *string         `json:"device_model"`
-	OsVersion     *string         `json:"os_version"`
-	Screen        *string         `json:"screen"`
-	ErrorType     *string         `json:"error_type"`
-	ErrorLocation *string         `json:"error_location"`
-	Handled       *bool           `json:"handled"`
-	SdkName       *string         `json:"sdk_name"`
-	UserID        *string         `json:"user_id"`
-	Fingerprint   *sentry.ID      `json:"fingerprint"`
-	Symbolicated  bool            `json:"symbolicated"`
-	Tags          json.RawMessage `json:"tags"`
-	Symbols       json.RawMessage `json:"symbols"`
-	Payload       []byte          `json:"payload"`
+	OccurredAt   time.Time       `json:"occurred_at"`
+	ProjectID    int64           `json:"project_id"`
+	EventID      sentry.ID       `json:"event_id"`
+	Level        EventLevel      `json:"level"`
+	Message      string          `json:"message"`
+	Platform     *string         `json:"platform"`
+	Environment  *string         `json:"environment"`
+	Release      *string         `json:"release"`
+	DeviceID     *string         `json:"device_id"`
+	DeviceModel  *string         `json:"device_model"`
+	OsVersion    *string         `json:"os_version"`
+	Transaction  *string         `json:"transaction"`
+	ErrorType    *string         `json:"error_type"`
+	Culprit      *string         `json:"culprit"`
+	Handled      *bool           `json:"handled"`
+	SdkName      *string         `json:"sdk_name"`
+	UserID       *string         `json:"user_id"`
+	Fingerprint  *sentry.ID      `json:"fingerprint"`
+	Symbolicated bool            `json:"symbolicated"`
+	Tags         json.RawMessage `json:"tags"`
+	Symbols      json.RawMessage `json:"symbols"`
+	Payload      []byte          `json:"payload"`
 }
 
 type EventStatsDirty struct {
@@ -389,7 +389,7 @@ type EventStatsHourly struct {
 	Platform  string     `json:"platform"`
 	Level     EventLevel `json:"level"`
 	Events    int64      `json:"events"`
-	Crashes   int64      `json:"crashes"`
+	Unhandled int64      `json:"unhandled"`
 	Errors    int64      `json:"errors"`
 }
 
@@ -400,7 +400,7 @@ type EventStatsHourlyRolled struct {
 	Platform  string     `json:"platform"`
 	Level     EventLevel `json:"level"`
 	Events    int64      `json:"events"`
-	Crashes   int64      `json:"crashes"`
+	Unhandled int64      `json:"unhandled"`
 	Errors    int64      `json:"errors"`
 }
 
@@ -410,7 +410,7 @@ type Issue struct {
 	Title            string      `json:"title"`
 	Level            EventLevel  `json:"level"`
 	ErrorType        *string     `json:"error_type"`
-	Screen           *string     `json:"screen"`
+	Transaction      *string     `json:"transaction"`
 	Platform         *string     `json:"platform"`
 	Status           IssueStatus `json:"status"`
 	StatusBy         *string     `json:"status_by"`

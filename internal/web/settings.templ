@@ -12,7 +12,7 @@ type alertLabel struct{ Title, Desc string }
 var alertLabels = map[string]alertLabel{
 	"new_issue":   {"New issue", "A fingerprint seen for the first time"},
 	"regression":  {"Regression", "A resolved issue reappears on another release"},
-	"crash_spike": {"Crash spike", "Crashes in the last hour are 3× the 24 h baseline"},
+	"unhandled_spike": {"Unhandled error spike", "Unhandled errors in the last hour are 3× the 24 h baseline"},
 }
 
 func labelFor(t string) alertLabel {
@@ -198,7 +198,7 @@ templ Settings(pg Page, d SettingsData) {
 								<p class="settings-title font-mono">{ sf.Filename }</p>
 								<span data-slot="badge" data-variant="outline">{ sf.Kind }</span>
 							</div>
-							<p class="settings-meta">{ orDash(derefStr(sf.Release)) } · { sizeLabel(sf.Size) } · { formatDateTime(sf.UploadedAt) }</p>
+							<p class="settings-meta">{ orDash(deref(sf.Release)) } · { sizeLabel(sf.Size) } · { formatDateTime(sf.UploadedAt) }</p>
 						</div>
 						<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-delete={ pg.S.Href("/settings/symbols/" + i64(sf.ID)) } hx-confirm="Delete this symbol file?" hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">Delete</button>
 					</div>

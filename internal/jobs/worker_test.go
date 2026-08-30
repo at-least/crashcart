@@ -248,3 +248,45 @@ func TestHandlerDeadlineIsLease(t *testing.T) {
 		t.Fatal("handler not run")
 	}
 }
+
+// TestReleaseJobAtAttemptCap: a job released at shutdown on its last
+// attempt is outside the jobs_pending index, so a duplicate may have been
+// enqueued meanwhile; the release must not collide with it (which left
+// the job leased until it died) — the older row goes, the newer runs.
+func TestReleaseJobAtAttemptCap(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	args := []byte(`{"event": 1}`)
+	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	// Claimed for the 8th time: attempts = 8.
+	st.Pool.Exec(ctx, "UPDATE jobs SET attempts = 7")
+	got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	if err != nil || len(got) != 1 || got[0].Attempts != 8 {
+		t.Fatalf("claim: %+v %v", got, err)
+	}
+	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
+		t.Fatal(err) // a second row: the first is no longer pending
+	}
+	if err := st.ReleaseJob(ctx, got[0].ID); err != nil {
+		t.Fatalf("release with a duplicate pending: %v", err)
+	}
+	var n int
+	var leased bool
+	if err := st.Pool.QueryRow(ctx, "SELECT count(*), bool_or(locked_until IS NOT NULL) FROM jobs").Scan(&n, &leased); err != nil || n != 1 || leased {
+		t.Fatalf("after release: rows=%d leased=%v err=%v (want one free row)", n, leased, err)
+	}
+	// Without a duplicate the release un-counts the attempt as before.
+	st.Pool.Exec(ctx, "DELETE FROM jobs")
+	st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()})
+	got, _ = st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	if err := st.ReleaseJob(ctx, got[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	if err := st.Pool.QueryRow(ctx, "SELECT attempts FROM jobs WHERE locked_until IS NULL").Scan(&attempts); err != nil || attempts != 0 {
+		t.Fatalf("plain release: attempts=%d err=%v", attempts, err)
+	}
+}

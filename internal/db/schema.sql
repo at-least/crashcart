@@ -9,19 +9,14 @@
 -- is here — event payloads (gzipped, bounded by per-issue sampling),
 -- symbol files, sentry-cli upload chunks; the database is the one store.
 
--- The one definition of "crash": fatal, or an unhandled exception. Used by
--- the rollups, the spike check and the event filters.
 -- Enumerations: one definition, sqlc generates the Go constants.
 CREATE TYPE event_level    AS ENUM ('fatal', 'error', 'warning', 'info', 'debug');
 CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnormal');
 CREATE TYPE issue_status   AS ENUM ('unresolved', 'triaged', 'resolved', 'ignored', 'regression');
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
-CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'crash_spike');
+CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike');
 CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
-
-CREATE FUNCTION crashcart_is_crash(level event_level, handled BOOLEAN) RETURNS BOOLEAN
-    LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
 
 -- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
 -- t.Truncate(width): the chart queries fold the hourly rollups with
@@ -74,7 +69,7 @@ CREATE TABLE projects (
     name              TEXT NOT NULL,
     platform          TEXT,                                   -- ios | android | flutter | web | … (hint only)
     public_key        TEXT NOT NULL UNIQUE,                   -- DSN key: https://<public_key>@host/<id>
-    sample_keep_first INTEGER NOT NULL DEFAULT 100,           -- events stored per issue before sampling kicks in (fatal: ingest.FatalKeepFactor times that)
+    sample_keep_first INTEGER NOT NULL DEFAULT 100,           -- events stored per issue before sampling kicks in (fatal: ingest.UnhandledKeepFactor times that)
     sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,  -- kept fraction after that (1 = store everything; lower it to bound the database)
     daily_quota       INTEGER NOT NULL DEFAULT 0,             -- events accepted per UTC day; 0 = unlimited (sampling bounds the database, a quota is a cost cap)
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -106,10 +101,10 @@ CREATE TABLE events (
     device_id      TEXT,
     device_model   TEXT,
     os_version     TEXT,
-    screen         TEXT,                             -- event.transaction
+    transaction         TEXT,                             -- event.transaction
     error_type     TEXT,                             -- exception.values[0].type
-    error_location TEXT,                             -- deepest in-app frame "File.ext:line"
-    handled        BOOLEAN,                          -- false = crash, true = caught, null = no exception
+    culprit TEXT,                             -- deepest in-app frame "File.ext:line"
+    handled        BOOLEAN,                          -- exception.mechanism.handled: false = unhandled, true = handled, null = no mechanism / no exception
     sdk_name       TEXT,
     user_id        TEXT,
     fingerprint    UUID,                             -- issues.fingerprint (null when nothing to group)
@@ -124,7 +119,7 @@ CREATE TABLE events_default PARTITION OF events DEFAULT;
 CREATE INDEX events_project_time ON events (project_id, occurred_at DESC, event_id DESC);
 CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, occurred_at DESC) INCLUDE (user_id); -- the issue's events; user_id for its distinct-users count without heap fetches
 CREATE INDEX events_project_user ON events (project_id, user_id, occurred_at DESC) WHERE user_id IS NOT NULL;
-CREATE INDEX events_project_crash ON events (project_id, occurred_at DESC) WHERE crashcart_is_crash(level, handled);
+CREATE INDEX events_project_unhandled ON events (project_id, occurred_at DESC) WHERE handled = false;
 CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filters are `tags @> {k: v}`
 
 
@@ -167,7 +162,7 @@ CREATE TABLE issues (
     title            TEXT NOT NULL,
     level            event_level NOT NULL,
     error_type       TEXT,
-    screen           TEXT,
+    transaction           TEXT,
     platform         TEXT,
     status           issue_status NOT NULL DEFAULT 'unresolved',
     status_by        TEXT,                            -- who set the status last: a user's email or an API key's name
@@ -237,7 +232,10 @@ CREATE TABLE jobs (
     last_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX jobs_run_after ON jobs (run_after, id);
+-- Claims scan due jobs in (run_after, id) order; dead jobs (kept a week
+-- for the settings page) are the oldest and would sit at the head of an
+-- unfiltered index.
+CREATE INDEX jobs_due ON jobs (run_after, id) WHERE attempts < 8;
 -- One live job per (kind, project, args) — pending, leased or backing off —
 -- so an enqueue while one is running cannot leave a second row that the
 -- first would collide with when it is retried or released.
@@ -316,7 +314,7 @@ CREATE TABLE event_stats_hourly_rolled (
     platform   TEXT NOT NULL,
     level      event_level NOT NULL,
     events     BIGINT NOT NULL,
-    crashes    BIGINT NOT NULL,
+    unhandled    BIGINT NOT NULL,
     errors     BIGINT NOT NULL,
     PRIMARY KEY (project_id, bucket, release, platform, level)
 );
@@ -347,13 +345,13 @@ CREATE INDEX release_health_hourly_rolled_expiry ON release_health_hourly_rolled
 -- rows. (A dirty key joins its hour of events through the
 -- events_project_time index.)
 CREATE VIEW event_stats_hourly AS
-SELECT r.bucket, r.project_id, r.release, r.platform, r.level, r.events, r.crashes, r.errors
+SELECT r.bucket, r.project_id, r.release, r.platform, r.level, r.events, r.unhandled, r.errors
 FROM event_stats_hourly_rolled r
 WHERE NOT EXISTS (SELECT 1 FROM event_stats_dirty d WHERE d.project_id = r.project_id AND d.bucket = r.bucket)
 UNION ALL
 SELECT d.bucket, d.project_id, COALESCE(e.release, ''), COALESCE(e.platform, ''), e.level,
        count(*)::bigint,
-       count(*) FILTER (WHERE crashcart_is_crash(e.level, e.handled))::bigint,
+       count(*) FILTER (WHERE e.handled = false)::bigint,
        count(*) FILTER (WHERE e.level = 'error' AND e.handled IS NOT false)::bigint
 FROM event_stats_dirty d
 JOIN events e ON e.project_id = d.project_id AND e.occurred_at >= d.bucket AND e.occurred_at < d.bucket + INTERVAL '1 hour'
@@ -389,7 +387,7 @@ GROUP BY d.bucket, d.project_id, s.release;
 CREATE FUNCTION crashcart_event_stats(pid BIGINT, from_at TIMESTAMPTZ, to_at TIMESTAMPTZ)
 RETURNS SETOF event_stats_hourly
 LANGUAGE SQL STABLE AS $$
-    SELECT bucket, project_id, release, platform, level, events, crashes, errors FROM event_stats_hourly
+    SELECT bucket, project_id, release, platform, level, events, unhandled, errors FROM event_stats_hourly
     WHERE project_id = pid AND bucket >= from_at AND bucket < to_at
 $$;
 

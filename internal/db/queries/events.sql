@@ -9,7 +9,7 @@ SELECT * FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_a
 SELECT * FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3;
 
 -- name: SetEventSymbols :exec
-UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, error_location = $5
+UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, culprit = $5
 WHERE project_id = $1 AND event_id = $2 AND occurred_at = $6;
 
 -- name: IssueUsers :many
@@ -33,3 +33,9 @@ SELECT (SELECT e.event_id FROM events e WHERE e.project_id = sqlc.arg(project_id
 -- time range: only the partitions it spans are read.
 SELECT event_id FROM events
 WHERE project_id = $1 AND event_id = ANY($2::uuid[]) AND occurred_at >= sqlc.arg(from_at)::timestamptz AND occurred_at < sqlc.arg(to_at)::timestamptz;
+
+-- name: ExistingEventIDsAnyTime :many
+-- The same without a window, for the few events whose timestamp was
+-- replaced by the server's (a clock far off): a resend of those carries
+-- a different time, so the stored copy can be in any partition.
+SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::uuid[]);

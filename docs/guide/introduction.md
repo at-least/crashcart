@@ -21,7 +21,7 @@ the Sentry product.
   dSYMs — with `curl` or `sentry-cli` — and frames show real file names and
   lines.
 - **Alerts** to a webhook or Telegram when a new issue appears, a resolved
-  one comes back, or crashes spike.
+  one comes back, or unhandled errors spike.
 - **Your data stays portable.** One command exports everything to a plain
   text file that restores into any CrashCart.
 
@@ -35,7 +35,7 @@ full picture is in [Compared to Sentry](./compared-to-sentry).
 
 ## Where it runs
 
-Any Postgres 14+ — a container, your distro's package, RDS, Neon,
+Any Postgres 15+ — a container, your distro's package, RDS, Neon,
 Supabase — and nothing else. Docker Compose on a VPS, a binary under
 systemd, or Kubernetes. See [The database](/deploy/postgres).
 

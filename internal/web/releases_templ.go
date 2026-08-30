@@ -5,12 +5,12 @@ package web
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
+
 import (
 	"net/url"
 	"time"
-
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
 )
 
 func releaseHref(pg Page, v string) string {
@@ -62,7 +62,7 @@ func Releases(pg Page, rows []ReleaseRow) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"log-frame\" data-slot=\"table-container\"><table class=\"log-table\"><thead><tr><th>Release</th><th>Platform</th><th class=\"num\">Adoption</th><th class=\"num\">Crash-free</th><th class=\"num\">Crashes</th><th class=\"num\">Events</th><th class=\"num\">New issues</th><th>First seen</th><th>Last seen</th></tr></thead> <tbody>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"log-frame\" data-slot=\"table-container\"><table class=\"log-table\"><thead><tr><th>Release</th><th>Platform</th><th class=\"num\">Adoption</th><th class=\"num\">Crash-free</th><th class=\"num\" title=\"Unhandled errors (exception.mechanism.handled = false)\">Unhandled</th><th class=\"num\">Events</th><th class=\"num\">New issues</th><th>First seen</th><th>Last seen</th></tr></thead> <tbody>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -176,9 +176,9 @@ func Releases(pg Page, rows []ReleaseRow) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var11 string
-				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(compact(r.Crashes))
+				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(compact(r.Unhandled))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/releases.templ`, Line: 38, Col: 43}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/releases.templ`, Line: 38, Col: 45}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 				if templ_7745c5c3_Err != nil {
@@ -331,7 +331,7 @@ func ReleasePage(pg Page, d ReleaseData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = StatCard("Crashes", compact(d.Row.Crashes), "").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = StatCard("Unhandled errors", compact(d.Row.Unhandled), "").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -351,7 +351,7 @@ func ReleasePage(pg Page, d ReleaseData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "</section></div><div data-slot=\"card\" data-size=\"sm\"><header data-slot=\"card-header\"><h2 class=\"stat-title\">Crashes</h2></header><section class=\"px-3 pb-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "</section></div><div data-slot=\"card\" data-size=\"sm\"><header data-slot=\"card-header\"><h2 class=\"stat-title\">Unhandled errors</h2></header><section class=\"px-3 pb-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -39,13 +39,13 @@ var issueSorts = map[string]bool{"last_seen": true, "first_seen": true, "events"
 var FilterLabels = map[string]string{
 	"q": "message", "level": "level", "release": "release", "environment": "env", "platform": "platform",
 	"error_type": "error", "user_id": "user", "device_id": "device", "device_model": "model", "os_version": "os",
-	"screen": "screen", "error_location": "location", "fingerprint": "issue", "crash": "crash",
+	"transaction": "transaction", "culprit": "culprit", "fingerprint": "issue", "handled": "handled",
 }
 
 // FilterColumns are the toolbar selects (key, label) in display order.
 var FilterColumns = [][2]string{
-	{"q", "Message"}, {"error_type", "Error"}, {"error_location", "Location"}, {"user_id", "User"},
-	{"device_id", "Device"}, {"device_model", "Model"}, {"os_version", "OS"}, {"screen", "Screen"},
+	{"q", "Message"}, {"error_type", "Error type"}, {"culprit", "Culprit"}, {"user_id", "User"},
+	{"device_id", "Device"}, {"device_model", "Model"}, {"os_version", "OS"}, {"transaction", "Transaction"},
 }
 
 var reserved = map[string]bool{"win": true, "status": true, "sort": true, "offset": true, "before": true, "search_col": true, "search_q": true}

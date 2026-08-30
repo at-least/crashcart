@@ -22,7 +22,7 @@ func TestID(t *testing.T) {
 	if ID(hex).String() != hex || ID("").Ptr() != nil || *ID(hex).Ptr() != hex {
 		t.Error("String / Ptr")
 	}
-	if DerivedID([]byte("x")) != DerivedID([]byte("x")) || DerivedID([]byte("x")) == DerivedID([]byte("y")) || len(DerivedID([]byte("x"))) != 32 {
+	if DerivedID([]byte("x")) != DerivedID(append([]byte(nil), 'x')) || DerivedID([]byte("x")) == DerivedID([]byte("y")) || len(DerivedID([]byte("x"))) != 32 {
 		t.Error("DerivedID must be stable and 32 hex chars")
 	}
 

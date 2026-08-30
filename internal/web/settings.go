@@ -1,8 +1,6 @@
 package web
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"net/http"
 	"regexp"
@@ -10,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/crashcartapp/crashcart/internal/alerts"
+	"github.com/crashcartapp/crashcart/internal/auth"
 
 	"github.com/a-h/templ"
 
@@ -21,7 +20,7 @@ import (
 )
 
 // AlertTypes are the rule types in display order (alert_rules CHECK).
-var AlertTypes = []string{"new_issue", "regression", "crash_spike"}
+var AlertTypes = []string{"new_issue", "regression", "unhandled_spike"}
 
 // SettingsData feeds the settings page.
 type SettingsData struct {
@@ -39,10 +38,7 @@ func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	base := w.baseURL(r)
-	d := SettingsData{EnvelopeURL: base + "/api/" + strconv.FormatInt(p.ID, 10) + "/envelope/"}
-	if i := strings.Index(base, "://"); i >= 0 {
-		d.DSN = base[:i+3] + p.PublicKey + "@" + base[i+3:] + "/" + strconv.FormatInt(p.ID, 10)
-	}
+	d := SettingsData{EnvelopeURL: base + "/api/" + strconv.FormatInt(p.ID, 10) + "/envelope/", DSN: auth.DSN(base, p.PublicKey, p.ID)}
 	rules, err := w.Store.ListAlertRules(ctx, p.ID)
 	if err != nil {
 		w.fail(rw, r, err)
@@ -92,17 +88,12 @@ func (w *Web) createProject(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "platform must be one of "+strings.Join(sentry.Families, ", "), http.StatusBadRequest)
 		return
 	}
-	key := make([]byte, 16)
-	if _, err := rand.Read(key); err != nil {
-		w.fail(rw, r, err)
-		return
-	}
 	var plat *string
 	if platform != "" {
 		plat = &platform
 	}
 	ctx := r.Context()
-	p, err := w.Store.CreateProject(ctx, sqlc.CreateProjectParams{Slug: slug, Name: name, Platform: plat, PublicKey: hex.EncodeToString(key)})
+	p, err := w.Store.CreateProject(ctx, sqlc.CreateProjectParams{Slug: slug, Name: name, Platform: plat, PublicKey: auth.NewProjectKey()})
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
 			http.Error(rw, "slug already exists", http.StatusConflict)
@@ -130,11 +121,12 @@ func (w *Web) settingsSampling(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "bad form", http.StatusBadRequest)
 		return
 	}
-	keep, err1 := strconv.Atoi(r.Form.Get("keep_first"))
+	// 32-bit parses: the columns are INTEGER, and a wider value would wrap negative.
+	keep, err1 := strconv.ParseInt(r.Form.Get("keep_first"), 10, 32)
 	rate, err2 := strconv.ParseFloat(r.Form.Get("rate"), 64)
-	quota, err3 := int(p.DailyQuota), error(nil)
+	quota, err3 := int64(p.DailyQuota), error(nil)
 	if v := strings.TrimSpace(r.Form.Get("daily_quota")); v != "" {
-		quota, err3 = strconv.Atoi(v)
+		quota, err3 = strconv.ParseInt(v, 10, 32)
 	}
 	if err1 != nil || err2 != nil || err3 != nil || keep < 0 || rate < 0 || rate > 1 || quota < 0 {
 		http.Error(rw, "keep_first >= 0, 0 <= rate <= 1 and daily_quota >= 0 required", http.StatusBadRequest)
@@ -177,12 +169,7 @@ func (w *Web) settingsRotateKey(rw http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	key := make([]byte, 16)
-	if _, err := rand.Read(key); err != nil {
-		w.fail(rw, r, err)
-		return
-	}
-	if _, err := w.Store.RotateProjectKey(r.Context(), sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: hex.EncodeToString(key)}); err != nil {
+	if _, err := w.Store.RotateProjectKey(r.Context(), sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: auth.NewProjectKey()}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

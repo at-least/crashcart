@@ -5,14 +5,12 @@ package web
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import (
-	"strings"
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
 
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
-)
+import "strings"
 
-// Overview: three stat cards, crash timeline by release, new issues and
+// Overview: three stat cards, unhandled errors by release, new issues and
 // regressions.
 func Overview(pg Page, d OverviewData) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -137,7 +135,7 @@ func Overview(pg Page, d OverviewData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = StatCard("Crashes", compact(d.Crashes), "in the last "+pg.S.Win).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = StatCard("Unhandled errors", compact(d.Unhandled), "in the last "+pg.S.Win).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -145,7 +143,7 @@ func Overview(pg Page, d OverviewData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</div><div data-slot=\"card\" data-size=\"sm\" class=\"mt-4\"><header data-slot=\"card-header\"><h2 class=\"stat-title\">Crashes by release</h2></header><section class=\"px-3 pb-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</div><div data-slot=\"card\" data-size=\"sm\" class=\"mt-4\"><header data-slot=\"card-header\"><h2 class=\"stat-title\">Unhandled errors by release</h2></header><section class=\"px-3 pb-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

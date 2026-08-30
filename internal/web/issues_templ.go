@@ -5,12 +5,10 @@ package web
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import (
-	"strings"
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
 
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
-)
+import "strings"
 
 var statusLabels = map[string]string{"unresolved": "Unresolved", "triaged": "Triaged", "resolved": "Resolved", "ignored": "Ignored", "regression": "Regression", "all": "All"}
 

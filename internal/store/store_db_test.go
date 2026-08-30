@@ -2,9 +2,13 @@ package store_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
@@ -91,9 +95,9 @@ func TestCountEventsAndSearch(t *testing.T) {
 		t.Errorf("search is case-insensitive: %d", n)
 	}
 	crash := base
-	crash.Crash = true
+	crash.Handled = "false"
 	if n := count(crash); n != 2 {
-		t.Errorf("crash = %d (the fatal and the unhandled error; a handled error and a message are not crashes)", n)
+		t.Errorf("crash = %d (the fatal and the unhandled error; a handled error and a message are not unhandled)", n)
 	}
 	lvl := base
 	lvl.Level = "error"
@@ -143,5 +147,34 @@ func TestRunAsLeader(t *testing.T) {
 		}
 	}); err != nil || !ran {
 		t.Fatal(ran, err)
+	}
+}
+
+// TestCreateFirstUser: only one of many concurrent first-user creations
+// succeeds — the check and the insert are one serialized transaction.
+func TestCreateFirstUser(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	var created atomic.Int32
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u, ok, err := st.CreateFirstUser(ctx, sqlc.CreateUserParams{Email: fmt.Sprintf("u%d@example.com", i), Name: "u", PasswordHash: "x"})
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				created.Add(1)
+				if u.ID == 0 {
+					t.Error("created without a row")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if n, _ := st.CountUsers(ctx); created.Load() != 1 || n != 1 {
+		t.Fatalf("created=%d users=%d", created.Load(), n)
 	}
 }

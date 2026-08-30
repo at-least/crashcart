@@ -15,8 +15,13 @@ import (
 // sparklineHours is the length of the per-issue sparkline (7 days, hourly).
 const sparklineHours = 7 * 24
 
-// issueStatuses is the lifecycle allowlist.
-var issueStatuses = map[string]bool{"unresolved": true, "triaged": true, "resolved": true, "ignored": true, "regression": true}
+// issueStatuses is the lifecycle allowlist for filters; writableStatuses
+// is what a client may set — "regression" is ingest's verdict (an event
+// on a release outside resolved_releases), never a request's.
+var (
+	issueStatuses    = map[string]bool{"unresolved": true, "triaged": true, "resolved": true, "ignored": true, "regression": true}
+	writableStatuses = map[string]bool{"unresolved": true, "triaged": true, "resolved": true, "ignored": true}
+)
 
 // issueOut is the JSON shape of an issue.
 type issueOut struct {
@@ -24,7 +29,7 @@ type issueOut struct {
 	Title            string    `json:"title"`
 	Level            string    `json:"level"`
 	ErrorType        *string   `json:"error_type"`
-	Screen           *string   `json:"screen"`
+	Transaction      *string   `json:"transaction"`
 	Platform         *string   `json:"platform"`
 	Status           string    `json:"status"`
 	StatusBy         *string   `json:"status_by"`
@@ -44,7 +49,7 @@ type issueOut struct {
 
 func toIssueOut(i sqlc.Issue) issueOut {
 	return issueOut{
-		Fingerprint: string(i.Fingerprint), Title: i.Title, Level: string(i.Level), ErrorType: i.ErrorType, Screen: i.Screen,
+		Fingerprint: string(i.Fingerprint), Title: i.Title, Level: string(i.Level), ErrorType: i.ErrorType, Transaction: i.Transaction,
 		Platform: i.Platform, Status: string(i.Status), StatusBy: i.StatusBy, EventCount: i.EventCount, StoredCount: i.StoredCount,
 		FirstSeen: i.FirstSeen.UTC(), LastSeen: i.LastSeen.UTC(),
 		FirstRelease: i.FirstRelease, LastRelease: i.LastRelease, Releases: i.Releases, ResolvedReleases: i.ResolvedReleases,
@@ -205,8 +210,8 @@ func (h *Handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	if !issueStatuses[in.Status] {
-		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, triaged, resolved, ignored, regression")
+	if !writableStatuses[in.Status] {
+		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, triaged, resolved, ignored")
 		return
 	}
 	fp, ok := sentry.ParseID(r.PathValue("fingerprint"))
@@ -235,8 +240,8 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	if !issueStatuses[in.Status] {
-		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, triaged, resolved, ignored, regression")
+	if !writableStatuses[in.Status] {
+		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, triaged, resolved, ignored")
 		return
 	}
 	if len(in.Fingerprints) == 0 {

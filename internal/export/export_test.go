@@ -103,7 +103,7 @@ func TestRoundTrip(t *testing.T) {
 		Format int    `json:"format"`
 		App    string `json:"app"`
 	}
-	if err := json.Unmarshal([]byte(first), &meta); err != nil || meta.T != "_meta" || meta.Format != 1 || meta.App != "crashcart" {
+	if err := json.Unmarshal([]byte(first), &meta); err != nil || meta.T != "_meta" || meta.Format != Format || meta.App != "crashcart" {
 		t.Fatalf("meta line: %s (%v)", first, err)
 	}
 	// Table order and shape.
@@ -287,3 +287,31 @@ func TestExportProjectFilter(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestImportFormat1Names: a format-1 file (screen / error_location /
+// crash_spike) still imports — the old names map onto transaction /
+// culprit / unhandled_spike.
+func TestImportFormat1Names(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	in := `{"t":"_meta","format":1,"exported_at":"2026-08-20T10:00:00Z","app":"crashcart"}
+{"t":"projects","slug":"old","name":"Old","public_key":"0123456789abcdef0123456789abcdef"}
+{"t":"issues","project":"old","fingerprint":"f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1","title":"E: boom","level":"error","screen":"CartFragment","status":"unresolved","event_count":1,"stored_count":1,"first_seen":"2026-08-20T10:00:00Z","last_seen":"2026-08-20T10:00:00Z"}
+{"t":"events","project":"old","occurred_at":"2026-08-20T10:00:00.000123Z","event_id":"abababababababababababababababab","level":"error","message":"m","screen":"CartFragment","error_location":"CartFragment.java:1","tags":{},"breadcrumbs":[],"payload":{"a":1}}
+{"t":"alert_rules","project":"old","type":"crash_spike","enabled":false,"cooldown_minutes":5}
+`
+	if _, err := Import(ctx, st, strings.NewReader(in)); err != nil {
+		t.Fatal(err)
+	}
+	var transaction, culprit string
+	if err := st.Pool.QueryRow(ctx, "SELECT transaction, culprit FROM events").Scan(&transaction, &culprit); err != nil || transaction != "CartFragment" || culprit != "CartFragment.java:1" {
+		t.Fatalf("event: %q %q %v", transaction, culprit, err)
+	}
+	if err := st.Pool.QueryRow(ctx, "SELECT transaction FROM issues").Scan(&transaction); err != nil || transaction != "CartFragment" {
+		t.Fatalf("issue: %q %v", transaction, err)
+	}
+	var enabled bool
+	if err := st.Pool.QueryRow(ctx, "SELECT enabled FROM alert_rules WHERE type = 'unhandled_spike'").Scan(&enabled); err != nil || enabled {
+		t.Fatalf("alert rule: enabled=%v %v", enabled, err)
+	}
+}

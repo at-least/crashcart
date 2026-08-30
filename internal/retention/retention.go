@@ -59,14 +59,15 @@ func weekStart(t time.Time) time.Time {
 	return t.AddDate(0, 0, -(int(t.Weekday())+6)%7)
 }
 
-// EnsurePartitions creates the weekly partitions from the start of the
-// retention window (one width earlier, so a late event still has one) to
-// partitionsAhead past now: one catalog listing per table, then only the
-// missing weeks. A week whose rows already sit in the DEFAULT partition —
+// EnsurePartitions creates the weekly partitions from the week holding
+// the start of the retention window (nothing older can be written: ingest
+// clamps a time before the window to now) to partitionsAhead past now:
+// one catalog listing per table, then only the missing weeks. A week
+// earlier than that would be dropped again by the same sweep. A week whose rows already sit in the DEFAULT partition —
 // written while no partition covered it — gets them moved into the new
 // partition in the same transaction.
 func EnsurePartitions(ctx context.Context, st *store.Store, cfg config.Config, now time.Time) error {
-	from := weekStart(now.Add(-cfg.Retention() - PartitionWidth))
+	from := weekStart(now.Add(-cfg.Retention()))
 	to := weekStart(now.Add(partitionsAhead))
 	for _, t := range partitioned {
 		have, err := Partitions(ctx, st, t.table)
@@ -410,9 +411,9 @@ func rollupEvents(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.T
 	return exec(ctx, tx,
 		stmt{`DELETE FROM event_stats_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`, keys},
-		stmt{`INSERT INTO event_stats_hourly_rolled (bucket, project_id, release, platform, level, events, crashes, errors)
+		stmt{`INSERT INTO event_stats_hourly_rolled (bucket, project_id, release, platform, level, events, unhandled, errors)
 		 SELECT k.bucket, k.project_id, COALESCE(e.release, ''), COALESCE(e.platform, ''), e.level,
-		        count(*), count(*) FILTER (WHERE crashcart_is_crash(e.level, e.handled)),
+		        count(*), count(*) FILTER (WHERE e.handled = false),
 		        count(*) FILTER (WHERE e.level = 'error' AND e.handled IS NOT false)
 		 FROM unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 JOIN events e ON e.project_id = k.project_id AND e.occurred_at >= k.bucket AND e.occurred_at < k.bucket + INTERVAL '1 hour'

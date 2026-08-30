@@ -63,13 +63,13 @@ GET /api/projects/{slug}/overview?days=7
 {
   "from": "2026-08-22T08:00:00Z",
   "to": "2026-08-29T08:00:00Z",
-  "totals": { "events": 4021, "crashes": 37, "errors": 1190 },
+  "totals": { "events": 4021, "unhandled": 37, "errors": 1190 },
   "levels": { "fatal": 37, "error": 1190, "warning": 402, "info": 2392 },
   "new_issues": 3,
   "regressions": 1,
   "crash_free": { "release": "2.4.1", "rate": 99.958, "sessions": 88120 },
   "timeline": [
-    { "bucket": "2026-08-22T08:00:00Z", "release": "2.4.1", "events": 21, "crashes": 0 }
+    { "bucket": "2026-08-22T08:00:00Z", "release": "2.4.1", "events": 21, "unhandled": 0 }
   ]
 }
 ```
@@ -105,10 +105,10 @@ Issue object:
 ```json
 {
   "fingerprint": "5f1c3a…",
-  "title": "NSInvalidArgumentException at CartViewController.swift:88",
+  "title": "NSInvalidArgumentException: -[__NSArrayI objectAtIndex:]: index 3 beyond bounds",
   "level": "fatal",
   "error_type": "NSInvalidArgumentException",
-  "screen": "CartViewController.swift:88",
+  "transaction": "CartViewController",
   "platform": "ios",
   "status": "unresolved",
   "event_count": 1284,
@@ -162,10 +162,10 @@ List parameters (all optional):
 
 | Parameter | Meaning |
 |---|---|
-| `level`, `release`, `environment`, `platform`, `error_type`, `user_id`, `device_id`, `device_model`, `os_version`, `screen`, `error_location`, `fingerprint` | Exact match |
+| `level`, `release`, `environment`, `platform`, `error_type`, `user_id`, `device_id`, `device_model`, `os_version`, `transaction`, `culprit`, `fingerprint` | Exact match |
 | `tag.<key>` | Exact match on a tag, e.g. `tag.tenant=acme` |
 | `q` | Substring match on the message |
-| `crash` | `1` / `true`: only unhandled (fatal) events |
+| `handled` | `false`: only unhandled events (`exception.mechanism.handled = false` — crashes, uncaught exceptions); `true`: only handled ones. Sentry's `yes` / `no` are accepted too |
 | `before` | Cursor: the `next_before` of the previous page; returns the events after it (newest first) |
 | `limit` | Page size, default 50 |
 | `days`, `from`, `to` | Window. **When none is given the list is unbounded** and pages through all retained events by cursor |
@@ -198,7 +198,7 @@ List response `{"releases": [...]}`:
   "first_seen": "…",
   "last_seen": "…",
   "events": 4021,
-  "crashes": 37,
+  "unhandled": 37,
   "errors": 1190,
   "sessions": { "total": 88120, "crashed": 37, "errored": 902 },
   "crash_free_rate": 99.958,
@@ -215,7 +215,7 @@ The detail returns:
   "release": { "…release object…": "" },
   "from": "…", "to": "…",
   "daily_health": [ { "day": "2026-08-28T00:00:00Z", "total": 12040, "crashed": 5, "errored": 130, "crash_free_rate": 99.958 } ],
-  "timeline":     [ { "bucket": "2026-08-28T13:00:00Z", "events": 60, "crashes": 1 } ],
+  "timeline":     [ { "bucket": "2026-08-28T13:00:00Z", "events": 60, "unhandled": 1 } ],
   "issues_introduced": [ "…issues whose first_release is this version…" ],
   "issues_present":    [ "…issues whose last_release is this version…" ]
 }
@@ -231,10 +231,10 @@ POST   /api/projects/{slug}/alerts/channels            {"kind":"webhook","config
 DELETE /api/projects/{slug}/alerts/channels/{id}
 ```
 
-`{type}` is `new_issue`, `regression` or `crash_spike`. A rule:
+`{type}` is `new_issue`, `regression` or `unhandled_spike`. A rule:
 
 ```json
-{ "project_id": 1, "type": "crash_spike", "enabled": true, "cooldown_minutes": 60, "last_triggered": "…" }
+{ "project_id": 1, "type": "unhandled_spike", "enabled": true, "cooldown_minutes": 60, "last_triggered": "…" }
 ```
 
 `cooldown_minutes` is the minimum gap between two alerts of the same type

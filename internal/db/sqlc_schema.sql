@@ -4,11 +4,8 @@ CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnor
 CREATE TYPE issue_status   AS ENUM ('unresolved', 'triaged', 'resolved', 'ignored', 'regression');
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
-CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'crash_spike');
+CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike');
 CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
-
-CREATE FUNCTION crashcart_is_crash(level event_level, handled BOOLEAN) RETURNS BOOLEAN
-    LANGUAGE SQL IMMUTABLE AS $$ SELECT level = 'fatal' OR handled = false $$;
 
 -- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
 -- t.Truncate(width): the chart queries fold the hourly aggregates with
@@ -73,9 +70,9 @@ CREATE TABLE events (
     device_id      TEXT,
     device_model   TEXT,
     os_version     TEXT,
-    screen         TEXT,
+    transaction         TEXT,
     error_type     TEXT,
-    error_location TEXT,
+    culprit TEXT,
     handled        BOOLEAN,
     sdk_name       TEXT,
     user_id        TEXT,
@@ -113,7 +110,7 @@ CREATE TABLE issues (
     title            TEXT NOT NULL,
     level            event_level NOT NULL,
     error_type       TEXT,
-    screen           TEXT,
+    transaction           TEXT,
     platform         TEXT,
     status           issue_status NOT NULL DEFAULT 'unresolved',
     status_by        TEXT,
@@ -207,7 +204,7 @@ CREATE TABLE event_stats_hourly_rolled (
     platform   TEXT NOT NULL,
     level      event_level NOT NULL,
     events     BIGINT NOT NULL,
-    crashes    BIGINT NOT NULL,
+    unhandled    BIGINT NOT NULL,
     errors     BIGINT NOT NULL,
     PRIMARY KEY (project_id, bucket, release, platform, level)
 );
@@ -235,7 +232,7 @@ CREATE TABLE event_stats_hourly (
     platform   TEXT NOT NULL,
     level      event_level NOT NULL,
     events     BIGINT NOT NULL,
-    crashes    BIGINT NOT NULL,
+    unhandled    BIGINT NOT NULL,
     errors     BIGINT NOT NULL
 );
 

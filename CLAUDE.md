@@ -1,12 +1,13 @@
 # CLAUDE.md — CrashCart (Go + Postgres)
 
 Sentry-SDK-compatible crash tracking backend + viewer. Read ARCHITECTURE.md
-for the design; GLOSSARY.md for terminology (Event / Issue / Release /
-Platform — never "log entry", "error group", "app version", "OS").
+for the design; GLOSSARY.md for terminology — Sentry's own (Event / Issue / Release /
+Transaction / Culprit / Unhandled; "crash" only for sessions) — never "log entry",
+"error group", "app version", "screen", "location".
 
 ## Stack
 
-Go 1.24+ (std `net/http` mux, pgx/v5, sqlc, templ), plain Postgres 14+
+Go 1.25+ (std `net/http` mux, pgx/v5, sqlc, templ), plain Postgres 15+
 (no extensions; the one store — payloads, symbol files included), htmx +
 Tailwind v4 + shadless for the viewer. Optional: dSYM symbolication
 sidecar (`container/symbolicate`).
@@ -62,7 +63,7 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`, in
   `STORAGE EXTERNAL`); read it with `store.Payload(ctx, event)` — nil when
   the row was imported without one. Symbol files and sentry-cli chunks are
   BYTEA rows. Per-issue sampling (`sample_keep_first`,
-  `ingest.FatalKeepFactor` for crashes, `sample_rate` — default 1, store
+  `ingest.UnhandledKeepFactor` for unhandled events, `sample_rate` — default 1, store
   everything) is what a project lowers to bound the database: stored
   events then grow with issues, not events. There is no second store; do
   not add one.
@@ -100,7 +101,7 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`, in
   `/login`, `/setup`, `/account`); ingest is authenticated by the DSN key.
   `auth.ActorFrom(ctx)` is who acts (recorded in `issues.status_by`).
 - Never rewrite `events.payload`. Symbolication writes `symbols`,
-  `fingerprint`, `error_location`, `symbolicated` only.
+  `fingerprint`, `culprit`, `symbolicated` only.
 - Tests: unit tests next to the code; DB-backed tests use `internal/testdb`
   (fresh schema per test) and skip without `TEST_DATABASE_URL`;
   `internal/server/server_test.go` is the end-to-end suite (ingest → API → viewer).

@@ -94,9 +94,9 @@ func TestPages(t *testing.T) {
 	}
 	fp := string(is[0].Fingerprint)
 
-	assertPage(t, mux, "/", "Shop App", "Create project", "/p/shop", "Crashes 24h")
-	assertPage(t, mux, "/p/shop", "Overview", "Crash-free sessions", "NullPointerException in CartFragment", "Crashes by release", "data-stream=\"/p/shop/stream?since=")
-	body := assertPage(t, mux, "/p/shop/issues", "Unresolved", "NullPointerException in CartFragment", "/p/shop/issues/"+fp, "<svg class=\"spark\"", "id=\"bulk-form\"")
+	assertPage(t, mux, "/", "Shop App", "Create project", "/p/shop", "Unhandled 24h")
+	assertPage(t, mux, "/p/shop", "Overview", "Crash-free sessions", "NullPointerException: Attempt to invoke virtual method", "Unhandled errors by release", "data-stream=\"/p/shop/stream?since=")
+	body := assertPage(t, mux, "/p/shop/issues", "Unresolved", "NullPointerException: Attempt to invoke virtual method", "/p/shop/issues/"+fp, "<svg class=\"spark\"", "id=\"bulk-form\"")
 	if !strings.Contains(body, `name="fp" value="`+fp+`"`) {
 		t.Error("issue row must carry a checkbox")
 	}
@@ -107,15 +107,15 @@ func TestPages(t *testing.T) {
 	i := strings.Index(evBody, "/p/shop/events/")
 	id := evBody[i+len("/p/shop/events/"):]
 	id = id[:strings.IndexAny(id, "\"?")]
-	assertPage(t, mux, "/p/shop/events?level=fatal&device_model=Pixel+8&tag.build=42&crash=1", "/p/shop/events/"+id, "chip-key")
+	assertPage(t, mux, "/p/shop/events?level=fatal&device_model=Pixel+8&tag.build=42&handled=false", "/p/shop/events/"+id, "chip-key")
 	assertPage(t, mux, "/p/shop/events?level=info", "No events")
-	assertPage(t, mux, "/p/shop/events/"+id, "Breadcrumbs", "GET /api/cart 500", "Contexts", "arm64", "build:42", "u@example.com", "Raw event JSON", "NullPointerException in CartFragment", "onCreateView")
+	assertPage(t, mux, "/p/shop/events/"+id, "Breadcrumbs", "GET /api/cart 500", "Contexts", "arm64", "build:42", "u@example.com", "Raw event JSON", "NullPointerException: Attempt to invoke virtual method", "onCreateView")
 	if code, frag := get(t, mux, "/p/shop/events/"+id, true); code != 200 || strings.Contains(frag, "<html") || !strings.Contains(frag, "id=\"event-body\"") {
 		t.Errorf("HX fragment = %d %.80s", code, frag)
 	}
 	assertPage(t, mux, "/p/shop/releases", "2.4.1", "Crash-free", "Adoption", "/p/shop/releases/2.4.1")
-	assertPage(t, mux, "/p/shop/releases/2.4.1", "Crash-free sessions per day", "Issues introduced in this release", "NullPointerException in CartFragment", "1 crashed session")
-	assertPage(t, mux, "/p/shop/settings", p.PublicKey, "/api/"+itoa(int(p.ID))+"/envelope/", "Crash spike", "Symbol files", "Sampling", "Add channel")
+	assertPage(t, mux, "/p/shop/releases/2.4.1", "Crash-free sessions per day", "Issues introduced in this release", "NullPointerException: Attempt to invoke virtual method", "1 crashed session")
+	assertPage(t, mux, "/p/shop/settings", p.PublicKey, "/api/"+itoa(int(p.ID))+"/envelope/", "Unhandled error spike", "Symbol files", "Sampling", "Add channel")
 	if code, _ := get(t, mux, "/p/nope", false); code != 404 {
 		t.Errorf("unknown project = %d", code)
 	}
@@ -235,10 +235,10 @@ func TestBulkAndMutations(t *testing.T) {
 	if r := hx("PATCH", "/p/shop/settings/platform", "platform=windows"); r.Code != 400 {
 		t.Errorf("bad platform accepted: %d", r.Code)
 	}
-	if r := hx("PATCH", "/p/shop/settings/alerts/crash_spike", "cooldown=30"); r.Code != 303 {
+	if r := hx("PATCH", "/p/shop/settings/alerts/unhandled_spike", "cooldown=30"); r.Code != 303 {
 		t.Errorf("alert = %d", r.Code)
 	}
-	if ru, err := w.Store.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: "crash_spike"}); err != nil || ru.Enabled || ru.CooldownMinutes != 30 {
+	if ru, err := w.Store.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: "unhandled_spike"}); err != nil || ru.Enabled || ru.CooldownMinutes != 30 {
 		t.Errorf("alert rule = %+v %v", ru, err)
 	}
 	if r := hx("POST", "/p/shop/settings/channels", "kind=webhook&url=https://hooks.example.com/x"); r.Code != 303 {
@@ -272,7 +272,7 @@ func TestBulkAndMutations(t *testing.T) {
 		t.Fatalf("upload = %d %s", rec.Code, rec.Body)
 	}
 	files, _ := w.Store.ListSymbolFiles(ctx, p.ID)
-	if len(files) != 1 || files[0].Kind != "proguard" || derefStr(files[0].Release) != "2.4.1" || files[0].Filename != "mapping.txt" {
+	if len(files) != 1 || files[0].Kind != "proguard" || deref(files[0].Release) != "2.4.1" || files[0].Filename != "mapping.txt" {
 		t.Errorf("symbol files = %+v", files)
 	}
 	var kinds []string
@@ -333,6 +333,20 @@ func TestStream(t *testing.T) {
 	}
 	if strings.Count(body, "event: issues") != 1 {
 		t.Errorf("unchanged counts must not re-emit: %q", body)
+	}
+	// Shutdown: closing Stopping ends a stream whose client is still connected.
+	stopping := make(chan struct{})
+	w.Stopping = stopping
+	req = httptest.NewRequest("GET", "/p/shop/stream?since=2000-01-01T00%3A00%3A00Z", nil)
+	req.AddCookie(sessionCookie)
+	done = make(chan struct{})
+	go func() { mux.ServeHTTP(httptest.NewRecorder(), req); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	close(stopping)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not exit on Stopping")
 	}
 	_ = w
 	_ = p
@@ -447,6 +461,28 @@ func TestAuthFlow(t *testing.T) {
 	}
 	if rec := do("POST", "/login", "email=me%40example.com&password=correct+horse+battery&next=https%3A%2F%2Fevil.example", nil, false); rec.Header().Get("Location") != "/" {
 		t.Errorf("open redirect: %s", rec.Header().Get("Location"))
+	}
+	if rec := do("POST", "/login", "email=me%40example.com&password=correct+horse+battery&next=%2F%5Cevil.example", nil, false); rec.Header().Get("Location") != "/" {
+		t.Errorf("backslash open redirect: %s", rec.Header().Get("Location"))
+	}
+	// Password posts have their own budget: past LoginRateLimit per minute
+	// and IP the answer is 429 even with the right password.
+	old := LoginRateLimit
+	LoginRateLimit = 3
+	defer func() { LoginRateLimit = old }()
+	w2 := &Web{Store: st, Cfg: config.Config{RateLimit: 1000}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	mux2 := http.NewServeMux()
+	w2.Register(mux2)
+	codes := ""
+	for range 4 {
+		req := httptest.NewRequest("POST", "/login", strings.NewReader("email=nobody%40example.com&password=guess"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux2.ServeHTTP(rec, req)
+		codes += strconv.Itoa(rec.Code) + " "
+	}
+	if codes != "401 401 401 429 " {
+		t.Errorf("login limiter: %s", codes)
 	}
 }
 

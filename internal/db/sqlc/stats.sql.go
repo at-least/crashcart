@@ -43,59 +43,6 @@ func (q *Queries) CountDirtyStats(ctx context.Context) (int32, error) {
 	return column_1, err
 }
 
-const crashSpikeInputs = `-- name: CrashSpikeInputs :many
-WITH recent AS (
-    -- Per project (every events index leads with project_id: this is the
-    -- events_project_crash index per project, not a scan of the partition).
-    SELECT p.id AS project_id,
-           (SELECT count(*) FROM events e WHERE e.project_id = p.id AND e.occurred_at >= $1::timestamptz
-              AND crashcart_is_crash(e.level, e.handled)) AS n
-    FROM projects p),
-baseline AS (
-    SELECT project_id, sum(crashes) AS n FROM event_stats_hourly
-    WHERE bucket >= $2::timestamptz AND bucket < $3::timestamptz
-    GROUP BY project_id)
-SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
-       COALESCE(recent.n, 0)::bigint AS recent, COALESCE(baseline.n, 0)::bigint AS baseline
-FROM recent FULL OUTER JOIN baseline USING (project_id)
-WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0
-`
-
-type CrashSpikeInputsParams struct {
-	RecentFrom   time.Time `json:"recent_from"`
-	BaselineFrom time.Time `json:"baseline_from"`
-	BaselineTo   time.Time `json:"baseline_to"`
-}
-
-type CrashSpikeInputsRow struct {
-	ProjectID int64 `json:"project_id"`
-	Recent    int64 `json:"recent"`
-	Baseline  int64 `json:"baseline"`
-}
-
-// Per project: crashes in the exact last hour (from the raw table, so the
-// top of the hour does not matter) vs. the 24 full hourly buckets before
-// that hour. Projects with no crashes in either are omitted.
-func (q *Queries) CrashSpikeInputs(ctx context.Context, arg CrashSpikeInputsParams) ([]CrashSpikeInputsRow, error) {
-	rows, err := q.db.Query(ctx, crashSpikeInputs, arg.RecentFrom, arg.BaselineFrom, arg.BaselineTo)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []CrashSpikeInputsRow{}
-	for rows.Next() {
-		var i CrashSpikeInputsRow
-		if err := rows.Scan(&i.ProjectID, &i.Recent, &i.Baseline); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const expireProjectUsage = `-- name: ExpireProjectUsage :execrows
 DELETE FROM project_usage WHERE day < $1
 `
@@ -191,7 +138,7 @@ func (q *Queries) LevelTotals(ctx context.Context, arg LevelTotalsParams) ([]Lev
 
 const markEventStatsDirty = `-- name: MarkEventStatsDirty :exec
 INSERT INTO event_stats_dirty (project_id, bucket)
-SELECT $1::bigint, unnest($2::timestamptz[])
+SELECT $1::bigint, b FROM unnest($2::timestamptz[]) AS b ORDER BY b
 ON CONFLICT (project_id, bucket) DO UPDATE SET gen = event_stats_dirty.gen + 1
 `
 
@@ -203,7 +150,8 @@ type MarkEventStatsDirtyParams struct {
 // Called in the transaction that writes or updates events: the hours
 // touched (distinct, UTC hour starts) are recomputed by the rollup job and
 // read live until then. gen moves so a mark that lands while the job runs
-// is not cleared by it.
+// is not cleared by it. Rows insert in bucket order (the upsert locks each
+// row until commit; two writers in opposite orders would deadlock).
 func (q *Queries) MarkEventStatsDirty(ctx context.Context, arg MarkEventStatsDirtyParams) error {
 	_, err := q.db.Exec(ctx, markEventStatsDirty, arg.ProjectID, arg.Buckets)
 	return err
@@ -211,7 +159,7 @@ func (q *Queries) MarkEventStatsDirty(ctx context.Context, arg MarkEventStatsDir
 
 const markSessionStatsDirty = `-- name: MarkSessionStatsDirty :exec
 INSERT INTO session_stats_dirty (project_id, bucket)
-SELECT $1::bigint, unnest($2::timestamptz[])
+SELECT $1::bigint, b FROM unnest($2::timestamptz[]) AS b ORDER BY b
 ON CONFLICT (project_id, bucket) DO UPDATE SET gen = session_stats_dirty.gen + 1
 `
 
@@ -283,7 +231,7 @@ const releaseStats = `-- name: ReleaseStats :many
 SELECT s.release,
        COALESCE(r.platforms, '{}'::text[])::text[] AS platforms,
        COALESCE(r.first_seen, min(s.bucket))::timestamptz AS first_seen, max(s.bucket)::timestamptz AS last_seen,
-       sum(s.events)::bigint AS events, sum(s.crashes)::bigint AS crashes, sum(s.errors)::bigint AS errors
+       sum(s.events)::bigint AS events, sum(s.unhandled)::bigint AS unhandled, sum(s.errors)::bigint AS errors
 FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz) AS s
 LEFT JOIN releases r ON r.project_id = s.project_id AND r.release = s.release
 WHERE s.release <> ''
@@ -302,7 +250,7 @@ type ReleaseStatsRow struct {
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
 	Events    int64     `json:"events"`
-	Crashes   int64     `json:"crashes"`
+	Unhandled int64     `json:"unhandled"`
 	Errors    int64     `json:"errors"`
 }
 
@@ -323,7 +271,7 @@ func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]R
 			&i.FirstSeen,
 			&i.LastSeen,
 			&i.Events,
-			&i.Crashes,
+			&i.Unhandled,
 			&i.Errors,
 		); err != nil {
 			return nil, err
@@ -338,11 +286,11 @@ func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]R
 
 const releaseTimeline = `-- name: ReleaseTimeline :many
 WITH h AS (
-    SELECT crashcart_bucket(bucket, $3::bigint) AS bucket, sum(events) AS events, sum(crashes) AS crashes
+    SELECT crashcart_bucket(bucket, $3::bigint) AS bucket, sum(events) AS events, sum(unhandled) AS unhandled
     FROM crashcart_event_stats($4::bigint, $1::timestamptz, $2::timestamptz)
     WHERE release = $5::text
     GROUP BY 1)
-SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events, COALESCE(h.crashes, 0)::bigint AS crashes
+SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events, COALESCE(h.unhandled, 0)::bigint AS unhandled
 FROM crashcart_buckets($1::timestamptz, $2::timestamptz, $3::bigint) AS b
 LEFT JOIN h ON h.bucket = b
 ORDER BY b
@@ -357,9 +305,9 @@ type ReleaseTimelineParams struct {
 }
 
 type ReleaseTimelineRow struct {
-	Bucket  time.Time `json:"bucket"`
-	Events  int64     `json:"events"`
-	Crashes int64     `json:"crashes"`
+	Bucket    time.Time `json:"bucket"`
+	Events    int64     `json:"events"`
+	Unhandled int64     `json:"unhandled"`
 }
 
 func (q *Queries) ReleaseTimeline(ctx context.Context, arg ReleaseTimelineParams) ([]ReleaseTimelineRow, error) {
@@ -377,7 +325,7 @@ func (q *Queries) ReleaseTimeline(ctx context.Context, arg ReleaseTimelineParams
 	items := []ReleaseTimelineRow{}
 	for rows.Next() {
 		var i ReleaseTimelineRow
-		if err := rows.Scan(&i.Bucket, &i.Events, &i.Crashes); err != nil {
+		if err := rows.Scan(&i.Bucket, &i.Events, &i.Unhandled); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -392,21 +340,21 @@ const timeline = `-- name: Timeline :many
 
 WITH s AS (
     SELECT crashcart_bucket(bucket, $3::bigint) AS bucket, release,
-           sum(events) AS events, sum(crashes) AS crashes
+           sum(events) AS events, sum(unhandled) AS unhandled
     FROM crashcart_event_stats($4::bigint, $1::timestamptz, $2::timestamptz)
     GROUP BY 1, 2),
 ranked AS (
-    SELECT release, row_number() OVER (ORDER BY sum(crashes) DESC, sum(events) DESC, release) AS rank
+    SELECT release, row_number() OVER (ORDER BY sum(unhandled) DESC, sum(events) DESC, release) AS rank
     FROM s GROUP BY release),
 series AS (
     SELECT CASE WHEN rank <= $5::bigint THEN release ELSE 'other' END AS series, min(rank) AS rank
     FROM ranked GROUP BY 1),
 folded AS (
     SELECT s.bucket, CASE WHEN r.rank <= $5::bigint THEN s.release ELSE 'other' END AS series,
-           sum(s.events) AS events, sum(s.crashes) AS crashes
+           sum(s.events) AS events, sum(s.unhandled) AS unhandled
     FROM s JOIN ranked r USING (release) GROUP BY 1, 2)
 SELECT b::timestamptz AS bucket, se.series AS release,
-       COALESCE(f.events, 0)::bigint AS events, COALESCE(f.crashes, 0)::bigint AS crashes
+       COALESCE(f.events, 0)::bigint AS events, COALESCE(f.unhandled, 0)::bigint AS unhandled
 FROM crashcart_buckets($1::timestamptz, $2::timestamptz, $3::bigint) AS b
 CROSS JOIN series se
 LEFT JOIN folded f ON f.bucket = b AND f.series = se.series
@@ -422,10 +370,10 @@ type TimelineParams struct {
 }
 
 type TimelineRow struct {
-	Bucket  time.Time `json:"bucket"`
-	Release string    `json:"release"`
-	Events  int64     `json:"events"`
-	Crashes int64     `json:"crashes"`
+	Bucket    time.Time `json:"bucket"`
+	Release   string    `json:"release"`
+	Events    int64     `json:"events"`
+	Unhandled int64     `json:"unhandled"`
 }
 
 // Chart queries take a window [from_at, to_at) (from_at bucket-aligned)
@@ -433,8 +381,8 @@ type TimelineRow struct {
 // hourly rollup, exact for dirty hours), fold with crashcart_bucket and
 // gap-fill with crashcart_buckets, so every bucket of the window comes
 // back, in order.
-// Events / crashes per bucket, split into the top `top` releases (by
-// crashes, then events) plus 'other'; every bucket for every series,
+// Events / unhandled per bucket, split into the top `top` releases (by
+// unhandled, then events) plus 'other'; every bucket for every series,
 // ordered by bucket, then series rank.
 func (q *Queries) Timeline(ctx context.Context, arg TimelineParams) ([]TimelineRow, error) {
 	rows, err := q.db.Query(ctx, timeline,
@@ -455,7 +403,7 @@ func (q *Queries) Timeline(ctx context.Context, arg TimelineParams) ([]TimelineR
 			&i.Bucket,
 			&i.Release,
 			&i.Events,
-			&i.Crashes,
+			&i.Unhandled,
 		); err != nil {
 			return nil, err
 		}
@@ -469,7 +417,7 @@ func (q *Queries) Timeline(ctx context.Context, arg TimelineParams) ([]TimelineR
 
 const totals = `-- name: Totals :one
 SELECT COALESCE(sum(events), 0)::bigint AS events,
-       COALESCE(sum(crashes), 0)::bigint AS crashes,
+       COALESCE(sum(unhandled), 0)::bigint AS unhandled,
        COALESCE(sum(errors), 0)::bigint AS errors
 FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz)
 `
@@ -481,14 +429,67 @@ type TotalsParams struct {
 }
 
 type TotalsRow struct {
-	Events  int64 `json:"events"`
-	Crashes int64 `json:"crashes"`
-	Errors  int64 `json:"errors"`
+	Events    int64 `json:"events"`
+	Unhandled int64 `json:"unhandled"`
+	Errors    int64 `json:"errors"`
 }
 
 func (q *Queries) Totals(ctx context.Context, arg TotalsParams) (TotalsRow, error) {
 	row := q.db.QueryRow(ctx, totals, arg.ProjectID, arg.FromAt, arg.ToAt)
 	var i TotalsRow
-	err := row.Scan(&i.Events, &i.Crashes, &i.Errors)
+	err := row.Scan(&i.Events, &i.Unhandled, &i.Errors)
 	return i, err
+}
+
+const unhandledSpikeInputs = `-- name: UnhandledSpikeInputs :many
+WITH recent AS (
+    -- Per project (every events index leads with project_id: this is the
+    -- events_project_unhandled index per project, not a scan of the partition).
+    SELECT p.id AS project_id,
+           (SELECT count(*) FROM events e WHERE e.project_id = p.id AND e.occurred_at >= $1::timestamptz
+              AND e.handled = false) AS n
+    FROM projects p),
+baseline AS (
+    SELECT project_id, sum(unhandled) AS n FROM event_stats_hourly
+    WHERE bucket >= $2::timestamptz AND bucket < $3::timestamptz
+    GROUP BY project_id)
+SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
+       COALESCE(recent.n, 0)::bigint AS recent, COALESCE(baseline.n, 0)::bigint AS baseline
+FROM recent FULL OUTER JOIN baseline USING (project_id)
+WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0
+`
+
+type UnhandledSpikeInputsParams struct {
+	RecentFrom   time.Time `json:"recent_from"`
+	BaselineFrom time.Time `json:"baseline_from"`
+	BaselineTo   time.Time `json:"baseline_to"`
+}
+
+type UnhandledSpikeInputsRow struct {
+	ProjectID int64 `json:"project_id"`
+	Recent    int64 `json:"recent"`
+	Baseline  int64 `json:"baseline"`
+}
+
+// Per project: unhandled in the exact last hour (from the raw table, so the
+// top of the hour does not matter) vs. the 24 full hourly buckets before
+// that hour. Projects with no unhandled in either are omitted.
+func (q *Queries) UnhandledSpikeInputs(ctx context.Context, arg UnhandledSpikeInputsParams) ([]UnhandledSpikeInputsRow, error) {
+	rows, err := q.db.Query(ctx, unhandledSpikeInputs, arg.RecentFrom, arg.BaselineFrom, arg.BaselineTo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UnhandledSpikeInputsRow{}
+	for rows.Next() {
+		var i UnhandledSpikeInputsRow
+		if err := rows.Scan(&i.ProjectID, &i.Recent, &i.Baseline); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

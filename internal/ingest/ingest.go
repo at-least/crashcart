@@ -11,6 +11,8 @@
 package ingest
 
 import (
+	"bytes"
+	"cmp"
 	"compress/gzip"
 	"compress/zlib"
 	"context"
@@ -21,8 +23,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	mrand "math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,10 +53,11 @@ const (
 	// Symbolicator (the dSYM sidecar) before the remaining native events
 	// are left to the job worker.
 	SymbolicateBudget = 3 * time.Second
-	// FatalKeepFactor: crashes get this many times sample_keep_first
-	// before sampling starts — more samples of what matters most, still
-	// bounded (a crash loop must not fill the database).
-	FatalKeepFactor = 5
+	// UnhandledKeepFactor: unhandled events (exception.mechanism.handled =
+	// false: a crash, an uncaught exception) get this many times
+	// sample_keep_first before sampling starts — more samples of what
+	// matters most, still bounded (a crash loop must not fill the database).
+	UnhandledKeepFactor = 5
 )
 
 // Symbolicator resolves frames at ingest. ok=false stores the event as-is
@@ -402,7 +407,9 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			continue
 		}
 		seenEvent[ev.EventID] = true
-		ev.Timestamp = clampPast(ev.Timestamp, past, now)
+		if t := clampPast(ev.Timestamp, past, now); !t.Equal(ev.Timestamp) {
+			ev.Timestamp, ev.Clamped = t, true
+		}
 		if in.Cfg.PIIRedact {
 			redact(ev)
 		}
@@ -419,7 +426,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			pr.retry = retry && !ok
 		}
 		pr.fingerprint = sentry.Fingerprint(ev, pr.frames)
-		pr.location = sentry.ErrorLocation(pr.frames)
+		pr.location = sentry.Culprit(pr.frames)
 		preps = append(preps, pr)
 	}
 
@@ -446,6 +453,22 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			existing, err := q.ExistingEventIDs(ctx, sqlc.ExistingEventIDsParams{ProjectID: p.ID, Column2: ids, FromAt: from, ToAt: to.Add(time.Microsecond)})
 			if err != nil {
 				return fmt.Errorf("dedupe: %w", err)
+			}
+			// An event whose time was replaced by the server's is not in
+			// this envelope's window on a resend (it got a new time then):
+			// those few are looked up without one.
+			var clamped []sentry.ID
+			for _, pr := range preps {
+				if pr.ev.Clamped {
+					clamped = append(clamped, pr.ev.EventID)
+				}
+			}
+			if len(clamped) > 0 {
+				more, err := q.ExistingEventIDsAnyTime(ctx, sqlc.ExistingEventIDsAnyTimeParams{ProjectID: p.ID, Column2: clamped})
+				if err != nil {
+					return fmt.Errorf("dedupe: %w", err)
+				}
+				existing = append(existing, more...)
 			}
 			if len(existing) > 0 {
 				stored := map[sentry.ID]bool{}
@@ -493,8 +516,11 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			note(s.Release, "", s.StartedAt)
 		}
 		if len(rels) > 0 {
+			// Sorted: the upsert locks one row per release until commit,
+			// and two envelopes taking them in opposite orders would deadlock.
 			rp := sqlc.UpsertReleasesParams{ProjectID: p.ID}
-			for r, seen := range rels {
+			for _, r := range slices.Sorted(maps.Keys(rels)) {
+				seen := rels[r]
 				rp.Releases = append(rp.Releases, r)
 				rp.Platforms = append(rp.Platforms, seen.platform)
 				rp.FirstSeens = append(rp.FirstSeens, seen.at)
@@ -516,6 +542,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			}
 			groups[pr.fingerprint] = append(groups[pr.fingerprint], pr)
 		}
+		slices.Sort(order) // issue rows are locked in this order until commit (see releases)
 		for _, fp := range order {
 			g := groups[fp]
 			first := g[0]
@@ -541,8 +568,8 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 					level = "fatal"
 				}
 			}
-			// Sampling: keep the first N per issue (FatalKeepFactor × N
-			// for crashes), then a fraction. When nothing can be sampled
+			// Sampling: keep the first N per issue (UnhandledKeepFactor × N
+			// for unhandled), then a fraction. When nothing can be sampled
 			// out (sample_rate 1) the stored count is known up front and
 			// goes into the upsert; otherwise the decision needs the
 			// issue's count and is a second update.
@@ -556,7 +583,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			}
 			row, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: sqlc.EventLevel(level),
-				ErrorType: nilIfEmpty(first.ev.ErrorType), Screen: nilIfEmpty(first.ev.Screen), Platform: nilIfEmpty(first.ev.Platform),
+				ErrorType: nilIfEmpty(first.ev.ErrorType), Transaction: nilIfEmpty(first.ev.Transaction), Platform: nilIfEmpty(first.ev.Platform),
 				EventCount: int64(len(g)), StoredCount: stored, FirstSeen: minAt, LastSeen: maxAt, FirstRelease: lastRelease,
 				Releases: releases, Regress: true,
 			})
@@ -566,7 +593,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			if row.Created {
 				res.NewIssues = append(res.NewIssues, fp)
 				jobs = append(jobs, alertJob(p.ID, "new_issue", fp))
-			} else if row.Status == "regression" && row.UpdatedAt.After(now.Add(-time.Second)) {
+			} else if row.Regressed { // this envelope flipped it; a regressed issue crashing on does not re-alert
 				res.Regressions = append(res.Regressions, fp)
 				jobs = append(jobs, alertJob(p.ID, "regression", fp))
 			}
@@ -579,8 +606,8 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			for i, pr := range g {
 				seq := prev + int64(i) + 1
 				keep := int64(p.SampleKeepFirst)
-				if pr.ev.Level == "fatal" {
-					keep *= FatalKeepFactor
+				if pr.ev.IsUnhandled() {
+					keep *= UnhandledKeepFactor
 				}
 				pr.store = seq <= keep || mrand.Float64() < p.SampleRate
 				if pr.store {
@@ -610,13 +637,13 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				OccurredAt: ev.Timestamp.UTC(), ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message,
 				Platform: nilIfEmpty(ev.Platform), Environment: nilIfEmpty(ev.Environment), Release: nilIfEmpty(ev.Release),
 				DeviceID: nilIfEmpty(ev.DeviceID()), DeviceModel: nilIfEmpty(ev.DeviceModel), OSVersion: nilIfEmpty(ev.OSVersion),
-				Screen: nilIfEmpty(ev.Screen), ErrorType: nilIfEmpty(ev.ErrorType), ErrorLocation: nilIfEmpty(pr.location),
+				Transaction: nilIfEmpty(ev.Transaction), ErrorType: nilIfEmpty(ev.ErrorType), Culprit: nilIfEmpty(pr.location),
 				Handled: ev.Handled, SDKName: nilIfEmpty(ev.SDKName), UserID: nilIfEmpty(ev.UserID),
 				Fingerprint: pr.fingerprint.Ptr(), Symbolicated: pr.symbolicated,
 				Tags: tags, Symbols: symbols, Payload: store.Gzip(ev.Raw),
 			})
 			if pr.retry && pr.fingerprint != "" {
-				args, _ := json.Marshal(map[string]any{"event": ev.EventID, "at": ev.Timestamp})
+				args, _ := json.Marshal(map[string]any{"event": ev.EventID, "at": JobTime(ev.Timestamp)})
 				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
 			}
 		}
@@ -637,6 +664,9 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		}
 		res.Sessions = len(sessions)
 		if len(jobs) > 0 {
+			slices.SortFunc(jobs, func(a, b sqlc.EnqueueJobParams) int { // one lock order on jobs_pending
+				return cmp.Or(cmp.Compare(a.Kind, b.Kind), bytes.Compare(a.Args, b.Args))
+			})
 			jp := sqlc.EnqueueJobsParams{}
 			for _, j := range jobs {
 				jp.Kinds = append(jp.Kinds, string(j.Kind))
@@ -688,6 +718,11 @@ func sessionID(s sentry.Session) string {
 	return "agg-" + hex.EncodeToString(b[:])
 }
 
+// JobTime renders a symbolicate job's event time: a fixed form (six
+// fractional digits, Z), the same text EnqueueSymbolicateRelease builds in
+// SQL, so the two enqueue paths dedupe onto one job.
+func JobTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000Z") }
+
 func alertJob(projectID int64, typ string, fp sentry.ID) sqlc.EnqueueJobParams {
 	args, _ := json.Marshal(map[string]any{"type": typ, "fingerprint": fp})
 	return sqlc.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
@@ -695,7 +730,7 @@ func alertJob(projectID int64, typ string, fp sentry.ID) sqlc.EnqueueJobParams {
 
 func redact(ev *sentry.Event) {
 	ev.Message = RedactText(ev.Message)
-	ev.Screen = RedactText(ev.Screen) // event.transaction: often a URL path with an id or email in it
+	ev.Transaction = RedactText(ev.Transaction) // event.transaction: often a URL path with an id or email in it
 	ev.Tags = RedactTags(ev.Tags)
 	ev.UserID = RedactUserID(ev.UserID)
 	for i := range ev.Exceptions {
@@ -707,6 +742,7 @@ func redact(ev *sentry.Event) {
 	// The raw payload is stored verbatim otherwise; with redaction on we
 	// scrub the whole document textually so nothing leaks via detail views.
 	ev.Raw = []byte(RedactRaw(string(ev.Raw)))
+	ev.Raw = redactRawUser(ev.Raw)
 }
 
 // clampPast treats a time before the retention window as a wrong device

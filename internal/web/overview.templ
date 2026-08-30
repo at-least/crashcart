@@ -2,7 +2,7 @@ package web
 
 import "strings"
 
-// Overview: three stat cards, crash timeline by release, new issues and
+// Overview: three stat cards, unhandled errors by release, new issues and
 // regressions.
 templ Overview(pg Page, d OverviewData) {
 	<h1 class="page-title">Overview <span class="page-title-win">{ pg.S.Win }</span></h1>
@@ -25,12 +25,12 @@ templ Overview(pg Page, d OverviewData) {
 	}
 	<div class="stat-grid mt-4">
 		@StatCard("Crash-free sessions", d.CrashFree, latestHint(d.LatestRelease))
-		@StatCard("Crashes", compact(d.Crashes), "in the last "+pg.S.Win)
+		@StatCard("Unhandled errors", compact(d.Unhandled), "in the last "+pg.S.Win)
 		@StatCard("New issues", compact(d.NewIssues), "first seen in the last "+pg.S.Win)
 	</div>
 	<div data-slot="card" data-size="sm" class="mt-4">
 		<header data-slot="card-header">
-			<h2 class="stat-title">Crashes by release</h2>
+			<h2 class="stat-title">Unhandled errors by release</h2>
 		</header>
 		<section class="px-3 pb-3">
 			@Chart(d.Chart)

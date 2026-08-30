@@ -95,13 +95,15 @@ func Write(ctx context.Context, w io.Writer) {
 	fmt.Fprintf(w, "# HELP crashcart_uptime_seconds Seconds since the process started.\n# TYPE crashcart_uptime_seconds gauge\ncrashcart_uptime_seconds %d\n", int64(time.Since(started).Seconds()))
 	for _, c := range cs {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n", c.name, c.help, c.name)
-		c.mu.Lock()
-		keys := slices.Sorted(maps.Keys(c.series))
+		c.mu.Lock() // a snapshot: the writer may stall, Inc on the hot path must not
+		series := maps.Clone(c.series)
+		c.mu.Unlock()
+		keys := slices.Sorted(maps.Keys(series))
 		if len(keys) == 0 && len(c.labels) == 0 {
 			fmt.Fprintf(w, "%s 0\n", c.name)
 		}
 		for _, k := range keys {
-			v := c.series[k]
+			v := series[k]
 			if len(c.labels) == 0 {
 				fmt.Fprintf(w, "%s %d\n", c.name, v)
 				continue
@@ -113,7 +115,6 @@ func Write(ctx context.Context, w io.Writer) {
 			}
 			fmt.Fprintf(w, "%s{%s} %d\n", c.name, strings.Join(parts, ","), v)
 		}
-		c.mu.Unlock()
 	}
 	for _, g := range gs {
 		v := g.read(ctx)

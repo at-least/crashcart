@@ -1,4 +1,4 @@
-# CrashCart export format (NDJSON, format 1)
+# CrashCart export format (NDJSON, format 2)
 
 The file `crashcart export` writes and `crashcart import` reads: a full,
 portable copy of one or all projects for backups and for moving between
@@ -66,7 +66,7 @@ so a dump loads into any database:
 ## `_meta`
 
 ```json
-{"t":"_meta","format":1,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
+{"t":"_meta","format":2,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
 ```
 
 - `format` — integer. A reader that supports format *N* must refuse a file
@@ -148,7 +148,7 @@ fingerprint       str    natural key with project
 title             str
 level             str    fatal error warning info debug
 error_type?       str
-screen?           str
+transaction?      str    event.transaction (format 1 wrote this as `screen`; still read)
 platform?         str
 status            str    unresolved triaged resolved ignored regression; default unresolved
 event_count       int    events seen (including sampled-out)
@@ -182,9 +182,9 @@ release?          str
 device_id?        str
 device_model?     str
 os_version?       str
-screen?           str
+transaction?      str    event.transaction (format 1: `screen`; still read)
 error_type?       str
-error_location?   str
+culprit?          str    innermost in-app frame (format 1: `error_location`; still read)
 handled?          bool
 sdk_name?         str
 user_id?          str
@@ -233,7 +233,7 @@ Import: upsert on `(project, kind, release, filename)`; `debug_id`, `size`,
 
 ```
 project           str    slug
-type              str    new_issue regression crash_spike
+type              str    new_issue regression unhandled_spike (format 1: `crash_spike`; still read)
 enabled           bool
 cooldown_minutes  int
 last_triggered?   ts
@@ -280,9 +280,16 @@ up); the rest expire or belong to the target database.
    the chunks committed before the bad line (the error says how many) and,
    being idempotent, is simply re-run once the file is fixed.
 
+## Format history
+
+- **2** — Sentry vocabulary: `screen` → `transaction`, `error_location` →
+  `culprit`, alert type `crash_spike` → `unhandled_spike`. A format-1 file
+  still imports (the old names are read).
+- **1** — initial.
+
 ## Evolving the format
 
-- **Additive change** (new optional field, new table): keep `format` at 1.
+- **Additive change** (new optional field, new table): keep `format` at 2.
   Old readers ignore unknown fields and unknown `t`.
 - **Breaking change** (renamed/removed required field, changed encoding):
   bump `format`, keep reading the previous one for at least one release.

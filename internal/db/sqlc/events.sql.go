@@ -53,8 +53,40 @@ func (q *Queries) ExistingEventIDs(ctx context.Context, arg ExistingEventIDsPara
 	return items, nil
 }
 
+const existingEventIDsAnyTime = `-- name: ExistingEventIDsAnyTime :many
+SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::uuid[])
+`
+
+type ExistingEventIDsAnyTimeParams struct {
+	ProjectID int64       `json:"project_id"`
+	Column2   []sentry.ID `json:"column_2"`
+}
+
+// The same without a window, for the few events whose timestamp was
+// replaced by the server's (a clock far off): a resend of those carries
+// a different time, so the stored copy can be in any partition.
+func (q *Queries) ExistingEventIDsAnyTime(ctx context.Context, arg ExistingEventIDsAnyTimeParams) ([]sentry.ID, error) {
+	rows, err := q.db.Query(ctx, existingEventIDsAnyTime, arg.ProjectID, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []sentry.ID{}
+	for rows.Next() {
+		var event_id sentry.ID
+		if err := rows.Scan(&event_id); err != nil {
+			return nil, err
+		}
+		items = append(items, event_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getEvent = `-- name: GetEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1
 `
 
 type GetEventParams struct {
@@ -80,9 +112,9 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 		&i.DeviceID,
 		&i.DeviceModel,
 		&i.OsVersion,
-		&i.Screen,
+		&i.Transaction,
 		&i.ErrorType,
-		&i.ErrorLocation,
+		&i.Culprit,
 		&i.Handled,
 		&i.SdkName,
 		&i.UserID,
@@ -96,7 +128,7 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 }
 
 const getEventAt = `-- name: GetEventAt :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3
 `
 
 type GetEventAtParams struct {
@@ -121,9 +153,9 @@ func (q *Queries) GetEventAt(ctx context.Context, arg GetEventAtParams) (Event, 
 		&i.DeviceID,
 		&i.DeviceModel,
 		&i.OsVersion,
-		&i.Screen,
+		&i.Transaction,
 		&i.ErrorType,
-		&i.ErrorLocation,
+		&i.Culprit,
 		&i.Handled,
 		&i.SdkName,
 		&i.UserID,
@@ -215,17 +247,17 @@ func (q *Queries) IssueUsers(ctx context.Context, arg IssueUsersParams) ([]Issue
 }
 
 const setEventSymbols = `-- name: SetEventSymbols :exec
-UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, error_location = $5
+UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, culprit = $5
 WHERE project_id = $1 AND event_id = $2 AND occurred_at = $6
 `
 
 type SetEventSymbolsParams struct {
-	ProjectID     int64           `json:"project_id"`
-	EventID       sentry.ID       `json:"event_id"`
-	Symbols       json.RawMessage `json:"symbols"`
-	Fingerprint   *sentry.ID      `json:"fingerprint"`
-	ErrorLocation *string         `json:"error_location"`
-	OccurredAt    time.Time       `json:"occurred_at"`
+	ProjectID   int64           `json:"project_id"`
+	EventID     sentry.ID       `json:"event_id"`
+	Symbols     json.RawMessage `json:"symbols"`
+	Fingerprint *sentry.ID      `json:"fingerprint"`
+	Culprit     *string         `json:"culprit"`
+	OccurredAt  time.Time       `json:"occurred_at"`
 }
 
 func (q *Queries) SetEventSymbols(ctx context.Context, arg SetEventSymbolsParams) error {
@@ -234,7 +266,7 @@ func (q *Queries) SetEventSymbols(ctx context.Context, arg SetEventSymbolsParams
 		arg.EventID,
 		arg.Symbols,
 		arg.Fingerprint,
-		arg.ErrorLocation,
+		arg.Culprit,
 		arg.OccurredAt,
 	)
 	return err

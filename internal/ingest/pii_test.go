@@ -44,12 +44,12 @@ func TestRedactTags(t *testing.T) {
 
 func TestRedactEventFields(t *testing.T) {
 	ev := &sentry.Event{
-		Message: "hi alice@example.com", Screen: "/users/bob@example.com/cart",
+		Message: "hi alice@example.com", Transaction: "/users/bob@example.com/cart",
 		Exceptions: []sentry.Exception{{Type: "Error", Value: "charge failed for carol@example.com"}},
 		Raw:        []byte(`{"user":{"id":"u1","ip_address":"203.0.113.9","email":"dave@example.com"},"message":"x"}`),
 	}
 	redact(ev)
-	for name, got := range map[string]string{"message": ev.Message, "screen": ev.Screen, "exception": ev.Exceptions[0].Value, "raw": string(ev.Raw)} {
+	for name, got := range map[string]string{"message": ev.Message, "transaction": ev.Transaction, "exception": ev.Exceptions[0].Value, "raw": string(ev.Raw)} {
 		if strings.Contains(got, "@example.com") {
 			t.Errorf("%s not redacted: %s", name, got)
 		}
@@ -60,5 +60,26 @@ func TestRedactEventFields(t *testing.T) {
 	var js map[string]any
 	if err := json.Unmarshal(ev.Raw, &js); err != nil {
 		t.Errorf("redacted raw is not JSON: %v", err)
+	}
+}
+
+// TestRedactRawUser: with redaction on, user.id / user.username in the
+// stored payload are masked like the column; the rest of the document is
+// untouched, and a document without a user object is returned as is.
+func TestRedactRawUser(t *testing.T) {
+	raw := []byte(`{"event_id":"1","user":{"id":"alice.smith","username":"alice","ip_address":"[redacted]","geo":{"city":"X"}},"extra":{"id":"keep-me"}}`)
+	out := string(redactRawUser(raw))
+	if strings.Contains(out, "alice.smith") || strings.Contains(out, `"username":"alice"`) || !strings.Contains(out, "keep-me") || !strings.Contains(out, `"city":"X"`) {
+		t.Errorf("redacted = %s", out)
+	}
+	if !strings.Contains(out, RedactUserID("alice.smith")) {
+		t.Errorf("id should be masked like the column: %s", out)
+	}
+	plain := []byte(`{"event_id":"1","message":"hi"}`)
+	if string(redactRawUser(plain)) != string(plain) {
+		t.Error("no user object: must be returned as is")
+	}
+	if string(redactRawUser([]byte("not json"))) != "not json" {
+		t.Error("unparseable: returned as is")
 	}
 }

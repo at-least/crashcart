@@ -5,12 +5,12 @@ package web
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import (
-	"strconv"
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
 
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
+import (
 	"github.com/crashcartapp/crashcart/internal/sentry"
+	"strconv"
 )
 
 func handledLabel(h *bool) string {

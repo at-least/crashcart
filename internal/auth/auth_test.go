@@ -3,6 +3,7 @@ package auth
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -48,15 +49,17 @@ func TestCredentials(t *testing.T) {
 	req.RemoteAddr = "203.0.113.9:4321"
 	req.Header.Set("Authorization", "Bearer   cc_secret  ")
 	req.Header.Set("X-Forwarded-For", "198.51.100.7, 10.0.0.2")
-	if got := BearerCredential(req); got != "cc_secret" {
+	// The bucket is keyed by a digest of the token: no secret in the map.
+	if got := BearerCredential(req); got == "" || strings.Contains(got, "cc_secret") {
 		t.Errorf("bearer = %q", got)
 	}
 	// Without a trusted proxy the forwarded header is the client's to forge: ignored.
 	if got := IPCredential(false)(req); got != "ip:203.0.113.9" {
 		t.Errorf("untrusted proxy = %q", got)
 	}
-	// Behind one, the first (leftmost) address is the client.
-	if got := IPCredential(true)(req); got != "ip:198.51.100.7" {
+	// Behind one, the last address is the client — the one the proxy
+	// appended; the entries before it are whatever the client sent.
+	if got := IPCredential(true)(req); got != "ip:10.0.0.2" {
 		t.Errorf("trusted proxy = %q", got)
 	}
 	req.Header.Del("X-Forwarded-For")
@@ -65,5 +68,32 @@ func TestCredentials(t *testing.T) {
 	}
 	if got := BearerCredential(httptest.NewRequest("GET", "/", nil)); got != "" {
 		t.Errorf("no header = %q", got)
+	}
+}
+
+// TestScheme: X-Forwarded-Proto is honoured only behind a trusted proxy
+// (a client could otherwise mis-flag its own cookie), TLS always wins,
+// and the derived origin / DSN follow it.
+func TestScheme(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "crash.example"
+	req.Header.Set("X-Forwarded-Proto", "https, http")
+	if Scheme(req, false) != "http" || Scheme(req, true) != "https" {
+		t.Errorf("forwarded proto: untrusted=%s trusted=%s", Scheme(req, false), Scheme(req, true))
+	}
+	if got := BaseURL(req, "", true); got != "https://crash.example" {
+		t.Errorf("base = %s", got)
+	}
+	if got := BaseURL(req, "https://public.example/", false); got != "https://public.example" {
+		t.Errorf("public base = %s", got)
+	}
+	if got := DSN("https://public.example", "abc", 7); got != "https://abc@public.example/7" {
+		t.Errorf("dsn = %s", got)
+	}
+	if got := DSN("bare.example", "abc", 7); got != "http://abc@bare.example/7" {
+		t.Errorf("dsn without scheme = %s", got)
+	}
+	if k := NewProjectKey(); len(k) != 32 || k == NewProjectKey() {
+		t.Errorf("key = %s", k)
 	}
 }

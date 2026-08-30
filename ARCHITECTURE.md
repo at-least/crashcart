@@ -4,7 +4,7 @@ Sentry-SDK-compatible crash tracking for self-hosters. One Go binary, any
 Postgres; nothing else required.
 
 ```
-Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres 14+ (no extensions)
+Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres 15+ (no extensions)
 Browser    ──GET  /p/{slug}/…  (htmx) ──▶    │        (events, sessions: weekly partitions
 Scripts    ──GET  /api/projects/… ──────▶    │         issues: stateful table
 sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   │         stats: rollup tables + dirty keys
@@ -100,7 +100,7 @@ retentions; their per-issue rollup rows go with them.
 
 **Sampling is per issue, counts stay exact — and it is what bounds the
 database.** The first `projects.sample_keep_first` events of each issue
-are always stored (`ingest.FatalKeepFactor` × that for crashes); after
+are always stored (`ingest.UnhandledKeepFactor` × that for unhandled events — `exception.mechanism.handled = false`); after
 that `sample_rate` of them; ungrouped events (nothing to fingerprint)
 take the rate from the start. Dropped events still increment
 `event_count`, so the numbers stay exact. The default rate is 1 — store
@@ -242,7 +242,7 @@ theme, and the SSE "new issues" banner.
 | jobs | table | id | queue |
 | alert_rules / alert_channels | table | | per project |
 | event_stats_dirty / session_stats_dirty | table | (project_id, bucket) | hours awaiting rollup, with `gen` |
-| event_stats_hourly_rolled → event_stats_hourly | table → view | bucket, project, release, platform, level | events / crashes / errors; `crashcart_event_stats(…)` reads the view |
+| event_stats_hourly_rolled → event_stats_hourly | table → view | bucket, project, release, platform, level | events / unhandled / errors; `crashcart_event_stats(…)` reads the view |
 | issue_stats_hourly_rolled → issue_stats_hourly | table → view | bucket, project, fingerprint | sparklines |
 | release_health_hourly_rolled → release_health_hourly | table → view | bucket, project, release | total / crashed / errored sessions |
 

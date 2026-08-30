@@ -53,7 +53,7 @@ func Family(platform, sdkName string) string {
 
 // Accepts reports whether a project declared as family should expect events
 // of the given family. Cross-platform families also carry their host
-// platforms' native crashes; "other" accepts anything.
+// platforms' native unhandled; "other" accepts anything.
 func Accepts(project, event string) bool {
 	if project == "" || project == "other" || project == event {
 		return true

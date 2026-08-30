@@ -19,7 +19,7 @@ type releaseOut struct {
 	FirstSeen     time.Time   `json:"first_seen"`
 	LastSeen      time.Time   `json:"last_seen"`
 	Events        int64       `json:"events"`
-	Crashes       int64       `json:"crashes"`
+	Unhandled     int64       `json:"unhandled"`
 	Errors        int64       `json:"errors"`
 	Sessions      sessionsOut `json:"sessions"`
 	CrashFreeRate *float64    `json:"crash_free_rate"`
@@ -32,7 +32,7 @@ func toReleaseOut(r sqlc.ReleaseStatsRow) *releaseOut {
 		platforms = []string{}
 	}
 	return &releaseOut{Release: r.Release, Platforms: platforms, FirstSeen: r.FirstSeen.UTC(), LastSeen: r.LastSeen.UTC(),
-		Events: r.Events, Crashes: r.Crashes, Errors: r.Errors}
+		Events: r.Events, Unhandled: r.Unhandled, Errors: r.Errors}
 }
 
 func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
@@ -96,9 +96,9 @@ type dailyHealth struct {
 }
 
 type releaseTimelinePoint struct {
-	Bucket  time.Time `json:"bucket"`
-	Events  int64     `json:"events"`
-	Crashes int64     `json:"crashes"`
+	Bucket    time.Time `json:"bucket"`
+	Events    int64     `json:"events"`
+	Unhandled int64     `json:"unhandled"`
 }
 
 func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +160,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	timeline := make([]releaseTimelinePoint, 0, len(tl))
 	for _, t := range tl {
-		timeline = append(timeline, releaseTimelinePoint{Bucket: t.Bucket.UTC(), Events: t.Events, Crashes: t.Crashes})
+		timeline = append(timeline, releaseTimelinePoint{Bucket: t.Bucket.UTC(), Events: t.Events, Unhandled: t.Unhandled})
 	}
 	introduced, present := []issueOut{}, []issueOut{}
 	for _, i := range issues {

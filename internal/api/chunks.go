@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/symbolicate"
 )
@@ -35,7 +35,7 @@ const (
 
 func (h *Handler) sentryChunkUploadOptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"url":              baseURL(h.Cfg, r) + "/api/0/organizations/" + r.PathValue("org") + "/chunk-upload/",
+		"url":              auth.BaseURL(r, h.Cfg.PublicURL, h.Cfg.TrustProxy) + "/api/0/organizations/" + r.PathValue("org") + "/chunk-upload/",
 		"chunkSize":        chunkSize,
 		"chunksPerRequest": chunksPerRequest,
 		"maxFileSize":      symbolicate.MaxUpload,
@@ -55,6 +55,7 @@ func (h *Handler) sentryChunkUploadPost(w http.ResponseWriter, r *http.Request) 
 		h.fail(w, badRequest("multipart body expected"))
 		return
 	}
+	parts := 0
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -66,6 +67,10 @@ func (h *Handler) sentryChunkUploadPost(w http.ResponseWriter, r *http.Request) 
 		}
 		if part.FormName() != "file" {
 			continue
+		}
+		if parts++; parts > chunksPerRequest { // advertised in the options; a body of tiny parts is not an upload
+			h.fail(w, badRequest(fmt.Sprintf("at most %d chunks per request", chunksPerRequest)))
+			return
 		}
 		data, err := io.ReadAll(io.LimitReader(part, chunkSize+1))
 		if err != nil || len(data) > chunkSize {
@@ -188,21 +193,6 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 		out[checksum] = assembleResponse{State: "ok", MissingChunks: []string{}, Dif: &dif}
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// baseURL is the externally visible origin: cfg.PublicURL, else derived
-// from the request like DSN does.
-func baseURL(cfg config.Config, r *http.Request) string {
-	if cfg.PublicURL != "" {
-		return strings.TrimSuffix(cfg.PublicURL, "/")
-	}
-	scheme := "http"
-	if fp := r.Header.Get("X-Forwarded-Proto"); fp != "" {
-		scheme = strings.TrimSpace(strings.Split(fp, ",")[0])
-	} else if r.TLS != nil {
-		scheme = "https"
-	}
-	return scheme + "://" + r.Host
 }
 
 // sentryAssociate answers the follow-up `upload-proguard` makes after an

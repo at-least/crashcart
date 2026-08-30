@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/alerts"
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
@@ -41,7 +41,7 @@ const usage = `usage: crashcart <command>
   serve            HTTP server + job worker + schedulers (default)
   init             create the schema and exit
   retention        create partitions, run one sweep and roll the stats up
-  alerts           run one crash-spike check
+  alerts           run one unhandled-spike check
   seed [slug]      write a week of demo data (default project "demo")
   export [slug]    stream NDJSON to stdout (all projects, or one)
   import           load NDJSON from stdin (idempotent)
@@ -104,7 +104,7 @@ func main() {
 	st := store.New(pool)
 	syms := &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient(cfg.SymbolicateURL)}
 	in := &ingest.Ingester{Store: st, Cfg: cfg, Symbols: syms, Log: log}
-	notifier := &alerts.Notifier{Store: st, Cfg: cfg, Log: log, HTTP: &http.Client{Timeout: 15 * time.Second}}
+	notifier := &alerts.Notifier{Store: st, Cfg: cfg, Log: log} // HTTP left nil: the hardened client (post-DNS address check, no redirects)
 
 	args := os.Args[min(2, len(os.Args)):]
 	switch cmd {
@@ -172,7 +172,7 @@ func main() {
 			}
 			platform = &p
 		}
-		p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: fs.Arg(0), Name: fs.Arg(1), Platform: platform, PublicKey: newKey()})
+		p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: fs.Arg(0), Name: fs.Arg(1), Platform: platform, PublicKey: auth.NewProjectKey()})
 		if err != nil {
 			fatal(log, err)
 		}
@@ -193,7 +193,7 @@ func main() {
 		if err != nil {
 			fatal(log, err)
 		}
-		if p, err = st.RotateProjectKey(ctx, sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: newKey()}); err != nil {
+		if p, err = st.RotateProjectKey(ctx, sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: auth.NewProjectKey()}); err != nil {
 			fatal(log, err)
 		}
 		fmt.Printf("project %s: new DSN %s\n", p.Slug, dsn(cfg, p))
@@ -274,18 +274,17 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 		}()
 	}
 	tick(time.Minute, store.LeaderRollup, "stats rollup", func(ctx context.Context) error { _, err := retention.Rollup(ctx, st, cfg); return err })
-	tick(cfg.AlertInterval, store.LeaderSpikeCheck, "crash-spike check", notifier.CheckSpikes)
+	tick(cfg.AlertInterval, store.LeaderSpikeCheck, "unhandled-spike check", notifier.CheckSpikes)
 	tick(time.Hour, store.LeaderSweep, "retention sweep", func(ctx context.Context) error { return retention.Sweep(ctx, st, cfg, log) })
 
-	// Request contexts derive from connCtx: cancelling it ends the SSE
-	// streams (which would otherwise hold Shutdown until its deadline);
+	// At shutdown the SSE streams are told to end (they would otherwise
+	// hold Shutdown until its deadline) while every other in-flight
+	// request keeps its context and finishes: Shutdown drains them, and
 	// ingest writes run on a detached context and finish regardless.
-	connCtx, closeConns := context.WithCancel(context.Background())
-	defer closeConns()
+	stopping := make(chan struct{})
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           server.New(server.Deps{Store: st, Cfg: cfg, Log: log, Symbols: syms, Listener: listener}),
-		BaseContext:       func(net.Listener) context.Context { return connCtx },
+		Handler:           server.New(server.Deps{Store: st, Cfg: cfg, Log: log, Symbols: syms, Listener: listener, Stopping: stopping}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      0, // SSE
@@ -296,7 +295,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 		defer close(done)
 		<-ctx.Done()
 		log.Info("shutting down")
-		closeConns()
+		close(stopping)
 		shutdown, cancel := context.WithTimeout(context.Background(), ingest.WriteTimeout+5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdown); err != nil {

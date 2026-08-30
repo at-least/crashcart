@@ -16,21 +16,18 @@ func crumbLevel(l string) string {
 	return ""
 }
 
-func isCrash(e sqlcEvent) bool { return e.Level == "fatal" || (e.Handled != nil && !*e.Handled) }
+func isUnhandled(e sqlcEvent) bool { return e.Handled != nil && !*e.Handled }
 
 // EventBody: exception + stack, breadcrumbs, contexts, tags, user, raw JSON.
 templ EventBody(pg Page, d EventData) {
 	<div id="event-body" class="event">
 		<div class="flex flex-wrap items-center gap-1.5">
 			@LevelBadge(string(d.E.Level))
-			if isCrash(d.E) {
-				<span class="crash-badge">
-					@CrashIcon()
-					crashed
-				</span>
+			if isUnhandled(d.E) {
+				<span class="unhandled-badge" title="exception.mechanism.handled = false: the SDK caught this in a last-resort handler">Unhandled</span>
 			}
 			if d.E.Handled != nil && *d.E.Handled {
-				<span class="caught-mark">caught</span>
+				<span class="handled-mark" title="exception.mechanism.handled = true">Handled</span>
 			}
 			if d.E.Platform != nil {
 				<span data-slot="badge" data-variant="outline" class="font-mono">{ *d.E.Platform }</span>
@@ -40,16 +37,16 @@ templ EventBody(pg Page, d EventData) {
 			}
 		</div>
 		<h1 class="event-title">{ d.E.Message }</h1>
-		if d.E.ErrorType != nil || d.E.ErrorLocation != nil {
+		if d.E.ErrorType != nil || d.E.Culprit != nil {
 			<p class="font-mono text-xs text-muted-foreground">
 				if d.E.ErrorType != nil {
 					<span class="text-foreground">{ *d.E.ErrorType }</span>
 				}
-				if d.E.ErrorType != nil && d.E.ErrorLocation != nil {
+				if d.E.ErrorType != nil && d.E.Culprit != nil {
 					{ " · " }
 				}
-				if d.E.ErrorLocation != nil {
-					<span class="break-all">{ *d.E.ErrorLocation }</span>
+				if d.E.Culprit != nil {
+					<span class="break-all">{ *d.E.Culprit }</span>
 				}
 			</p>
 		}
@@ -59,7 +56,7 @@ templ EventBody(pg Page, d EventData) {
 			@Meta("Device", deref(d.E.DeviceModel), "")
 			@Meta("OS", deref(d.E.OsVersion), "")
 			@Meta("User", deref(d.E.UserID), "")
-			@Meta("Screen", deref(d.E.Screen), "")
+			@Meta("Transaction", deref(d.E.Transaction), "event.transaction")
 			@Meta("SDK", deref(d.E.SdkName), "")
 			@Meta("Device ID", deref(d.E.DeviceID), "")
 			@Meta("Event ID", string(d.E.EventID), "")

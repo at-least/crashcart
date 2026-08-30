@@ -88,14 +88,18 @@ func TestListenerKeepalive(t *testing.T) {
 	st := testdb.New(t)
 	testdb.Projects(t, st, 1)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	old := store.ListenKeepalive
 	store.ListenKeepalive = 50 * time.Millisecond
-	t.Cleanup(func() { store.ListenKeepalive = old })
 	l := &store.Listener{Pool: st.Pool}
 	jobs, stop := l.Subscribe(store.ChannelJobs, "")
 	defer stop()
-	go l.Run(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); l.Run(ctx) }()
+	t.Cleanup(func() { // the listener must be gone before the keepalive is restored
+		cancel()
+		<-done
+		store.ListenKeepalive = old
+	})
 	time.Sleep(300 * time.Millisecond) // several keepalive rounds
 	deadline := time.Now().Add(5 * time.Second)
 	for {

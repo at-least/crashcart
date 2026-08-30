@@ -12,7 +12,7 @@ import (
 )
 
 // EventFilterFromQuery builds the event filter from query parameters:
-// exact-match columns, `q` (message search), `crash=1`, `before` cursor,
+// exact-match columns, `q` (message search), `handled=true|false`, `before` cursor,
 // `limit`, and `tag.<key>=value`. The time window comes from ParseWindow
 // unless neither days/from/to is given, in which case it is unbounded
 // (cursor pagination over all retained events).
@@ -26,11 +26,16 @@ func EventFilterFromQuery(projectID int64, q map[string][]string) (store.EventFi
 	f := store.EventFilter{
 		ProjectID: projectID, Level: get("level"), Release: get("release"), Environment: get("environment"),
 		Platform: get("platform"), ErrorType: get("error_type"), UserID: get("user_id"), DeviceID: get("device_id"),
-		DeviceModel: get("device_model"), OSVersion: get("os_version"), Screen: get("screen"),
-		Location: get("error_location"), Query: get("q"),
+		DeviceModel: get("device_model"), OSVersion: get("os_version"), Transaction: get("transaction"),
+		Location: get("culprit"), Query: get("q"),
 	}
-	if c := get("crash"); c == "1" || c == "true" {
-		f.Crash = true
+	switch h := strings.ToLower(get("handled")); h {
+	case "", "true", "false":
+		f.Handled = h
+	case "yes", "no": // Sentry's handled tag values
+		f.Handled = map[string]string{"yes": "true", "no": "false"}[h]
+	default:
+		return f, badRequest("handled must be true or false")
 	}
 	if v := get("fingerprint"); v != "" {
 		fp, ok := sentry.ParseID(v)

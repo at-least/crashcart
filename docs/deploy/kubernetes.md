@@ -1,7 +1,7 @@
 # Kubernetes
 
 CrashCart as a Deployment behind an Ingress, with Postgres either managed
-or as a small in-cluster StatefulSet. Any Postgres 14+ does — see
+or as a small in-cluster StatefulSet. Any Postgres 15+ does — see
 [The database](./postgres).
 
 **You need**

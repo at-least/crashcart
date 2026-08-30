@@ -23,16 +23,57 @@ type mapping struct {
 	hasOrig         bool
 }
 
-// ParseSourceMap decodes a source map JSON document.
+// ParseSourceMap decodes a source map JSON document — a plain map, or an
+// indexed one (`sections`, what Metro / Hermes emit for react-native),
+// whose sub-maps are folded in at their offsets.
 func ParseSourceMap(content []byte) (*SourceMap, error) {
 	var raw struct {
-		Version  int      `json:"version"`
-		Sources  []string `json:"sources"`
-		Names    []string `json:"names"`
-		Mappings string   `json:"mappings"`
+		Version    int      `json:"version"`
+		Sources    []string `json:"sources"`
+		SourceRoot string   `json:"sourceRoot"`
+		Names      []string `json:"names"`
+		Mappings   string   `json:"mappings"`
+		Sections   []struct {
+			Offset struct {
+				Line   int `json:"line"`
+				Column int `json:"column"`
+			} `json:"offset"`
+			Map json.RawMessage `json:"map"`
+		} `json:"sections"`
 	}
 	if err := json.Unmarshal(content, &raw); err != nil {
 		return nil, err
+	}
+	if len(raw.Sections) > 0 {
+		sm := &SourceMap{}
+		for _, sec := range raw.Sections {
+			if len(sec.Map) == 0 {
+				continue
+			}
+			sub, err := ParseSourceMap(sec.Map)
+			if err != nil {
+				continue // one bad section does not void the others
+			}
+			for _, m := range sub.mappings {
+				if m.genLine == 1 { // the column offset applies to the section's first line only
+					m.genCol += sec.Offset.Column
+				}
+				m.genLine += sec.Offset.Line
+				sm.mappings = append(sm.mappings, m)
+			}
+			sm.Sources = append(sm.Sources, sub.Sources...)
+			sm.Names = append(sm.Names, sub.Names...)
+		}
+		sortMappings(sm.mappings)
+		return sm, nil
+	}
+	if raw.SourceRoot != "" {
+		root := strings.TrimSuffix(raw.SourceRoot, "/") + "/"
+		for i, src := range raw.Sources {
+			if src != "" && !strings.HasPrefix(src, root) && !strings.Contains(src, "://") {
+				raw.Sources[i] = root + src
+			}
+		}
 	}
 	sm := &SourceMap{Sources: raw.Sources, Names: raw.Names}
 	var srcIdx, origLine, origCol, nameIdx int
@@ -68,14 +109,18 @@ func ParseSourceMap(content []byte) (*SourceMap, error) {
 			sm.mappings = append(sm.mappings, m)
 		}
 	}
-	sort.SliceStable(sm.mappings, func(i, j int) bool {
-		a, b := sm.mappings[i], sm.mappings[j]
+	sortMappings(sm.mappings)
+	return sm, nil
+}
+
+func sortMappings(ms []mapping) {
+	sort.SliceStable(ms, func(i, j int) bool {
+		a, b := ms[i], ms[j]
 		if a.genLine != b.genLine {
 			return a.genLine < b.genLine
 		}
 		return a.genCol < b.genCol
 	})
-	return sm, nil
 }
 
 const b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -195,7 +240,7 @@ func (s *SourceMapSet) Resolve(f Frame) Frame {
 		name = name[:i]
 	}
 	sm := s.byFile[name]
-	if sm == nil {
+	if sm == nil && name == "" { // a frame that names no file: the release's one map is the only guess there is
 		sm = s.single
 	}
 	if sm == nil {

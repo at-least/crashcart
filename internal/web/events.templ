@@ -17,15 +17,19 @@ func chipValue(k, v string) string {
 	if k == "fingerprint" && len(v) > 12 {
 		return v[:12] + "…"
 	}
-	if k == "crash" {
-		return "crashed"
+	if k == "handled" {
+		if v == "false" {
+			return "unhandled"
+		}
+		return "handled"
 	}
 	return v
 }
 
 func filterHref(pg Page, k, v string) string { return pg.S.WithFilter(k, v).Href("/events") }
 
-func rowCrash(e store.EventRow) bool { return e.Level == "fatal" || (e.Handled != nil && !*e.Handled) }
+// rowUnhandled is Sentry's "Unhandled": exception.mechanism.handled = false.
+func rowUnhandled(e store.EventRow) bool { return e.Handled != nil && !*e.Handled }
 
 // Events: filter toolbar, chips, event table, cursor pager.
 templ Events(pg Page, d EventsData) {
@@ -35,7 +39,7 @@ templ Events(pg Page, d EventsData) {
 			<input type="hidden" name="win" value={ pg.S.Win }/>
 		}
 		for _, k := range sortedKeys(pg.S.Filters) {
-			if k != "level" && k != "release" && k != "crash" {
+			if k != "level" && k != "release" && k != "handled" {
 				<input type="hidden" name={ k } value={ pg.S.Filters[k] }/>
 			}
 		}
@@ -57,7 +61,7 @@ templ Events(pg Page, d EventsData) {
 			</select>
 			@ChevronIcon()
 		</span>
-		<label class="toolbar-check"><input type="checkbox" class="cb" name="crash" value="1" checked?={ pg.S.Filters["crash"] == "1" }/> crashes only</label>
+		<label class="toolbar-check" title="exception.mechanism.handled = false: the SDK caught it in a last-resort handler"><input type="checkbox" class="cb" name="handled" value="false" checked?={ pg.S.Filters["handled"] == "false" }/> Unhandled only</label>
 		<span class="toolbar-search">
 			<span data-slot="native-select-wrapper">
 				<select name="search_col" data-slot="native-select" class="h-8 text-xs" aria-label="Search field">
@@ -96,7 +100,7 @@ templ Events(pg Page, d EventsData) {
 						<th style="width:150px">Time</th>
 						<th style="width:90px">Level</th>
 						<th>Message</th>
-						<th style="width:160px">Location</th>
+						<th style="width:160px">Culprit</th>
 						<th style="width:100px">Release</th>
 						<th style="width:120px">User</th>
 					</tr>
@@ -107,10 +111,8 @@ templ Events(pg Page, d EventsData) {
 							<td class="cell-time" title={ formatDateTime(e.OccurredAt) }><a href={ u(pg.S.Persist().Href("/events/" + string(e.EventID))) }>{ ago(e.OccurredAt) }</a></td>
 							<td>
 								<a class="level-badge" data-level={ levelKey(e.Level) } href={ u(filterHref(pg, "level", e.Level)) }>{ e.Level }</a>
-								if rowCrash(e) {
-									<a class="crash-badge ml-1" href={ u(filterHref(pg, "crash", "1")) } title="Crash">
-										@CrashIcon()
-									</a>
+								if rowUnhandled(e) {
+									<a class="unhandled-badge ml-1" href={ u(filterHref(pg, "handled", "false")) } title="Unhandled: the SDK caught this in a last-resort handler (exception.mechanism.handled = false)">Unhandled</a>
 								}
 							</td>
 							<td class="cell-msg">
@@ -130,8 +132,8 @@ templ Events(pg Page, d EventsData) {
 								</div>
 							</td>
 							<td>
-								if e.ErrorLocation != nil {
-									<a class="cell-btn" href={ u(filterHref(pg, "error_location", *e.ErrorLocation)) }>{ *e.ErrorLocation }</a>
+								if e.Culprit != nil {
+									<a class="cell-btn" href={ u(filterHref(pg, "culprit", *e.Culprit)) }>{ *e.Culprit }</a>
 								} else {
 									<span class="null-mark">—</span>
 								}

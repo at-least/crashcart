@@ -157,7 +157,7 @@ func TestTelegram(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := time.Now().UTC()
-	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("tg")), Title: "Crash in Checkout", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
+	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("tg")), Title: "NSRangeException: index 3 beyond bounds", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("tg")))); err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestTelegram(t *testing.T) {
 		t.Fatalf("telegram call = %v %v", s.paths, s.bodies)
 	}
 	text, _ := tgBody["text"].(string)
-	if text == "" || !strings.Contains(text, "New issue in Shop") || !strings.Contains(text, "Crash in Checkout") || !strings.Contains(text, "/p/shop/issues/"+string(sentry.DerivedID([]byte("tg")))) {
+	if text == "" || !strings.Contains(text, "New issue in Shop") || !strings.Contains(text, "NSRangeException: index 3 beyond bounds") || !strings.Contains(text, "/p/shop/issues/"+string(sentry.DerivedID([]byte("tg")))) {
 		t.Errorf("text = %q", text)
 	}
 }
@@ -189,7 +189,7 @@ func TestCheckSpikes(t *testing.T) {
 	if err := n.CheckSpikes(ctx); err != nil || s.count() != 0 {
 		t.Fatalf("quiet: err=%v count=%d", err, s.count())
 	}
-	// 12 crashes in the current hourly bucket on top of an empty baseline
+	// 12 unhandled in the current hourly bucket on top of an empty baseline
 	// (seconds apart, so they cannot straddle a bucket boundary).
 	rows := make([]store.EventInsert, 0, 12)
 	f := false
@@ -211,7 +211,7 @@ func TestCheckSpikes(t *testing.T) {
 		t.Fatalf("payloads = %d", s.count())
 	}
 	got := s.payloads[0]
-	if got.Type != TypeCrashSpike || got.Recent == nil || *got.Recent != 12 || got.Baseline == nil || *got.Baseline != 0 || got.ProjectSlug != "shop" {
+	if got.Type != TypeUnhandledSpike || got.Recent == nil || *got.Recent != 12 || got.Baseline == nil || *got.Baseline != 0 || got.ProjectSlug != "shop" {
 		t.Errorf("payload = %+v", got)
 	}
 	// Cooldown holds on the next check.

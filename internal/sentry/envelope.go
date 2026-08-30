@@ -6,6 +6,7 @@ package sentry
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"time"
@@ -72,9 +73,9 @@ type Event struct {
 	Release        string
 	OSVersion      string
 	DeviceModel    string
-	Screen         string
+	Transaction    string
 	ErrorType      string
-	Handled        *bool // false = crash, true = caught, nil = no exception
+	Handled        *bool // exception.mechanism.handled: false = unhandled (Sentry's "Unhandled"), true = handled, nil = no mechanism
 	SDKName        string
 	UserID         string
 	Tags           map[string]string
@@ -84,6 +85,9 @@ type Event struct {
 	SDKFingerprint []string
 	Primary        int     // index into Exceptions of the root cause
 	ThreadFrames   []Frame // crashed/current thread stack when there is no exception
+	// Clamped: the SDK's timestamp was replaced by the server's (a clock
+	// far off); a resend gets a different one, so dedupe cannot use it.
+	Clamped bool
 	// Raw is the untouched item body.
 	Raw []byte
 }
@@ -91,9 +95,12 @@ type Event struct {
 // DeviceID is the `device_id` tag, if any.
 func (e *Event) DeviceID() string { return e.Tags["device_id"] }
 
-// IsCrash reports whether the event counts as a crash (fatal or unhandled).
-func (e *Event) IsCrash() bool {
-	return e.Level == "fatal" || (e.Handled != nil && !*e.Handled)
+// IsUnhandled is Sentry's "Unhandled": the SDK caught the error in a
+// last-resort handler (a crash, an uncaught exception, an unhandled
+// rejection) — exception.mechanism.handled = false. level is severity
+// and says nothing about it; no mechanism means handled.
+func (e *Event) IsUnhandled() bool {
+	return e.Handled != nil && !*e.Handled
 }
 
 // Frames returns the primary exception's frames (innermost last), or the
@@ -320,12 +327,12 @@ func (v *valuesOf[T]) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 	if b[0] == '[' {
-		return json.Unmarshal(b, &v.Values)
+		return typeErrorsDropped(json.Unmarshal(b, &v.Values))
 	}
 	var obj struct {
 		Values []T `json:"values"`
 	}
-	if err := json.Unmarshal(b, &obj); err != nil {
+	if err := typeErrorsDropped(json.Unmarshal(b, &obj)); err != nil {
 		return err
 	}
 	v.Values = obj.Values
@@ -401,15 +408,21 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 		return nil
 	}
 	var re rawEvent
-	if json.Unmarshal(trimmed, &re) != nil {
-		return nil
+	if err := json.Unmarshal(trimmed, &re); err != nil {
+		// A field of the wrong type (a numeric release, "lineno":"142")
+		// is dropped by the decoder, which still fills the rest: keep the
+		// event, as Relay would. Only unparseable JSON is refused.
+		var te *json.UnmarshalTypeError
+		if !errors.As(err, &te) {
+			return nil
+		}
 	}
 	ev := &Event{
 		Raw:            trimmed,
 		Level:          normalizeLevel(re.Level),
 		Platform:       re.Platform,
 		Environment:    re.Environment,
-		Screen:         re.Transaction,
+		Transaction:    re.Transaction,
 		Release:        re.Release,
 		Tags:           parseTags(re.Tags),
 		SDKFingerprint: re.Fingerprint,
@@ -418,10 +431,7 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = fallbackTS
 	}
-	// Clamp absurd client clocks: more than 1 h in the future becomes now.
-	if ev.Timestamp.After(now.Add(time.Hour)) {
-		ev.Timestamp = now
-	}
+	ev.Timestamp, ev.Clamped = clampFuture(ev.Timestamp, now)
 	// Microseconds, like the TIMESTAMPTZ it is stored as, so the stored
 	// occurred_at equals this value exactly.
 	ev.Timestamp = ev.Timestamp.UTC().Truncate(time.Microsecond)
@@ -525,7 +535,98 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 		}
 		ev.Breadcrumbs = append(ev.Breadcrumbs, Breadcrumb{Timestamp: ts, Type: b.Type, Category: cat, Message: b.Message, Level: lvl, Data: b.Data})
 	}
+	ev.sanitize()
 	return ev
+}
+
+// typeErrorsDropped keeps the decoder's best effort: a field of the wrong
+// JSON type is left zero, the rest of the document is used.
+func typeErrorsDropped(err error) error {
+	var te *json.UnmarshalTypeError
+	if errors.As(err, &te) {
+		return nil
+	}
+	return err
+}
+
+// Field bounds (runes), Relay's limits where it has them: a TEXT column
+// that is indexed refuses values past ~2.7 KB, and one such string would
+// fail the whole envelope — which the SDK would then resend forever.
+const (
+	maxRelease     = 200
+	maxEnvironment = 64
+	maxScreen      = 200 // event.transaction
+	maxUserID      = 128
+	maxErrorType   = 200
+	maxDevice      = 200 // device model, OS version
+	maxSDKName     = 100
+	maxPlatform    = 64
+	maxTagKey      = 32
+	maxTagValue    = 200
+	maxFrameField  = 1024
+	maxSessionID   = 128
+)
+
+// clean drops NUL — Postgres TEXT and JSONB refuse it, and "\u0000" is
+// valid JSON — and bounds the length.
+func clean(s string, max int) string {
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
+	return Truncate(s, max)
+}
+
+// sanitize applies clean to every string that reaches a column or a JSONB
+// value (tags, symbols). Raw is untouched: it is stored as bytes.
+func (e *Event) sanitize() {
+	e.Platform = clean(e.Platform, maxPlatform)
+	e.Environment = clean(e.Environment, maxEnvironment)
+	e.Transaction = clean(e.Transaction, maxScreen)
+	e.Release = clean(e.Release, maxRelease)
+	e.Message = clean(e.Message, maxMessage)
+	e.ErrorType = clean(e.ErrorType, maxErrorType)
+	e.DeviceModel = clean(e.DeviceModel, maxDevice)
+	e.OSVersion = clean(e.OSVersion, maxDevice)
+	e.SDKName = clean(e.SDKName, maxSDKName)
+	e.UserID = clean(e.UserID, maxUserID)
+	for k, v := range e.Tags {
+		ck := clean(k, maxTagKey+1)
+		if ck == "" || len([]rune(ck)) > maxTagKey { // an over-long key is dropped (Relay does the same), not merged with another
+			delete(e.Tags, k)
+			continue
+		}
+		if ck != k {
+			delete(e.Tags, k)
+		}
+		e.Tags[ck] = clean(v, maxTagValue)
+	}
+	for i := range e.Exceptions {
+		x := &e.Exceptions[i]
+		x.Type = clean(x.Type, maxErrorType)
+		x.Value = clean(x.Value, maxMessage)
+		x.Mechanism = clean(x.Mechanism, maxErrorType)
+		for j := range x.Frames {
+			f := &x.Frames[j]
+			f.Filename = clean(f.Filename, maxFrameField)
+			f.AbsPath = clean(f.AbsPath, maxFrameField)
+			f.Function = clean(f.Function, maxFrameField)
+			f.Module = clean(f.Module, maxFrameField)
+			f.Package = clean(f.Package, maxFrameField)
+			f.InstrAddr = clean(f.InstrAddr, maxFrameField)
+			f.ImageAddr = clean(f.ImageAddr, maxFrameField)
+			f.SymbolAddr = clean(f.SymbolAddr, maxFrameField)
+		}
+	}
+}
+
+// clampFuture: a client clock more than an hour ahead is wrong; the
+// event is taken as happening now. (The mirror rule for the past lives
+// in ingest, which knows the retention window.)
+func clampFuture(t, now time.Time) (time.Time, bool) {
+	if t.After(now.Add(time.Hour)) {
+		return now, true
+	}
+	return t, false
 }
 
 func normalizeLevel(l string) string {
@@ -725,14 +826,21 @@ func parseSessions(body []byte, now time.Time) []Session {
 	if agg.Attrs == nil || agg.Attrs.Release == "" {
 		return out
 	}
+	rel, env := clean(agg.Attrs.Release, maxRelease), clean(agg.Attrs.Environment, maxEnvironment)
 	for _, a := range agg.Aggregates {
 		ts := parseTimestamp(a.Started)
 		if ts.IsZero() {
 			ts = now
 		}
-		for status, n := range map[string]int{"exited": a.Exited, "errored": a.Errored, "crashed": a.Crashed, "abnormal": a.Abnormal} {
-			if n > 0 {
-				out = append(out, Session{Release: agg.Attrs.Release, Environment: agg.Attrs.Environment, Status: status, StartedAt: ts, Count: n})
+		ts, _ = clampFuture(ts, now)
+		// A fixed order: the rows are upserted in this order, and the
+		// hour rows they lock must be taken in one order by every writer.
+		for _, sc := range [...]struct {
+			status string
+			n      int
+		}{{"exited", a.Exited}, {"errored", a.Errored}, {"crashed", a.Crashed}, {"abnormal", a.Abnormal}} {
+			if sc.n > 0 {
+				out = append(out, Session{Release: rel, Environment: env, Status: sc.status, StartedAt: ts, Count: min(sc.n, math.MaxInt32)}) // the column is INTEGER
 			}
 		}
 	}
@@ -752,6 +860,7 @@ func sessionFrom(s rawSession, now time.Time) (Session, bool) {
 			env = s.Attrs.Environment
 		}
 	}
+	rel, env = clean(rel, maxRelease), clean(env, maxEnvironment)
 	if rel == "" || !validSessionStatus[s.Status] {
 		return Session{}, false // the status is a Postgres enum: an unknown value would fail the whole envelope
 	}
@@ -759,5 +868,6 @@ func sessionFrom(s rawSession, now time.Time) (Session, bool) {
 	if ts.IsZero() {
 		ts = now
 	}
-	return Session{SID: s.SID, Release: rel, Environment: env, Status: s.Status, StartedAt: ts, Count: 1}, true
+	ts, _ = clampFuture(ts, now)
+	return Session{SID: clean(s.SID, maxSessionID), Release: rel, Environment: env, Status: s.Status, StartedAt: ts, Count: 1}, true
 }

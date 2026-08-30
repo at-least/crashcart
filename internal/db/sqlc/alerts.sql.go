@@ -79,7 +79,7 @@ func (q *Queries) DeleteAlertChannel(ctx context.Context, arg DeleteAlertChannel
 const ensureAlertRules = `-- name: EnsureAlertRules :exec
 INSERT INTO alert_rules (project_id, type, enabled, cooldown_minutes)
 SELECT $1::bigint, t, true, $2::int
-FROM unnest(ARRAY['new_issue', 'regression', 'crash_spike']::alert_type[]) AS t
+FROM unnest(ARRAY['new_issue', 'regression', 'unhandled_spike']::alert_type[]) AS t
 ON CONFLICT (project_id, type) DO NOTHING
 `
 

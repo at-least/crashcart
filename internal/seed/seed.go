@@ -1,13 +1,12 @@
 // Package seed writes demo data through the real ingest path: a week of
-// crashes, errors and messages for a mobile shop app, three releases with a
-// crash spike on one day, and session aggregates so release health has a
+// unhandled, errors and messages for a mobile shop app, three releases with a
+// spike of unhandled errors on one day, and session aggregates so release health has a
 // crash-free rate. Everything is deterministic (seeded rand) except the
-// random low bits of the primary keys.
+// event ids, which are fresh on every run.
 package seed
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/ingest"
 	"github.com/crashcartapp/crashcart/internal/sentry"
@@ -47,25 +47,25 @@ var releaseMix = [Days][3]float64{
 
 // issueDef is one distinct crash/error signature.
 type issueDef struct {
-	platform  string
-	errorType string
-	value     string
-	screen    string
-	level     string // fatal | error
-	handled   bool
-	mechanism string
-	frames    []sentry.Frame
-	weight    float64         // relative frequency
-	releases  map[string]bool // nil = all; otherwise only these
-	spike     bool            // dominates the spike day
-	crash     bool            // unhandled (level fatal + handled=false)
+	platform    string
+	errorType   string
+	value       string
+	transaction string
+	level       string // fatal | error
+	handled     bool
+	mechanism   string
+	frames      []sentry.Frame
+	weight      float64         // relative frequency
+	releases    map[string]bool // nil = all; otherwise only these
+	spike       bool            // dominates the spike day
+	unhandled   bool            // exception.mechanism.handled = false (with level fatal: a crash)
 }
 
 func inApp(b bool) *bool { return &b }
 
 var issues = []issueDef{
 	{
-		platform: "android", errorType: "NullPointerException", screen: "CartFragment", level: "fatal", crash: true,
+		platform: "android", errorType: "NullPointerException", transaction: "CartFragment", level: "fatal", unhandled: true,
 		value:     "Attempt to invoke virtual method 'int java.util.List.size()' on a null object reference",
 		mechanism: "UncaughtExceptionHandler", weight: 5,
 		frames: []sentry.Frame{
@@ -76,7 +76,7 @@ var issues = []issueDef{
 		},
 	},
 	{
-		platform: "cocoa", errorType: "SIGABRT", screen: "CheckoutViewController", level: "fatal", crash: true,
+		platform: "cocoa", errorType: "SIGABRT", transaction: "CheckoutViewController", level: "fatal", unhandled: true,
 		value: "Fatal error: Unexpectedly found nil while unwrapping an Optional value", mechanism: "signalhandler", weight: 4,
 		frames: []sentry.Frame{
 			{Package: "/usr/lib/system/libdyld.dylib", InstrAddr: "0x1a2b3c4d0", Function: "start", InApp: inApp(false)},
@@ -86,7 +86,7 @@ var issues = []issueDef{
 		},
 	},
 	{
-		platform: "android", errorType: "SocketTimeoutException", screen: "ApiClient", level: "error", handled: true,
+		platform: "android", errorType: "SocketTimeoutException", transaction: "ApiClient", level: "error", handled: true,
 		value: "timeout", mechanism: "generic", weight: 6,
 		frames: []sentry.Frame{
 			{Module: "okhttp3.internal.http2.Http2Stream", Function: "waitForIo", Filename: "Http2Stream.kt", Lineno: 672, InApp: inApp(false)},
@@ -95,7 +95,7 @@ var issues = []issueDef{
 		},
 	},
 	{
-		platform: "cocoa", errorType: "NSInvalidArgumentException", screen: "ProductDetailViewController", level: "fatal", crash: true,
+		platform: "cocoa", errorType: "NSInvalidArgumentException", transaction: "ProductDetailViewController", level: "fatal", unhandled: true,
 		value:     "-[__NSCFString objectForKey:]: unrecognized selector sent to instance 0x282b4c1e0",
 		mechanism: "NSException", weight: 3,
 		frames: []sentry.Frame{
@@ -105,7 +105,7 @@ var issues = []issueDef{
 		},
 	},
 	{
-		platform: "android", errorType: "IllegalStateException", screen: "PaymentActivity", level: "fatal", crash: true,
+		platform: "android", errorType: "IllegalStateException", transaction: "PaymentActivity", level: "fatal", unhandled: true,
 		value:     "Fragment PaymentSheet not attached to an activity",
 		mechanism: "UncaughtExceptionHandler", weight: 1, spike: true, releases: map[string]bool{"2.4.0": true},
 		frames: []sentry.Frame{
@@ -115,7 +115,7 @@ var issues = []issueDef{
 		},
 	},
 	{
-		platform: "cocoa", errorType: "DecodingError", screen: "OrderHistoryViewController", level: "error", handled: true,
+		platform: "cocoa", errorType: "DecodingError", transaction: "OrderHistoryViewController", level: "error", handled: true,
 		value: "keyNotFound(CodingKeys(stringValue: \"shipped_at\"))", mechanism: "generic", weight: 2.5,
 		frames: []sentry.Frame{
 			{Package: "/private/var/containers/Bundle/Application/Shop.app/Shop", InstrAddr: "0x10450c2d0", Function: "OrderHistoryViewController.load()", Filename: "OrderHistoryViewController.swift", Lineno: 44, InApp: inApp(true)},
@@ -123,7 +123,7 @@ var issues = []issueDef{
 		},
 	},
 	{
-		platform: "android", errorType: "OutOfMemoryError", screen: "ProductGridFragment", level: "fatal", crash: true,
+		platform: "android", errorType: "OutOfMemoryError", transaction: "ProductGridFragment", level: "fatal", unhandled: true,
 		value: "Failed to allocate a 48771088 byte allocation with 16777216 free bytes", mechanism: "UncaughtExceptionHandler", weight: 1.5,
 		frames: []sentry.Frame{
 			{Module: "android.graphics.BitmapFactory", Function: "decodeStream", Filename: "BitmapFactory.java", Lineno: 862, InApp: inApp(false)},
@@ -132,7 +132,7 @@ var issues = []issueDef{
 		},
 	},
 	{
-		platform: "cocoa", errorType: "NSRangeException", screen: "SearchViewController", level: "fatal", crash: true,
+		platform: "cocoa", errorType: "NSRangeException", transaction: "SearchViewController", level: "fatal", unhandled: true,
 		value: "*** -[__NSArrayM objectAtIndexedSubscript:]: index 12 beyond bounds [0 .. 11]", mechanism: "NSException", weight: 2,
 		releases: map[string]bool{"2.3.0": true, "2.4.0": true}, // fixed in 2.4.1
 		frames: []sentry.Frame{
@@ -144,7 +144,7 @@ var issues = []issueDef{
 
 // message-only events (no exception, no issue).
 var messages = []struct {
-	level, message, screen string
+	level, message, transaction string
 }{
 	{"info", "Checkout started", "CheckoutViewController"},
 	{"info", "Order placed", "CheckoutViewController"},
@@ -167,19 +167,22 @@ func Run(ctx context.Context, in *ingest.Ingester, slug string) error {
 	st := in.Store
 	p, err := st.GetProject(ctx, slug)
 	if errors.Is(err, pgx.ErrNoRows) {
-		p, err = st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: slug, Name: displayName(slug), PublicKey: newKey()})
+		p, err = st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: slug, Name: displayName(slug), PublicKey: auth.NewProjectKey()})
 	}
 	if err != nil {
 		return fmt.Errorf("seed: project: %w", err)
 	}
-	for _, typ := range []string{"new_issue", "regression", "crash_spike"} {
+	for _, typ := range []string{"new_issue", "regression", "unhandled_spike"} {
 		if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ), Enabled: true, CooldownMinutes: 60}); err != nil {
 			return fmt.Errorf("seed: alert rule %s: %w", typ, err)
 		}
 	}
 
 	now := time.Now().UTC()
-	g := &gen{rng: mrand.New(mrand.NewPCG(0x5eed, uint64(p.ID))), now: now}
+	// Seeded with the clock: a re-run must produce new event ids (the
+	// same ids at new times would dedupe as resends, or land as second
+	// rows under the same event_id).
+	g := &gen{rng: mrand.New(mrand.NewPCG(0x5eed^uint64(now.UnixNano()), uint64(p.ID))), now: now}
 	start := now.Add(-Days * 24 * time.Hour).Truncate(time.Hour)
 	for day := 0; day < Days; day++ {
 		dayStart := start.Add(time.Duration(day) * 24 * time.Hour)
@@ -328,7 +331,7 @@ func (g *gen) eventID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func (g *gen) base(platform, rel, screen, level string, ts time.Time) map[string]any {
+func (g *gen) base(platform, rel, transaction, level string, ts time.Time) map[string]any {
 	model, osv := g.device(platform)
 	osName, sdk := "Android", "sentry.java.android"
 	if platform == "cocoa" {
@@ -341,7 +344,7 @@ func (g *gen) base(platform, rel, screen, level string, ts time.Time) map[string
 		"platform":    platform,
 		"environment": "production",
 		"release":     rel,
-		"transaction": screen,
+		"transaction": transaction,
 		"sdk":         map[string]any{"name": sdk, "version": "8.9.0"},
 		"user":        map[string]any{"id": g.user()},
 		"tags":        map[string]any{"device_id": g.deviceID(), "locale": locales[g.rng.IntN(len(locales))]},
@@ -354,7 +357,7 @@ func (g *gen) base(platform, rel, screen, level string, ts time.Time) map[string
 }
 
 func (g *gen) exceptionEvent(d *issueDef, rel string, ts time.Time) []byte {
-	ev := g.base(d.platform, rel, d.screen, d.level, ts)
+	ev := g.base(d.platform, rel, d.transaction, d.level, ts)
 	handled := d.handled
 	ev["exception"] = map[string]any{"values": []map[string]any{{
 		"type":       d.errorType,
@@ -362,7 +365,7 @@ func (g *gen) exceptionEvent(d *issueDef, rel string, ts time.Time) []byte {
 		"mechanism":  map[string]any{"type": d.mechanism, "handled": handled},
 		"stacktrace": map[string]any{"frames": d.frames},
 	}}}
-	ev["breadcrumbs"] = map[string]any{"values": g.breadcrumbs(d.screen, ts)}
+	ev["breadcrumbs"] = map[string]any{"values": g.breadcrumbs(d.transaction, ts)}
 	b, _ := json.Marshal(ev)
 	return b
 }
@@ -373,17 +376,17 @@ func (g *gen) messageEvent(rel string, ts time.Time) []byte {
 	if g.rng.IntN(2) == 0 {
 		platform = "cocoa"
 	}
-	ev := g.base(platform, rel, m.screen, m.level, ts)
+	ev := g.base(platform, rel, m.transaction, m.level, ts)
 	ev["logentry"] = map[string]any{"formatted": m.message}
 	b, _ := json.Marshal(ev)
 	return b
 }
 
-func (g *gen) breadcrumbs(screen string, ts time.Time) []map[string]any {
+func (g *gen) breadcrumbs(transaction string, ts time.Time) []map[string]any {
 	crumbs := []map[string]any{
-		{"timestamp": ts.Add(-42 * time.Second).Format(time.RFC3339), "category": "navigation", "level": "info", "data": map[string]any{"from": "/home", "to": "/" + strings.ToLower(screen)}},
+		{"timestamp": ts.Add(-42 * time.Second).Format(time.RFC3339), "category": "navigation", "level": "info", "data": map[string]any{"from": "/home", "to": "/" + strings.ToLower(transaction)}},
 		{"timestamp": ts.Add(-17 * time.Second).Format(time.RFC3339), "category": "http", "type": "http", "level": "info", "data": map[string]any{"method": "GET", "url": "https://api.example.com/v2/cart", "status_code": 200}},
-		{"timestamp": ts.Add(-3 * time.Second).Format(time.RFC3339), "category": "ui.click", "level": "info", "message": "button[data-id=" + strings.ToLower(screen) + "-primary]"},
+		{"timestamp": ts.Add(-3 * time.Second).Format(time.RFC3339), "category": "ui.click", "level": "info", "message": "button[data-id=" + strings.ToLower(transaction) + "-primary]"},
 	}
 	return crumbs
 }
@@ -425,10 +428,4 @@ func displayName(slug string) string {
 		return "Demo Shop"
 	}
 	return slug
-}
-
-func newKey() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }

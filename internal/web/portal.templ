@@ -35,7 +35,7 @@ templ Portal(cards []PortalCard) {
 						</div>
 					</header>
 					<section data-slot="card-content" class="portal-stats">
-						<div><span class="stat-k">Crashes 24h</span><span class="stat-v" data-level={ crashLevel(c.Crashes24h) }>{ compact(c.Crashes24h) }</span></div>
+						<div><span class="stat-k">Unhandled 24h</span><span class="stat-v" data-level={ unhandledLevel(c.Unhandled24h) }>{ compact(c.Unhandled24h) }</span></div>
 						<div><span class="stat-k">Crash-free</span><span class="stat-v">{ c.CrashFree }</span><span class="stat-sub">{ orDash(c.LatestRelease) }</span></div>
 						<div><span class="stat-k">Open issues</span><span class="stat-v">{ compact(c.OpenIssues) }</span></div>
 					</section>
@@ -74,7 +74,7 @@ templ Portal(cards []PortalCard) {
 	</section>
 }
 
-func crashLevel(n int64) string {
+func unhandledLevel(n int64) string {
 	if n > 0 {
 		return "fatal"
 	}

@@ -5,21 +5,22 @@ package web
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
+
 import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 type alertLabel struct{ Title, Desc string }
 
 var alertLabels = map[string]alertLabel{
-	"new_issue":   {"New issue", "A fingerprint seen for the first time"},
-	"regression":  {"Regression", "A resolved issue reappears on another release"},
-	"crash_spike": {"Crash spike", "Crashes in the last hour are 3× the 24 h baseline"},
+	"new_issue":       {"New issue", "A fingerprint seen for the first time"},
+	"regression":      {"Regression", "A resolved issue reappears on another release"},
+	"unhandled_spike": {"Unhandled error spike", "Unhandled errors in the last hour are 3× the 24 h baseline"},
 }
 
 func labelFor(t string) alertLabel {
@@ -507,9 +508,9 @@ func Settings(pg Page, d SettingsData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var26 string
-			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(orDash(derefStr(sf.Release)))
+			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(orDash(deref(sf.Release)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 201, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 201, Col: 59}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -522,7 +523,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 			var templ_7745c5c3_Var27 string
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(sizeLabel(sf.Size))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 201, Col: 88}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 201, Col: 85}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 			if templ_7745c5c3_Err != nil {
@@ -535,7 +536,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(formatDateTime(sf.UploadedAt))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 201, Col: 125}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 201, Col: 122}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {

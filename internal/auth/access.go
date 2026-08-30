@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,7 +52,8 @@ const KeyPrefix = "cc_"
 
 // Access checks credentials against the database.
 type Access struct {
-	Store *store.Store
+	Store      *store.Store
+	TrustProxy bool // TRUST_PROXY: X-Forwarded-Proto decides the cookie's Secure flag
 }
 
 // NewToken is a fresh random secret (hex).
@@ -137,12 +139,49 @@ func (a *Access) Logout(ctx context.Context, r *http.Request) *http.Cookie {
 func (a *Access) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name: SessionCookie, Value: value, Path: "/", MaxAge: maxAge,
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isHTTPS(r),
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: Scheme(r, a.TrustProxy) == "https",
 	}
 }
 
-func isHTTPS(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https")
+// Scheme is the scheme the client used: "https" behind TLS or — behind a
+// trusted reverse proxy — when X-Forwarded-Proto says so; "http" otherwise.
+// The header is honoured only with TRUST_PROXY, like X-Forwarded-For.
+func Scheme(r *http.Request, trustProxy bool) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if fp := r.Header.Get("X-Forwarded-Proto"); trustProxy && fp != "" {
+		if strings.EqualFold(strings.TrimSpace(strings.Split(fp, ",")[0]), "https") {
+			return "https"
+		}
+	}
+	return "http"
+}
+
+// BaseURL is the externally visible origin: publicURL when set, otherwise
+// the request's scheme and host.
+func BaseURL(r *http.Request, publicURL string, trustProxy bool) string {
+	if publicURL != "" {
+		return strings.TrimSuffix(publicURL, "/")
+	}
+	return Scheme(r, trustProxy) + "://" + r.Host
+}
+
+// DSN renders `<scheme>://<public_key>@<host>/<id>` on base (an origin,
+// scheme included — an origin without one is taken as http).
+func DSN(base, publicKey string, projectID int64) string {
+	scheme, host, ok := strings.Cut(strings.TrimSuffix(base, "/"), "://")
+	if !ok {
+		scheme, host = "http", scheme
+	}
+	return scheme + "://" + publicKey + "@" + host + "/" + strconv.FormatInt(projectID, 10)
+}
+
+// NewProjectKey returns a random DSN public key (32 hex characters).
+func NewProjectKey() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // Identify puts the user on the context when a live session cookie is

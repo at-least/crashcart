@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -44,9 +45,10 @@ func TestPartitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// From the week before the retention window to two weeks ahead:
-	// 2026-08-03 … 2026-09-07 inclusive = 6 weekly partitions.
-	if len(parts) != 6 || !parts[0].Start.Equal(time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)) || !parts[5].Start.Equal(time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)) {
+	// From the week holding the start of the retention window to two
+	// weeks ahead: 2026-08-10 … 2026-09-07 inclusive = 5 weekly partitions
+	// (a week earlier would be dropped by the same sweep: churn).
+	if len(parts) != 5 || !parts[0].Start.Equal(time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)) || !parts[4].Start.Equal(time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("partitions = %+v", parts)
 	}
 	// The stray row moved into its week's partition; the default is empty.
@@ -117,7 +119,8 @@ func TestRollup(t *testing.T) {
 	cur := time.Now().UTC()
 	insert := func(at time.Time, id string, level string) {
 		t.Helper()
-		if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, fingerprint, release) VALUES ($1, 1, $2, $3, 'm', 'f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1', '1.0')`, at, id, level); err != nil {
+		// A fatal row is a crash: unhandled (exception.mechanism.handled = false), like the SDKs send it.
+		if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, fingerprint, release, handled) VALUES ($1, 1, $2, $3, 'm', 'f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1', '1.0', CASE WHEN $3::event_level = 'fatal' THEN false END)`, at, id, level); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{at.Truncate(time.Hour)}}); err != nil {
@@ -138,7 +141,7 @@ func TestRollup(t *testing.T) {
 		return r
 	}
 	// Before any rollup the views compute the dirty hours live: exact.
-	if r := totals(); r.Events != 3 || r.Crashes != 2 {
+	if r := totals(); r.Events != 3 || r.Unhandled != 2 {
 		t.Fatalf("live totals = %+v", r)
 	}
 	// One pass rolls the past hour up and leaves the current hour dirty.
@@ -158,7 +161,7 @@ func TestRollup(t *testing.T) {
 	if rolledRows != 2 { // fatal + error rows of the old hour
 		t.Fatalf("rolled rows = %d", rolledRows)
 	}
-	if r := totals(); r.Events != 3 || r.Crashes != 2 {
+	if r := totals(); r.Events != 3 || r.Unhandled != 2 {
 		t.Fatalf("totals after rollup = %+v", r)
 	}
 	// The per-issue counts came along.
@@ -176,13 +179,13 @@ func TestRollup(t *testing.T) {
 	// A late event into the rolled hour marks it again and the numbers
 	// follow, before and after the next pass.
 	insert(old.Add(2*time.Minute), "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4", "fatal")
-	if r := totals(); r.Events != 4 || r.Crashes != 3 {
+	if r := totals(); r.Events != 4 || r.Unhandled != 3 {
 		t.Fatalf("live totals after late event = %+v", r)
 	}
 	if err := RollupAll(ctx, st, config.Config{}); err != nil {
 		t.Fatal(err)
 	}
-	if r := totals(); r.Events != 4 || r.Crashes != 3 {
+	if r := totals(); r.Events != 4 || r.Unhandled != 3 {
 		t.Fatalf("totals after second rollup = %+v", r)
 	}
 	// Nothing left but the current hour.
@@ -243,7 +246,7 @@ func TestRollupKeepsExpiredHours(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Config{RetentionDays: 30}
 	old := time.Now().UTC().Add(-60 * 24 * time.Hour).Truncate(time.Hour)
-	if _, err := st.Pool.Exec(ctx, `INSERT INTO event_stats_hourly_rolled (bucket, project_id, release, platform, level, events, crashes, errors)
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO event_stats_hourly_rolled (bucket, project_id, release, platform, level, events, unhandled, errors)
 		VALUES ($1, 1, '1.0', 'android', 'fatal', 1000, 1000, 0)`, old); err != nil {
 		t.Fatal(err)
 	}
@@ -299,8 +302,34 @@ func TestEnsurePartitionsConcurrently(t *testing.T) {
 		}
 	}
 	parts, err := Partitions(ctx, st, "events")
-	if err != nil || len(parts) != 5 {
+	if err != nil || len(parts) != 4 { // the cutoff's week to two weeks ahead
 		t.Fatalf("partitions = %d %v", len(parts), err)
+	}
+}
+
+// TestSweepDoesNotChurnPartitions: an hourly sweep must not create a
+// partition it then drops (every such round takes exclusive locks on the
+// parent tables).
+func TestSweepDoesNotChurnPartitions(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	cfg := config.Config{RetentionDays: 14}
+	now := time.Now().UTC()
+	if err := EnsurePartitions(ctx, st, cfg, now); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := Partitions(ctx, st, "events")
+	if err := Sweep(ctx, st, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := Partitions(ctx, st, "events")
+	if len(before) == 0 || len(after) != len(before) || !after[0].Start.Equal(before[0].Start) {
+		t.Fatalf("sweep changed the partition set: %v → %v", before, after)
+	}
+	for _, p := range after {
+		if !p.Start.Add(PartitionWidth).After(now.Add(-cfg.Retention())) {
+			t.Errorf("partition %s ends before the retention cutoff: it would be dropped at once", p.Name)
+		}
 	}
 }
 

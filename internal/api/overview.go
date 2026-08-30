@@ -16,9 +16,9 @@ import (
 const topReleases = 5
 
 type totalsOut struct {
-	Events  int64 `json:"events"`
-	Crashes int64 `json:"crashes"`
-	Errors  int64 `json:"errors"`
+	Events    int64 `json:"events"`
+	Unhandled int64 `json:"unhandled"`
+	Errors    int64 `json:"errors"`
 }
 
 type crashFreeOut struct {
@@ -28,10 +28,10 @@ type crashFreeOut struct {
 }
 
 type timelinePoint struct {
-	Bucket  time.Time `json:"bucket"`
-	Release string    `json:"release"`
-	Crashes int64     `json:"crashes"`
-	Events  int64     `json:"events"`
+	Bucket    time.Time `json:"bucket"`
+	Release   string    `json:"release"`
+	Unhandled int64     `json:"unhandled"`
+	Events    int64     `json:"events"`
 }
 
 type overviewOut struct {
@@ -65,7 +65,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	out.Totals = totalsOut{Events: tot.Events, Crashes: tot.Crashes, Errors: tot.Errors}
+	out.Totals = totalsOut{Events: tot.Events, Unhandled: tot.Unhandled, Errors: tot.Errors}
 
 	levels, err := h.Store.LevelTotals(ctx, sqlc.LevelTotalsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi})
 	if err != nil {
@@ -75,11 +75,11 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	for _, l := range levels {
 		out.Levels[string(l.Level)] = l.Events
 	}
-	if out.NewIssues, err = h.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: p.ID, FirstSeen: lo}); err != nil {
+	if out.NewIssues, err = h.Store.CountNewIssuesIn(ctx, sqlc.CountNewIssuesInParams{ProjectID: p.ID, FromAt: lo, ToAt: hi}); err != nil {
 		h.fail(w, err)
 		return
 	}
-	if out.Regressions, err = h.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: p.ID, LastSeen: lo}); err != nil {
+	if out.Regressions, err = h.Store.CountRegressionsIn(ctx, sqlc.CountRegressionsInParams{ProjectID: p.ID, FromAt: lo, ToAt: hi}); err != nil {
 		h.fail(w, err)
 		return
 	}
@@ -90,7 +90,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, t := range tl {
-		out.Timeline = append(out.Timeline, timelinePoint{Bucket: t.Bucket.UTC(), Release: t.Release, Crashes: t.Crashes, Events: t.Events})
+		out.Timeline = append(out.Timeline, timelinePoint{Bucket: t.Bucket.UTC(), Release: t.Release, Unhandled: t.Unhandled, Events: t.Events})
 	}
 
 	if out.CrashFree, err = h.crashFree(ctx, p.ID, hlo, hi); err != nil {

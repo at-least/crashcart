@@ -78,6 +78,6 @@ docker compose exec crashcart /crashcart seed
 - [The viewer](./viewer) — overview, issues, events, releases, settings.
 - [Symbolication](./symbolication) — upload ProGuard mappings, source maps
   or dSYMs so stack traces show real file names and lines.
-- [Alerts](./alerts) — get told about new issues and crash spikes.
+- [Alerts](./alerts) — get told about new issues and unhandled-error spikes.
 - [Install on a server](/deploy/docker) — with HTTPS, API keys and a
   viewer password.

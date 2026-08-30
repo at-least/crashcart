@@ -26,7 +26,7 @@ type PortalCard struct {
 	P             sqlc.Project
 	Received      []string // platform families seen in the last 7 days
 	Mismatch      bool     // some of them are not what the project declares
-	Crashes24h    int64
+	Unhandled24h  int64
 	LatestRelease string
 	CrashFree     string
 	OpenIssues    int64
@@ -40,11 +40,11 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := now()
-	// One query per statistic, one row per project: crashes in the last
+	// One query per statistic, one row per project: unhandled in the last
 	// 24 h, platforms seen in 7 days, the latest active release (30 days)
 	// and its session health, open issues.
 	dayFrom := n.Add(-30 * day).Truncate(day)
-	crashes, err := w.Store.PortalCrashes(ctx, sqlc.PortalCrashesParams{FromAt: n.Add(-day).Truncate(time.Hour), ToAt: n})
+	unhandled, err := w.Store.PortalUnhandled(ctx, sqlc.PortalUnhandledParams{FromAt: n.Add(-day).Truncate(time.Hour), ToAt: n})
 	if err != nil {
 		w.fail(rw, r, err)
 		return
@@ -65,8 +65,8 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	crashes24h := map[int64]int64{}
-	for _, c := range crashes {
-		crashes24h[c.ProjectID] = c.Crashes
+	for _, c := range unhandled {
+		crashes24h[c.ProjectID] = c.Unhandled
 	}
 	byPlatform := map[int64][]platformCount{}
 	for _, pc := range platforms {
@@ -96,7 +96,7 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 	}
 	cards := make([]PortalCard, 0, len(projects))
 	for _, p := range projects {
-		c := PortalCard{P: p, CrashFree: "n/a", Crashes24h: crashes24h[p.ID], OpenIssues: openIssues[p.ID], LatestRelease: newest[p.ID]}
+		c := PortalCard{P: p, CrashFree: "n/a", Unhandled24h: crashes24h[p.ID], OpenIssues: openIssues[p.ID], LatestRelease: newest[p.ID]}
 		c.Received, c.Mismatch = platformFamilies(p, byPlatform[p.ID])
 		if hr, ok := health[p.ID]; ok {
 			c.CrashFree = crashFree(hr.Total, hr.Crashed)
@@ -183,7 +183,7 @@ type OverviewData struct {
 	QuotaReached  bool
 	LatestRelease string
 	CrashFree     string
-	Crashes       int64
+	Unhandled     int64
 	NewIssues     int64
 	Chart         ChartData
 	New           []sqlc.Issue
@@ -211,7 +211,7 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	d.Crashes = totals.Crashes
+	d.Unhandled = totals.Unhandled
 	if d.NewIssues, err = w.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: p.ID, FirstSeen: win.From}); err != nil {
 		w.fail(rw, r, err)
 		return
@@ -221,7 +221,7 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	d.Chart = crashChart(rows, win)
+	d.Chart = unhandledChart(rows, win)
 	if d.New, err = w.Store.ListNewIssues(ctx, sqlc.ListNewIssuesParams{ProjectID: p.ID, FirstSeen: n.Add(-day), Limit: 5}); err != nil {
 		w.fail(rw, r, err)
 		return
@@ -247,18 +247,18 @@ func (w *Web) streamInfo(ctx context.Context, projectID int64, s ViewState, n ti
 // seriesColors is the palette for stacked-by-release charts.
 var seriesTokens = []string{"series-1", "series-2", "series-3", "series-4", "series-5"}
 
-// crashChart stacks crashes per bucket by release. rows come from
+// unhandledChart stacks unhandled per bucket by release. rows come from
 // Timeline: gap-filled, ordered by bucket then series rank (top 5
 // releases, then "other"); series without a crash in the window are
 // dropped here.
-func crashChart(rows []sqlc.TimelineRow, win Window) ChartData {
+func unhandledChart(rows []sqlc.TimelineRow, win Window) ChartData {
 	totals := map[string]int64{}
 	var order []string
 	for _, r := range rows {
 		if _, seen := totals[r.Release]; !seen {
 			order = append(order, r.Release)
 		}
-		totals[r.Release] += r.Crashes
+		totals[r.Release] += r.Unhandled
 	}
 	var series []Series
 	idx := map[string]int{}
@@ -278,7 +278,7 @@ func crashChart(rows []sqlc.TimelineRow, win Window) ChartData {
 	}
 	c := ChartData{Series: series, Empty: len(series) == 0}
 	if c.Empty {
-		c.Series = []Series{{Name: "crashes", Token: "level-fatal"}}
+		c.Series = []Series{{Name: "unhandled", Token: "level-fatal"}}
 	}
 	perBucket := map[int64][]int64{}
 	for _, r := range rows {
@@ -290,7 +290,7 @@ func crashChart(rows []sqlc.TimelineRow, win Window) ChartData {
 		if perBucket[b] == nil {
 			perBucket[b] = make([]int64, len(c.Series))
 		}
-		perBucket[b][i] += r.Crashes
+		perBucket[b][i] += r.Unhandled
 	}
 	for _, b := range win.Buckets() {
 		vals := perBucket[b.Unix()]
@@ -408,7 +408,8 @@ func (w *Web) sparklines(ctx context.Context, projectID int64, fps []sentry.ID, 
 	return out, nil
 }
 
-var bulkStatuses = map[string]bool{"resolved": true, "ignored": true, "triaged": true, "unresolved": true}
+// writableStatuses is what the viewer may set ("regression" is ingest's verdict).
+var writableStatuses = map[string]bool{"resolved": true, "ignored": true, "triaged": true, "unresolved": true}
 
 // issuesBulk sets the status of the selected issues and answers with the
 // refreshed table fragment (the POST URL carries the list state).
@@ -428,7 +429,7 @@ func (w *Web) issuesBulk(rw http.ResponseWriter, r *http.Request) {
 			fps = append(fps, fp)
 		}
 	}
-	if !bulkStatuses[status] || len(fps) == 0 {
+	if !writableStatuses[status] || len(fps) == 0 {
 		http.Error(rw, "status and fp[] required", http.StatusBadRequest)
 		return
 	}
@@ -552,8 +553,6 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 	w.page(rw, r, Page{S: s, Project: &p, Section: "issues"}, func(pg Page) templ.Component { return IssuePage(pg, d) })
 }
 
-var issueStatuses = map[string]bool{"unresolved": true, "triaged": true, "resolved": true, "ignored": true}
-
 func (w *Web) issueStatus(rw http.ResponseWriter, r *http.Request) {
 	p, ok := w.project(rw, r)
 	if !ok {
@@ -564,7 +563,7 @@ func (w *Web) issueStatus(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := r.Form.Get("status")
-	if !issueStatuses[status] {
+	if !writableStatuses[status] {
 		http.Error(rw, "bad status", http.StatusBadRequest)
 		return
 	}
@@ -600,8 +599,8 @@ func eventFilter(p sqlc.Project, s ViewState, win Window) store.EventFilter {
 	f := store.EventFilter{ProjectID: p.ID, From: win.From, To: win.To, Before: s.Cursor(), Limit: eventsPage,
 		Level: s.Filters["level"], Release: s.Filters["release"], Environment: s.Filters["environment"], Platform: s.Filters["platform"],
 		ErrorType: s.Filters["error_type"], UserID: s.Filters["user_id"], DeviceID: s.Filters["device_id"], DeviceModel: s.Filters["device_model"],
-		OSVersion: s.Filters["os_version"], Screen: s.Filters["screen"], Location: s.Filters["error_location"],
-		Query: s.Filters["q"], Crash: s.Filters["crash"] == "1"}
+		OSVersion: s.Filters["os_version"], Transaction: s.Filters["transaction"], Location: s.Filters["culprit"],
+		Query: s.Filters["q"], Handled: s.Filters["handled"]}
 	if fp, ok := sentry.ParseID(s.Filters["fingerprint"]); ok {
 		f.Fingerprint = fp
 	}
@@ -704,7 +703,7 @@ type ReleaseRow struct {
 	Release, Platform   string
 	Sessions, Crashed   int64
 	TotalSessions       int64 // all releases in the window (adoption denominator)
-	Crashes, Events     int64
+	Unhandled, Events   int64
 	NewIssues           int64
 	FirstSeen, LastSeen time.Time // zero when the release has sessions but no events
 }
@@ -743,7 +742,7 @@ func (w *Web) releaseRows(ctx context.Context, p sqlc.Project, win Window) ([]Re
 		idx[st.Release] = true
 		h := hm[st.Release]
 		rows = append(rows, ReleaseRow{Release: st.Release, Platform: strings.Join(st.Platforms, ", "), Sessions: h.Total, Crashed: h.Crashed,
-			TotalSessions: total, NewIssues: im[st.Release], FirstSeen: st.FirstSeen, LastSeen: st.LastSeen, Crashes: st.Crashes, Events: st.Events})
+			TotalSessions: total, NewIssues: im[st.Release], FirstSeen: st.FirstSeen, LastSeen: st.LastSeen, Unhandled: st.Unhandled, Events: st.Events})
 	}
 	// releases with sessions but no events still count
 	for rel, h := range hm {
@@ -820,9 +819,9 @@ func (w *Web) release(rw http.ResponseWriter, r *http.Request) {
 	}
 	points := map[int64]int64{}
 	for _, row := range tl {
-		points[row.Bucket.Unix()] = row.Crashes
+		points[row.Bucket.Unix()] = row.Unhandled
 	}
-	d.Chart = singleChart("crashes", "level-fatal", points, win)
+	d.Chart = singleChart("unhandled", "level-fatal", points, win)
 	if d.Introduced, err = w.Store.ListIssuesIntroducedIn(ctx, sqlc.ListIssuesIntroducedInParams{ProjectID: p.ID, FirstRelease: &version, Limit: 20}); err != nil {
 		w.fail(rw, r, err)
 		return

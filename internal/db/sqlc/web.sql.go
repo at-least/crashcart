@@ -47,7 +47,7 @@ func (q *Queries) IssuesIntroducedPerRelease(ctx context.Context, projectID int6
 }
 
 const latestIssueEvent = `-- name: LatestIssueEvent :one
-SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, screen, error_type, error_location, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND fingerprint = $2
+SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated, tags, symbols, payload FROM events WHERE project_id = $1 AND fingerprint = $2
   AND occurred_at >= $3::timestamptz AND occurred_at < $4::timestamptz
 ORDER BY occurred_at DESC LIMIT 1
 `
@@ -81,9 +81,9 @@ func (q *Queries) LatestIssueEvent(ctx context.Context, arg LatestIssueEventPara
 		&i.DeviceID,
 		&i.DeviceModel,
 		&i.OsVersion,
-		&i.Screen,
+		&i.Transaction,
 		&i.ErrorType,
-		&i.ErrorLocation,
+		&i.Culprit,
 		&i.Handled,
 		&i.SdkName,
 		&i.UserID,
@@ -97,7 +97,7 @@ func (q *Queries) LatestIssueEvent(ctx context.Context, arg LatestIssueEventPara
 }
 
 const listIssuesIntroducedIn = `-- name: ListIssuesIntroducedIn :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND first_release = $2
+SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND first_release = $2
 ORDER BY event_count DESC LIMIT $3
 `
 
@@ -122,7 +122,7 @@ func (q *Queries) ListIssuesIntroducedIn(ctx context.Context, arg ListIssuesIntr
 			&i.Title,
 			&i.Level,
 			&i.ErrorType,
-			&i.Screen,
+			&i.Transaction,
 			&i.Platform,
 			&i.Status,
 			&i.StatusBy,
@@ -148,7 +148,7 @@ func (q *Queries) ListIssuesIntroducedIn(ctx context.Context, arg ListIssuesIntr
 }
 
 const listIssuesPresentIn = `-- name: ListIssuesPresentIn :many
-SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND last_release = $2 AND status NOT IN ('resolved', 'ignored')
+SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND last_release = $2 AND status NOT IN ('resolved', 'ignored')
 ORDER BY event_count DESC LIMIT $3
 `
 
@@ -174,7 +174,7 @@ func (q *Queries) ListIssuesPresentIn(ctx context.Context, arg ListIssuesPresent
 			&i.Title,
 			&i.Level,
 			&i.ErrorType,
-			&i.Screen,
+			&i.Transaction,
 			&i.Platform,
 			&i.Status,
 			&i.StatusBy,
@@ -189,46 +189,6 @@ func (q *Queries) ListIssuesPresentIn(ctx context.Context, arg ListIssuesPresent
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const portalCrashes = `-- name: PortalCrashes :many
-
-SELECT project_id, sum(crashes)::bigint AS crashes
-FROM event_stats_hourly WHERE bucket >= $1::timestamptz AND bucket < $2::timestamptz
-GROUP BY 1
-`
-
-type PortalCrashesParams struct {
-	FromAt time.Time `json:"from_at"`
-	ToAt   time.Time `json:"to_at"`
-}
-
-type PortalCrashesRow struct {
-	ProjectID int64 `json:"project_id"`
-	Crashes   int64 `json:"crashes"`
-}
-
-// The portal: one query per statistic across every project, not four per
-// project.
-// Crashes per project in a window (one row per project).
-func (q *Queries) PortalCrashes(ctx context.Context, arg PortalCrashesParams) ([]PortalCrashesRow, error) {
-	rows, err := q.db.Query(ctx, portalCrashes, arg.FromAt, arg.ToAt)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []PortalCrashesRow{}
-	for rows.Next() {
-		var i PortalCrashesRow
-		if err := rows.Scan(&i.ProjectID, &i.Crashes); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -384,6 +344,46 @@ func (q *Queries) PortalReleaseHealth(ctx context.Context, arg PortalReleaseHeal
 	for rows.Next() {
 		var i PortalReleaseHealthRow
 		if err := rows.Scan(&i.ProjectID, &i.Total, &i.Crashed); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const portalUnhandled = `-- name: PortalUnhandled :many
+
+SELECT project_id, sum(unhandled)::bigint AS unhandled
+FROM event_stats_hourly WHERE bucket >= $1::timestamptz AND bucket < $2::timestamptz
+GROUP BY 1
+`
+
+type PortalUnhandledParams struct {
+	FromAt time.Time `json:"from_at"`
+	ToAt   time.Time `json:"to_at"`
+}
+
+type PortalUnhandledRow struct {
+	ProjectID int64 `json:"project_id"`
+	Unhandled int64 `json:"unhandled"`
+}
+
+// The portal: one query per statistic across every project, not four per
+// project.
+// Unhandled per project in a window (one row per project).
+func (q *Queries) PortalUnhandled(ctx context.Context, arg PortalUnhandledParams) ([]PortalUnhandledRow, error) {
+	rows, err := q.db.Query(ctx, portalUnhandled, arg.FromAt, arg.ToAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PortalUnhandledRow{}
+	for rows.Next() {
+		var i PortalUnhandledRow
+		if err := rows.Scan(&i.ProjectID, &i.Unhandled); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

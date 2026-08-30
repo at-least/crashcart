@@ -27,6 +27,24 @@ func (q *Queries) CountRegressions(ctx context.Context, arg CountRegressionsPara
 	return count, err
 }
 
+const countRegressionsIn = `-- name: CountRegressionsIn :one
+SELECT count(*) FROM issues WHERE project_id = $1 AND status = 'regression' AND last_seen >= $2 AND last_seen < $3
+`
+
+type CountRegressionsInParams struct {
+	ProjectID int64     `json:"project_id"`
+	FromAt    time.Time `json:"from_at"`
+	ToAt      time.Time `json:"to_at"`
+}
+
+// Issues currently in 'regression' that were seen in [from, to).
+func (q *Queries) CountRegressionsIn(ctx context.Context, arg CountRegressionsInParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRegressionsIn, arg.ProjectID, arg.FromAt, arg.ToAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const newIssuesByRelease = `-- name: NewIssuesByRelease :many
 
 SELECT first_release AS release, count(*)::bigint AS n

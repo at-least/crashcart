@@ -180,13 +180,13 @@
   .level-badge[data-level="info"] { --lv: var(--level-info); }
   .level-badge[data-level="debug"] { --lv: var(--level-debug); }
 
-  .crash-badge {
+  .unhandled-badge {
     @apply inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] leading-none font-semibold whitespace-nowrap no-underline transition-colors;
     color: var(--level-fatal);
     background-color: color-mix(in oklab, var(--level-fatal) 12%, transparent);
   }
-  a.crash-badge:hover { background-color: color-mix(in oklab, var(--level-fatal) 22%, transparent); }
-  .caught-mark { @apply font-mono text-[11px] text-muted-foreground; }
+  a.unhandled-badge:hover { background-color: color-mix(in oklab, var(--level-fatal) 22%, transparent); }
+  .handled-mark { @apply inline-flex h-5 items-center rounded-md border px-1.5 font-mono text-[11px] leading-none text-muted-foreground; }
   .null-mark { @apply text-muted-foreground/60; }
   .status-badge { @apply font-mono capitalize; }
   .status-badge[data-status="regression"] { color: var(--level-fatal); border-color: color-mix(in oklab, var(--level-fatal) 40%, transparent); background: color-mix(in oklab, var(--level-fatal) 10%, transparent); }

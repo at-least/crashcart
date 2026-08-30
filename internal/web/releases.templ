@@ -21,7 +21,7 @@ templ Releases(pg Page, rows []ReleaseRow) {
 						<th>Platform</th>
 						<th class="num">Adoption</th>
 						<th class="num">Crash-free</th>
-						<th class="num">Crashes</th>
+						<th class="num" title="Unhandled errors (exception.mechanism.handled = false)">Unhandled</th>
 						<th class="num">Events</th>
 						<th class="num">New issues</th>
 						<th>First seen</th>
@@ -35,7 +35,7 @@ templ Releases(pg Page, rows []ReleaseRow) {
 							<td class="mono-cell">{ orDash(r.Platform) }</td>
 							<td class="num" title={ i64(r.Sessions) + " sessions" }>{ r.Adoption() }</td>
 							<td class="num" data-health={ healthKey(r.Sessions, r.Crashed) }>{ r.CrashFree() }</td>
-							<td class="num">{ compact(r.Crashes) }</td>
+							<td class="num">{ compact(r.Unhandled) }</td>
 							<td class="num">{ compact(r.Events) }</td>
 							<td class="num">{ compact(r.NewIssues) }</td>
 							<td class="cell-time">{ seenAgo(r.FirstSeen) }</td>
@@ -76,7 +76,7 @@ templ ReleasePage(pg Page, d ReleaseData) {
 	<div class="stat-grid mt-4 md:grid-cols-5">
 		@StatCard("Adoption", d.Row.Adoption(), plural(d.Row.Sessions, "session"))
 		@StatCard("Crash-free", d.Row.CrashFree(), plural(d.Row.Crashed, "crashed session"))
-		@StatCard("Crashes", compact(d.Row.Crashes), "")
+		@StatCard("Unhandled errors", compact(d.Row.Unhandled), "")
 		@StatCard("Events", compact(d.Row.Events), "")
 		@StatCard("New issues", compact(d.Row.NewIssues), "introduced here")
 	</div>
@@ -88,7 +88,7 @@ templ ReleasePage(pg Page, d ReleaseData) {
 			</section>
 		</div>
 		<div data-slot="card" data-size="sm">
-			<header data-slot="card-header"><h2 class="stat-title">Crashes</h2></header>
+			<header data-slot="card-header"><h2 class="stat-title">Unhandled errors</h2></header>
 			<section class="px-3 pb-3">
 				@Chart(d.Chart)
 			</section>

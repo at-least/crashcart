@@ -137,10 +137,11 @@ SentrySdk.Init(o => {
 | `release` | `event.release` / `contexts.app.app_version` | Release, release health |
 | `environment` | `event.environment` | Filter |
 | `error_type` | `exception.values[0].type` | Issue title |
-| `error_location` | computed: deepest in-app frame | `CartFragment.java:142` |
+| `transaction` | `event.transaction` | Transaction (issue subtitle, filter) |
+| `culprit` | computed: innermost in-app frame | `CartFragment.java:142` |
 | `device_model`, `os_version` | `contexts.device`, `contexts.os` | Breakdown |
 | `user.id` | `user.id` | Filter, affected users |
-| `handled` | `exception.mechanism.handled` | `false` = crash |
+| `handled` | `exception.mechanism.handled` | Unhandled / Handled badge, `handled=false` filter |
 | breadcrumbs, tags, extra | as sent | Event detail |
 
 Sessions (`session` / `sessions` items) feed

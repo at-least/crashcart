@@ -67,8 +67,8 @@ func TestSourceMap(t *testing.T) {
 		t.Errorf("set by name = %+v", f)
 	}
 	f = set.Resolve(Frame{Filename: "other.js", Lineno: 1, Colno: 1})
-	if f.Filename != "src/a.js" {
-		t.Errorf("single map should be the fallback = %+v", f)
+	if f.Filename != "other.js" {
+		t.Errorf("another file must not be resolved through the only map (a vendor chunk is not the bundle) = %+v", f)
 	}
 
 	// ResolveAll reports whether anything changed: mapped frames do, unmapped ones pass through.
@@ -85,6 +85,41 @@ func TestSourceMap(t *testing.T) {
 	}
 	if out, changed := sm.ResolveAll(nil); changed || len(out) != 0 {
 		t.Errorf("empty: %+v changed=%v", out, changed)
+	}
+}
+
+// TestIndexedSourceMap: a map with `sections` (Metro / Hermes) folds its
+// sub-maps in at their offsets; sourceRoot prefixes the sources.
+func TestIndexedSourceMap(t *testing.T) {
+	inner := `{"version":3,"sourceRoot":"src","sources":["a.js"],"names":["foo"],"mappings":"AAAAA,UAEI"}`
+	sm, err := ParseSourceMap([]byte(`{"version":3,"sections":[{"offset":{"line":0,"column":0},"map":` + inner + `},{"offset":{"line":10,"column":5},"map":` + inner + `}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := sm.Resolve(Frame{Filename: "bundle.js", Lineno: 1, Colno: 1}); f.Filename != "src/a.js" || f.Lineno != 1 || f.Function != "foo" {
+		t.Errorf("first section = %+v", f)
+	}
+	// Second section: line 11, and its first line's columns shifted by 5.
+	if f := sm.Resolve(Frame{Filename: "bundle.js", Lineno: 11, Colno: 6}); f.Filename != "src/a.js" || f.Lineno != 1 || f.Function != "foo" {
+		t.Errorf("second section start = %+v", f)
+	}
+	if f := sm.Resolve(Frame{Filename: "bundle.js", Lineno: 11, Colno: 18}); f.Filename != "src/a.js" || f.Lineno != 3 {
+		t.Errorf("second section, second mapping = %+v", f)
+	}
+	if f := sm.Resolve(Frame{Filename: "bundle.js", Lineno: 11, Colno: 3}); f.Filename != "bundle.js" {
+		t.Errorf("before the section's column offset = %+v", f)
+	}
+	// A set with one map applies it to frames of that file, or of no file
+	// at all — not to a vendor chunk it does not belong to.
+	set := NewSourceMapSet(map[string][]byte{"bundle.js.map": []byte(inner)})
+	if f := set.Resolve(Frame{Filename: "https://x/vendor.js", Lineno: 1, Colno: 1}); f.Filename != "https://x/vendor.js" {
+		t.Errorf("another file must not be resolved through the wrong map: %+v", f)
+	}
+	if f := set.Resolve(Frame{Lineno: 1, Colno: 1}); f.Filename != "src/a.js" {
+		t.Errorf("a nameless frame takes the only map: %+v", f)
+	}
+	if f := set.Resolve(Frame{Filename: "https://x/bundle.js?v=2", Lineno: 1, Colno: 1}); f.Filename != "src/a.js" {
+		t.Errorf("the named file: %+v", f)
 	}
 }
 

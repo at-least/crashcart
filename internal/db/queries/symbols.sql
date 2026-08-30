@@ -42,5 +42,15 @@ FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1;
 SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
 FROM symbol_files WHERE project_id = $1 AND release = sqlc.arg(release)::text AND kind = $2;
 
+-- name: SymbolFilesVersion :one
+-- The rows behind one mapping cache key (a release and kind, or a debug
+-- id), as a count and the latest upload: a cached mapping is served while
+-- this is unchanged.
+SELECT count(*)::bigint AS n, COALESCE(max(uploaded_at), 'epoch'::timestamptz)::timestamptz AS latest
+FROM symbol_files
+WHERE project_id = $1 AND kind = $2
+  AND ((sqlc.arg(debug_id)::text <> '' AND debug_id = sqlc.arg(debug_id)::text)
+    OR (sqlc.arg(debug_id)::text = '' AND release = sqlc.arg(release)::text));
+
 -- name: SymbolFileData :one
 SELECT data FROM symbol_files WHERE id = $1;

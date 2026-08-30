@@ -5,11 +5,12 @@ package web
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
+import "github.com/a-h/templ"
+import templruntime "github.com/a-h/templ/runtime"
+
 import (
 	"strconv"
 
-	"github.com/a-h/templ"
-	templruntime "github.com/a-h/templ/runtime"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
 
@@ -111,15 +112,15 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		if d.Issue.Screen != nil {
+		if d.Issue.Transaction != nil {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var5 string
-			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(" · " + *d.Issue.Screen)
+			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(" · " + *d.Issue.Transaction)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 35, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 35, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {

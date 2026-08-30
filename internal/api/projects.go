@@ -1,10 +1,7 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -13,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/crashcartapp/crashcart/internal/alerts"
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
@@ -39,38 +37,17 @@ func (h *Handler) projectOut(r *http.Request, p sqlc.Project) projectOut {
 	}
 }
 
-// DSN renders `<scheme>://<public_key>@<host>/<id>` for p. The base is
-// cfg.PublicURL when set, otherwise derived from the request
-// (X-Forwarded-Proto or "http", and r.Host). r may be nil.
+// DSN renders the project's DSN on the externally visible origin
+// (cfg.PublicURL, else derived from the request; r may be nil).
 func DSN(cfg config.Config, r *http.Request, p sqlc.Project) string {
-	scheme, host := "http", ""
-	if cfg.PublicURL != "" {
-		s, h, ok := strings.Cut(cfg.PublicURL, "://")
-		if ok {
-			scheme, host = s, h
-		} else {
-			host = cfg.PublicURL
-		}
-		host = strings.TrimSuffix(host, "/")
-	} else if r != nil {
-		if fp := r.Header.Get("X-Forwarded-Proto"); fp != "" {
-			scheme = strings.TrimSpace(strings.Split(fp, ",")[0])
-		} else if r.TLS != nil {
-			scheme = "https"
-		}
-		host = r.Host
+	base := cfg.PublicURL
+	if base == "" && r != nil {
+		base = auth.BaseURL(r, "", cfg.TrustProxy)
 	}
-	if host == "" {
-		host = "localhost" + cfg.Addr
+	if base == "" {
+		base = "http://localhost" + cfg.Addr
 	}
-	return fmt.Sprintf("%s://%s@%s/%d", scheme, p.PublicKey, host, p.ID)
-}
-
-// NewKey returns a random 32-hex DSN public key.
-func NewKey() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return auth.DSN(base, p.PublicKey, p.ID)
 }
 
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -116,7 +93,7 @@ func (h *Handler) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, err := h.Store.CreateProject(r.Context(), sqlc.CreateProjectParams{
-		Slug: in.Slug, Name: in.Name, Platform: nilIfEmpty(in.Platform), PublicKey: NewKey(),
+		Slug: in.Slug, Name: in.Name, Platform: nilIfEmpty(in.Platform), PublicKey: auth.NewProjectKey(),
 	})
 	if err != nil {
 		var pg *pgconn.PgError
@@ -248,7 +225,7 @@ func (h *Handler) rotateKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	np, err := h.Store.RotateProjectKey(r.Context(), sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: NewKey()})
+	np, err := h.Store.RotateProjectKey(r.Context(), sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: auth.NewProjectKey()})
 	if err != nil {
 		h.fail(w, err)
 		return

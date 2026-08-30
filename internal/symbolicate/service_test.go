@@ -154,11 +154,11 @@ func TestEventProGuard(t *testing.T) {
 	upload(t, st, p, KindProGuard, "1.0", uuid, "mapping.txt", []byte(mappingTxt))
 	now := time.Now().UTC()
 	ev := sentry.ParseEvent("", now, []byte(raw), now)
-	if _, ok := svc.Inline(ctx, p.ID, ev); ok {
+	if _, ok, _ := svc.Inline(ctx, p.ID, ev); ok {
 		t.Fatal("negative cache should still hide the mapping")
 	}
 	svc.Invalidate(p.ID, "1.0")
-	frames, ok := svc.Inline(ctx, p.ID, ev)
+	frames, ok, _ := svc.Inline(ctx, p.ID, ev)
 	if !ok || frames[1].Module != "com.example.CartFragment" || frames[1].Function != "loadCart" || frames[1].Lineno != 46 || !frames[1].IsInApp() {
 		t.Fatalf("inline = %v %+v", ok, frames)
 	}
@@ -173,8 +173,8 @@ func TestEventProGuard(t *testing.T) {
 	if !row.Symbolicated || row.Fingerprint == nil || *row.Fingerprint == oldFP {
 		t.Fatalf("event after symbolication: symbolicated=%v fp=%v old=%s", row.Symbolicated, row.Fingerprint, oldFP)
 	}
-	if row.ErrorLocation == nil || *row.ErrorLocation != "CartFragment.java:46" {
-		t.Errorf("error_location = %v", deref(row.ErrorLocation))
+	if row.Culprit == nil || *row.Culprit != "CartFragment.java:46" {
+		t.Errorf("culprit = %v", deref(row.Culprit))
 	}
 	var syms []sentry.Frame
 	if err := json.Unmarshal(row.Symbols, &syms); err != nil || len(syms) != 2 || syms[1].Module != "com.example.CartFragment" {
@@ -236,8 +236,8 @@ func TestReleaseSourceMap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !row.Symbolicated || row.ErrorLocation == nil || *row.ErrorLocation != "a.js:3" {
-			t.Errorf("event %s: symbolicated=%v location=%v", id, row.Symbolicated, row.ErrorLocation)
+		if !row.Symbolicated || row.Culprit == nil || *row.Culprit != "a.js:3" {
+			t.Errorf("event %s: symbolicated=%v location=%v", id, row.Symbolicated, row.Culprit)
 		}
 	}
 	var left int
@@ -311,8 +311,8 @@ func TestEventDSYM(t *testing.T) {
 	if syms[1].Function != "" || syms[1].InstrAddr != "0x1049e3000" {
 		t.Errorf("unresolved frame should be kept as-is: %+v", syms[1])
 	}
-	if row.ErrorLocation == nil || *row.ErrorLocation != "CartViewController.m:88" {
-		t.Errorf("error_location = %v", deref(row.ErrorLocation))
+	if row.Culprit == nil || *row.Culprit != "CartViewController.m:88" {
+		t.Errorf("culprit = %v", deref(row.Culprit))
 	}
 }
 
@@ -333,8 +333,6 @@ func TestEventDSYMSidecarErrorRetries(t *testing.T) {
 		t.Fatal("must stay unsymbolicated")
 	}
 }
-
-func ptr(s string) *string { return &s }
 
 func deref(s *string) string {
 	if s == nil {
@@ -375,7 +373,7 @@ func TestResolveAtIngest(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"})
-	if err != nil || !row.Symbolicated || row.ErrorLocation == nil || *row.ErrorLocation != "Cart.m:7" {
+	if err != nil || !row.Symbolicated || row.Culprit == nil || *row.Culprit != "Cart.m:7" {
 		t.Fatalf("stored symbolicated at ingest: %+v %v", row, err)
 	}
 	if res.Jobs != 1 { // the new_issue alert only
@@ -448,7 +446,7 @@ func TestResolveAtIngestColdSidecar(t *testing.T) {
 		t.Fatalf("job upload: puts=%d stored=%v", fake.puts, fake.stored)
 	}
 	row, _ = st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: row.EventID})
-	if !row.Symbolicated || row.ErrorLocation == nil || *row.ErrorLocation != "Cart.m:7" {
+	if !row.Symbolicated || row.Culprit == nil || *row.Culprit != "Cart.m:7" {
 		t.Fatalf("after job: %+v", row)
 	}
 }

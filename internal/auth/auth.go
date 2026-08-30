@@ -4,6 +4,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strconv"
 	"strings"
@@ -102,9 +104,16 @@ func RateLimit(scope string, limit int, cred Credential) func(http.Handler) http
 	}
 }
 
-// BearerCredential keys buckets by the bearer token.
+// BearerCredential keys buckets by the bearer token — by its digest, so
+// the limiter's map never holds a secret and a flood of huge bogus tokens
+// costs 32 bytes each, not their length.
 func BearerCredential(r *http.Request) string {
-	return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+	tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+	if tok == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(tok))
+	return "k:" + hex.EncodeToString(sum[:])
 }
 
 // IPCredential keys buckets by client IP (for unauthenticated HTML
@@ -114,12 +123,15 @@ func IPCredential(trustProxy bool) Credential {
 }
 
 // clientIP is the peer address, or — behind a trusted reverse proxy —
-// the first X-Forwarded-For address. Without a trusted proxy the header
-// is the client's to forge (its own rate-limit bucket), so it is ignored.
+// the last X-Forwarded-For address: the one the proxy itself appended.
+// Anything left of it came from the client (a proxy appends to whatever
+// header it received), so taking the first entry would let a client pick
+// its own rate-limit bucket. Without a trusted proxy the whole header is
+// the client's to forge, so it is ignored.
 func clientIP(r *http.Request, trustProxy bool) string {
 	if xf := r.Header.Get("X-Forwarded-For"); trustProxy && xf != "" {
-		if i := strings.IndexByte(xf, ','); i >= 0 {
-			xf = xf[:i]
+		if i := strings.LastIndexByte(xf, ','); i >= 0 {
+			xf = xf[i+1:]
 		}
 		return strings.TrimSpace(xf)
 	}

@@ -3,6 +3,7 @@ package symbolicate
 import (
 	"bytes"
 	"context"
+	"debug/macho"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,10 +14,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 // Sidecar is the dSYM symbolication service (`crashcart symbolicate`): an
@@ -45,13 +49,86 @@ type Sidecar struct {
 	resolve sync.Once
 	bin     string
 	binErr  error
+
+	semOnce sync.Once
+	sem     chan struct{} // bounds concurrent llvm-symbolizer processes (each can take a GB on a big dSYM)
+	bases   sync.Map      // file path → loadAddress result, computed once per cached file
+}
+
+// loadInfo is what a symbol file's Mach-O header says about its address
+// space: the __TEXT segment's vmaddr (the address the image is linked
+// at) and, for a fat file, the slice to symbolize.
+type loadInfo struct {
+	base uint64
+	arch string
+}
+
+// loadAddress reads file's load address. A request carries offsets from
+// the image's load address (instruction_addr - image_addr); DWARF holds
+// linked addresses, and an iOS / macOS image is linked at 0x100000000
+// (its __TEXT vmaddr), not 0 — llvm-symbolizer resolves nothing for a
+// bare offset. The base is added to every address before it is asked.
+// A file that is not Mach-O (ELF: linked at 0) has base 0.
+func loadAddress(file string) loadInfo {
+	if fat, err := macho.OpenFat(file); err == nil {
+		defer fat.Close()
+		var pick *macho.FatArch
+		for i := range fat.Arches {
+			a := &fat.Arches[i]
+			if pick == nil || a.Cpu == macho.CpuArm64 {
+				pick = a
+			}
+		}
+		if pick == nil {
+			return loadInfo{}
+		}
+		return loadInfo{base: textBase(pick.File), arch: archName(pick.Cpu)}
+	}
+	f, err := macho.Open(file)
+	if err != nil {
+		return loadInfo{}
+	}
+	defer f.Close()
+	return loadInfo{base: textBase(f)}
+}
+
+func textBase(f *macho.File) uint64 {
+	if seg := f.Segment("__TEXT"); seg != nil {
+		return seg.Addr
+	}
+	return 0
+}
+
+func archName(cpu macho.Cpu) string {
+	switch cpu {
+	case macho.CpuArm64:
+		return "arm64"
+	case macho.CpuAmd64:
+		return "x86_64"
+	case macho.CpuArm:
+		return "arm"
+	case macho.Cpu386:
+		return "i386"
+	}
+	return ""
+}
+
+func (s *Sidecar) loadInfo(file string) loadInfo {
+	if v, ok := s.bases.Load(file); ok {
+		return v.(loadInfo)
+	}
+	li := loadAddress(file)
+	s.bases.Store(file, li)
+	return li
 }
 
 // SidecarDefaultMaxBytes is the cache bound when MaxBytes is 0: room for
 // a few dozen large app dSYMs.
 const SidecarDefaultMaxBytes = 4 << 30
 
-var symbolKey = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+// symbolKey: no leading dot — dotfiles are the PUT temp files, which the
+// eviction skips, so a key like ".x" would escape the cache bound.
+var symbolKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // Handler returns the HTTP handler.
 func (s *Sidecar) Handler() http.Handler {
@@ -156,7 +233,26 @@ func (s *Sidecar) run(ctx context.Context, file string, addrs []string) ([]DSYMR
 	if err != nil {
 		return nil, err
 	}
-	args := append([]string{"--output-style=JSON", "--obj=" + file}, addrs...)
+	li := s.loadInfo(file)
+	args := []string{"--output-style=JSON", "--obj=" + file}
+	if li.arch != "" {
+		args = append(args, "--default-arch="+li.arch)
+	}
+	for _, a := range addrs {
+		if off, ok := sentry.ParseHex(a); ok && li.base != 0 {
+			a = fmt.Sprintf("0x%x", off+li.base)
+		}
+		args = append(args, a)
+	}
+	// One process per request, at most NumCPU at a time: an idle wait
+	// beats NumCPU × 1 GB of llvm-symbolizer on one crash burst.
+	s.semOnce.Do(func() { s.sem = make(chan struct{}, max(runtime.NumCPU(), 1)) })
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	case <-ctx.Done():
+		return nil, fmt.Errorf("llvm-symbolizer: %w", ctx.Err())
+	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -247,6 +343,7 @@ func (s *Sidecar) servePut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.bases.Delete(s.path(key)) // a re-PUT under one key is the same file, but never serve a stale header
 	s.evict(key)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -270,7 +367,13 @@ func (s *Sidecar) evict(keep string) {
 	var files []file
 	var total int64
 	for _, e := range entries {
-		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), ".") { // a PUT's temp file; one left by a crash mid-write is swept
+			if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > time.Hour {
+				os.Remove(s.path(e.Name()))
+			}
 			continue
 		}
 		info, err := e.Info()

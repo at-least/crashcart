@@ -1,6 +1,6 @@
 # The database
 
-CrashCart needs **Postgres 14 or newer**, any build, and nothing else:
+CrashCart needs **Postgres 15 or newer**, any build, and nothing else:
 projects, issues, events with their raw payloads (gzipped), sessions,
 statistics, symbol files and users all live in the one database. No
 extensions, nothing to install in it, one thing to back up.

@@ -165,7 +165,7 @@ func (q *Queries) EnqueueJobs(ctx context.Context, arg EnqueueJobsParams) error 
 
 const enqueueSymbolicateRelease = `-- name: EnqueueSymbolicateRelease :execrows
 INSERT INTO jobs (kind, project_id, args)
-SELECT 'symbolicate', e.project_id, jsonb_build_object('event', replace(e.event_id::text, '-', ''), 'at', e.occurred_at)
+SELECT 'symbolicate', e.project_id, jsonb_build_object('event', replace(e.event_id::text, '-', ''), 'at', to_char(e.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
 FROM events e
 WHERE e.project_id = $1 AND e.release = $2 AND e.symbolicated = false AND e.fingerprint IS NOT NULL
 ORDER BY e.occurred_at DESC LIMIT $3
@@ -181,6 +181,8 @@ type EnqueueSymbolicateReleaseParams struct {
 // Fans a release out into one symbolicate job per unsymbolicated event
 // (bounded, newest first, the whole retention window) in a single
 // statement: one NOTIFY, and each event then retries on its own.
+// 'at' is rendered exactly as ingest renders it (microseconds, Z), so the
+// jobs_pending index folds a fan-out onto a pending ingest-queued job.
 func (q *Queries) EnqueueSymbolicateRelease(ctx context.Context, arg EnqueueSymbolicateReleaseParams) (int64, error) {
 	result, err := q.db.Exec(ctx, enqueueSymbolicateRelease, arg.ProjectID, arg.Release, arg.Limit)
 	if err != nil {
@@ -232,12 +234,23 @@ func (q *Queries) MetricsGauges(ctx context.Context) (MetricsGaugesRow, error) {
 }
 
 const releaseJob = `-- name: ReleaseJob :exec
-UPDATE jobs SET locked_until = NULL, attempts = GREATEST(0, attempts - 1)
-WHERE id = $1 AND locked_until IS NOT NULL AND locked_until >= now()
+WITH released AS (
+    UPDATE jobs SET locked_until = NULL, attempts = GREATEST(0, attempts - 1)
+    WHERE jobs.id = $1 AND jobs.locked_until IS NOT NULL AND jobs.locked_until >= now()
+      AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = jobs.kind AND j.project_id = jobs.project_id
+                      AND j.args = jobs.args AND j.id <> jobs.id AND j.attempts < 8)
+    RETURNING jobs.id
+)
+DELETE FROM jobs WHERE jobs.id = $1 AND jobs.locked_until IS NOT NULL AND jobs.locked_until >= now()
+  AND NOT EXISTS (SELECT 1 FROM released)
 `
 
 // Shutdown mid-job: give the lease back without counting an attempt (only
 // while the lease is still ours: an expired one may have been claimed).
+// A job on its last attempt is outside the jobs_pending index, so a newer
+// duplicate may have been enqueued meanwhile; then this row is dropped
+// instead of released (the newer one runs) — un-counting the attempt
+// would collide with it.
 func (q *Queries) ReleaseJob(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, releaseJob, id)
 	return err

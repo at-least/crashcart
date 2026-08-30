@@ -210,7 +210,7 @@ func ParseHex(s string) (uint64, bool) {
 }
 
 // IssueTitle is the human title for the event's issue: the exception type,
-// the screen it happened in when known, and a short form of the message so
+// the transaction it happened in when known, and a short form of the message so
 // two "Error" issues can be told apart in a list.
 func (e *Event) IssueTitle() string {
 	t := e.ErrorType
@@ -221,9 +221,6 @@ func (e *Event) IssueTitle() string {
 		}
 		t = "Unknown"
 	}
-	if e.Screen != "" {
-		t += " in " + e.Screen
-	}
 	if len(e.Exceptions) > e.Primary {
 		if v, _, _ := strings.Cut(strings.TrimSpace(e.Exceptions[e.Primary].Value), "\n"); v != "" {
 			t += ": " + Truncate(v, 80)
@@ -232,10 +229,10 @@ func (e *Event) IssueTitle() string {
 	return t
 }
 
-// ErrorLocation is "File.ext:line" of the innermost code frame, ranked:
+// Culprit is "File.ext:line" of the innermost code frame, ranked:
 // in-app with a file and line, then in-app, then any frame with a file and
 // line, then whatever is innermost. "" without usable frames.
-func ErrorLocation(frames []Frame) string {
+func Culprit(frames []Frame) string {
 	var best *Frame
 	bestRank := -1
 	for i := range frames {
@@ -278,12 +275,16 @@ func (e *Event) NeedsSymbolication() bool {
 			return true
 		}
 	}
+	// The same predicates the resolver applies (a cached lookup when the
+	// mapping is not there): a ProGuard mapping can be matched by release
+	// as well as by the debug_meta uuid, and a bundle is minified whether
+	// or not its name says ".min." (webpack's "main.3f2a1c.js" does not).
 	switch e.Platform {
-	case "android", "java":
-		return len(e.Frames()) > 0 && len(e.DebugImages) > 0 // proguard uuid in debug_meta
-	case "javascript", "node":
+	case "android", "java", "kotlin":
+		return len(e.Frames()) > 0
+	case "javascript", "node", "react-native":
 		for _, f := range e.Frames() {
-			if f.Colno > 0 && strings.Contains(f.Filename, ".min.") {
+			if f.Colno > 0 {
 				return true
 			}
 		}

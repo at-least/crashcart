@@ -2,16 +2,18 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/crashcartapp/crashcart/internal/alerts"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
 
-var alertTypes = map[string]bool{"new_issue": true, "regression": true, "crash_spike": true}
+var alertTypes = map[string]bool{"new_issue": true, "regression": true, "unhandled_spike": true}
 
 func (h *Handler) getAlerts(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.project(w, r)
@@ -49,9 +51,12 @@ func (h *Handler) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	cur := sqlc.AlertRule{Enabled: true, CooldownMinutes: 60}
-	if rule, err := h.Store.GetAlertRule(r.Context(), sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ)}); err == nil {
-		cur = rule
+	cur, err := h.Store.GetAlertRule(r.Context(), sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		cur = sqlc.AlertRule{Enabled: true, CooldownMinutes: 60}
+	} else if err != nil { // a read error must not re-enable a disabled rule with defaults
+		h.fail(w, err)
+		return
 	}
 	if in.Enabled != nil {
 		cur.Enabled = *in.Enabled

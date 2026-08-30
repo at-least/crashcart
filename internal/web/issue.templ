@@ -31,8 +31,8 @@ templ IssuePage(pg Page, d IssueData) {
 				if d.Issue.ErrorType != nil {
 					<span>{ *d.Issue.ErrorType }</span>
 				}
-				if d.Issue.Screen != nil {
-					<span>{ " · " + *d.Issue.Screen }</span>
+				if d.Issue.Transaction != nil {
+					<span>{ " · " + *d.Issue.Transaction }</span>
 				}
 				<span class="fp" title="fingerprint">{ " · " + string(d.Issue.Fingerprint) }</span>
 			</p>

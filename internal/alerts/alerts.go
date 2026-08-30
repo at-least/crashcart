@@ -1,5 +1,5 @@
 // Package alerts delivers notifications (webhook, Telegram) for new issues,
-// regressions and crash spikes.
+// regressions and unhandled-error spikes.
 package alerts
 
 import (
@@ -31,17 +31,17 @@ import (
 
 // Alert types (alert_rules.type).
 const (
-	TypeNewIssue   = "new_issue"
-	TypeRegression = "regression"
-	TypeCrashSpike = "crash_spike"
+	TypeNewIssue       = "new_issue"
+	TypeRegression     = "regression"
+	TypeUnhandledSpike = "unhandled_spike"
 )
 
-// Spike thresholds: at least MinSpikeCrashes in the last hour and
+// Spike thresholds: at least MinSpikeUnhandled in the last hour and
 // SpikeFactor × the hourly mean of the 24 h before.
 const (
-	MinSpikeCrashes = 10
-	SpikeFactor     = 3
-	defaultCooldown = 60
+	MinSpikeUnhandled = 10
+	SpikeFactor       = 3
+	defaultCooldown   = 60
 )
 
 // AlertsTotal counts deliveries by alert type, channel kind and outcome.
@@ -78,8 +78,8 @@ type Payload struct {
 	FirstRelease  *string `json:"first_release,omitempty"`
 	LastRelease   *string `json:"last_release,omitempty"`
 	MoreSinceLast *int64  `json:"more_since_last,omitempty"` // new_issue: other issues that appeared since the last alert (suppressed by the cooldown)
-	Recent        *int64  `json:"recent,omitempty"`          // crash_spike: crashes in the last hour
-	Baseline      *int64  `json:"baseline,omitempty"`        // crash_spike: crashes in the 24 h before
+	Recent        *int64  `json:"recent,omitempty"`          // unhandled_spike: unhandled in the last hour
+	Baseline      *int64  `json:"baseline,omitempty"`        // unhandled_spike: unhandled in the 24 h before
 	URL           string  `json:"url"`
 }
 
@@ -132,16 +132,16 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 	})
 }
 
-// CheckSpikes evaluates the crash_spike rule of every project (scheduler).
+// CheckSpikes evaluates the unhandled_spike rule of every project (scheduler).
 func (n *Notifier) CheckSpikes(ctx context.Context) error {
 	// "recent" is the exact last hour from the raw table; the baseline is
 	// the 24 full hourly buckets before the bucket the recent hour starts
-	// in (that partial bucket would count its crashes on both sides).
+	// in (that partial bucket would count its unhandled on both sides).
 	// One query covers every project.
 	now := time.Now().UTC()
 	recentFrom := now.Add(-time.Hour)
 	baselineTo := recentFrom.Truncate(time.Hour)
-	rows, err := n.Store.CrashSpikeInputs(ctx, sqlc.CrashSpikeInputsParams{
+	rows, err := n.Store.UnhandledSpikeInputs(ctx, sqlc.UnhandledSpikeInputsParams{
 		RecentFrom: recentFrom, BaselineFrom: baselineTo.Add(-24 * time.Hour), BaselineTo: baselineTo,
 	})
 	if err != nil {
@@ -159,7 +159,7 @@ func (n *Notifier) CheckSpikes(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// spike claims the crash_spike cooldown for the project and notifies.
+// spike claims the unhandled_spike cooldown for the project and notifies.
 func (n *Notifier) spike(ctx context.Context, projectID, recent, baseline int64) error {
 	if err := EnsureRules(ctx, n.Store, projectID); err != nil {
 		return err
@@ -168,22 +168,22 @@ func (n *Notifier) spike(ctx context.Context, projectID, recent, baseline int64)
 	if err != nil {
 		return err
 	}
-	return n.deliver(ctx, projectID, TypeCrashSpike, func(*time.Time) Payload {
+	return n.deliver(ctx, projectID, TypeUnhandledSpike, func(*time.Time) Payload {
 		return Payload{
-			Type: TypeCrashSpike, Project: p.Name, ProjectSlug: p.Slug,
-			Title:  fmt.Sprintf("Crash spike: %d crashes in the last hour (baseline %.1f/h)", recent, float64(baseline)/24),
+			Type: TypeUnhandledSpike, Project: p.Name, ProjectSlug: p.Slug,
+			Title:  fmt.Sprintf("Unhandled error spike: %d unhandled errors in the last hour (baseline %.1f/h)", recent, float64(baseline)/24),
 			Level:  "fatal",
 			Recent: &recent, Baseline: &baseline,
-			URL: n.link(p.Slug, "?crash=1&range=1h"),
+			URL: n.link(p.Slug, "?handled=false&range=1h"),
 		}
 	})
 }
 
-// IsSpike is the crash-spike rule: recent crashes in the last hour versus
+// IsSpike is the unhandled-spike rule: unhandled errors in the last hour versus
 // the hourly mean of the 24 h before it.
 func IsSpike(recent, baseline int64) bool {
 	mean := float64(baseline) / 24
-	return recent >= MinSpikeCrashes && float64(recent) >= SpikeFactor*mean
+	return recent >= MinSpikeUnhandled && float64(recent) >= SpikeFactor*mean
 }
 
 // link builds the viewer URL for a project path; relative when PUBLIC_URL
@@ -275,13 +275,13 @@ func TelegramText(p Payload) string {
 		b.WriteString("New issue")
 	case TypeRegression:
 		b.WriteString("Regression")
-	case TypeCrashSpike:
-		b.WriteString("Crash spike")
+	case TypeUnhandledSpike:
+		b.WriteString("Unhandled error spike")
 	default:
 		b.WriteString(p.Type)
 	}
 	fmt.Fprintf(&b, " in %s\n%s", p.Project, p.Title)
-	if p.Type != TypeCrashSpike {
+	if p.Type != TypeUnhandledSpike {
 		fmt.Fprintf(&b, "\n%s · %d events", p.Level, p.EventCount)
 		if p.LastRelease != nil && *p.LastRelease != "" {
 			fmt.Fprintf(&b, " · release %s", *p.LastRelease)
@@ -399,8 +399,10 @@ func (n *Notifier) client() *http.Client {
 			return CheckWebhookAddr(ip, allow)
 		}}
 		n.http = &http.Client{
-			Timeout:   15 * time.Second,
-			Transport: &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: 10 * time.Second, Proxy: http.ProxyFromEnvironment},
+			Timeout: 15 * time.Second,
+			// No proxy: through one the dialer would check the proxy's
+			// address, and the proxy would fetch the inward URL for us.
+			Transport: &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: 10 * time.Second, Proxy: nil},
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return fmt.Errorf("%w: redirects are not followed", ErrBlockedURL)
 			},

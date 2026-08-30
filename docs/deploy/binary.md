@@ -21,7 +21,7 @@ Builds are published for `linux_amd64`, `linux_arm64`, `darwin_amd64` and
 checksums.
 
 ::: details Building from source instead
-Needs Go 1.24 or newer.
+Needs Go 1.25 or newer.
 
 ```sh
 git clone https://github.com/crashcartapp/crashcart

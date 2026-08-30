@@ -7,7 +7,7 @@ should go.
 |---|---|
 | **New issue** | An issue is seen for the first time |
 | **Regression** | A resolved issue comes back on a different release |
-| **Crash spike** | At least 10 crashes in the last hour, and 3× the usual hourly rate of the previous day |
+| **Unhandled error spike** | At least 10 unhandled errors (`exception.mechanism.handled = false`) in the last hour, and 3× the usual hourly rate of the previous day |
 
 Each alert type has a **cooldown** (minutes) so a noisy hour doesn't
 produce a message every minute.
@@ -29,7 +29,7 @@ takes it.
   "type": "new_issue",
   "project": "Shop app (iOS)",
   "project_slug": "shop-ios",
-  "title": "NSInvalidArgumentException at CartViewController.swift:88",
+  "title": "NSInvalidArgumentException: -[__NSArrayI objectAtIndex:]: index 3 beyond bounds",
   "level": "fatal",
   "event_count": 1,
   "first_release": "2.4.1",
@@ -38,8 +38,8 @@ takes it.
 }
 ```
 
-A crash-spike alert carries `recent` (crashes in the last hour) and
-`baseline` (crashes in the 24 hours before) instead of the issue fields.
+An unhandled-spike alert (`"type": "unhandled_spike"`) carries `recent` (unhandled errors in the
+last hour) and `baseline` (in the 24 hours before) instead of the issue fields.
 `url` links straight to the issue or project, using
 [`PUBLIC_URL`](/deploy/configuration).
 

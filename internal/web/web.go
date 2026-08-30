@@ -45,24 +45,32 @@ type Web struct {
 	Log      *slog.Logger
 	Symbols  *symbolicate.Service
 	Listener *store.Listener // wakes the SSE stream on issue notifications; nil = poll only
+	Stopping <-chan struct{} // closed at shutdown: the SSE streams end so Shutdown can drain the rest; nil = never
 
 	access *auth.Access
 }
 
 // Register mounts the HTML routes and /static on mux.
 func (w *Web) Register(mux *http.ServeMux) {
-	w.access = &auth.Access{Store: w.Store}
-	limit := auth.RateLimit("web", w.Cfg.RateLimit, auth.IPCredential(w.Cfg.TrustProxy))
-	// Signed-in pages; the sign-in pages themselves are public (rate limited).
-	page := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, w.access.Session, limit) }
-	public := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, w.access.Identify, limit) }
+	w.access = &auth.Access{Store: w.Store, TrustProxy: w.Cfg.TrustProxy}
+	ip := auth.IPCredential(w.Cfg.TrustProxy)
+	// The limiter runs outermost: a flood of unauthenticated requests must
+	// not cost a session lookup each (the API does the same).
+	limit := auth.RateLimit("web", w.Cfg.RateLimit, ip)
+	page := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, limit, w.access.Session) }
+	public := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, limit, w.access.Identify) }
 	mutation := func(h http.HandlerFunc) http.Handler { return page(requireHX(h)) }
+	// Password posts get their own, much smaller budget: each one is a
+	// bcrypt verification, and the general limit is sized for page loads.
+	signIn := func(h http.HandlerFunc) http.Handler {
+		return auth.Chain(sameOrigin(h), auth.RateLimit("login", LoginRateLimit, ip), w.access.Identify)
+	}
 
 	mux.Handle("GET /login", public(w.loginPage))
-	mux.Handle("POST /login", public(sameOrigin(w.login)))
+	mux.Handle("POST /login", signIn(w.login))
 	mux.Handle("POST /logout", mutation(w.logout))
 	mux.Handle("GET /setup", public(w.setupPage))
-	mux.Handle("POST /setup", public(sameOrigin(w.setup)))
+	mux.Handle("POST /setup", signIn(w.setup))
 	mux.Handle("GET /account", page(w.account))
 	mux.Handle("POST /account/users", mutation(w.accountUserAdd))
 	mux.Handle("DELETE /account/users/{id}", mutation(w.accountUserDelete))
@@ -222,14 +230,5 @@ func redirect(rw http.ResponseWriter, r *http.Request, to string) {
 
 // baseURL is the externally visible origin for DSN display.
 func (w *Web) baseURL(r *http.Request) string {
-	if w.Cfg.PublicURL != "" {
-		return w.Cfg.PublicURL
-	}
-	scheme := "http"
-	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
-		scheme = p
-	} else if r.TLS != nil {
-		scheme = "https"
-	}
-	return scheme + "://" + r.Host
+	return auth.BaseURL(r, w.Cfg.PublicURL, w.Cfg.TrustProxy)
 }

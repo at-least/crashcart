@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -48,18 +49,23 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.SampleKeepFirst, p.SampleRate = 2, 0 // keep first 2 per issue, then nothing
+	p.SampleKeepFirst, p.SampleRate = 2, 0 // keep first 2 per issue (× UnhandledKeepFactor for unhandled), then nothing
 	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
 	now := time.Now().UTC()
 	ts := now.Add(-time.Minute).Format(time.RFC3339)
 
-	// Three events of one issue on 1.0: 2 stored, 1 sampled out; count exact.
-	env := sentry.Parse(envelope(crash("1.0", ts, 1), crash("1.0", ts, 2), crash("1.0", ts, 3)), now)
+	// keep+1 unhandled events of one issue on 1.0: keep stored, 1 sampled out; count exact.
+	const keep = 2 * UnhandledKeepFactor
+	var items []string
+	for i := 1; i <= keep+1; i++ {
+		items = append(items, crash("1.0", ts, i))
+	}
+	env := sentry.Parse(envelope(items...), now)
 	res, err := in.Ingest(ctx, p, env, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Stored != 2 || res.Sampled != 1 || len(res.NewIssues) != 1 {
+	if res.Stored != keep || res.Sampled != 1 || len(res.NewIssues) != 1 {
 		t.Fatalf("result = %+v", res)
 	}
 	fp := res.NewIssues[0]
@@ -67,12 +73,12 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if iss.EventCount != 3 || iss.StoredCount != 2 || iss.Status != "unresolved" || *iss.LastRelease != "1.0" || iss.Title != "NullPointerException: boom" {
+	if iss.EventCount != keep+1 || iss.StoredCount != keep || iss.Status != "unresolved" || *iss.LastRelease != "1.0" || iss.Title != "NullPointerException: boom" {
 		t.Fatalf("issue = %+v", iss)
 	}
 	var n int
 	st.Pool.QueryRow(ctx, "SELECT count(*) FROM events WHERE fingerprint = $1", fp).Scan(&n)
-	if n != 2 {
+	if n != keep {
 		t.Fatalf("stored events = %d", n)
 	}
 	if n, _ := st.CountJobs(ctx); n != 1 { // one new_issue alert job
@@ -205,10 +211,10 @@ func TestIngestLifecycle(t *testing.T) {
 	}
 
 	// Hourly stats via the view (the hour is dirty, so computed live).
-	var crashes int64
-	st.Pool.QueryRow(ctx, "SELECT sum(crashes) FROM event_stats_hourly WHERE project_id=$1", p.ID).Scan(&crashes)
-	if crashes != 2 { // only the first 2 were stored (keep_first=2, rate 0); later ones were counted but sampled out
-		t.Fatalf("crashes = %d", crashes)
+	var unhandled int64
+	st.Pool.QueryRow(ctx, "SELECT sum(unhandled) FROM event_stats_hourly WHERE project_id=$1", p.ID).Scan(&unhandled)
+	if unhandled != keep { // only the first keep were stored (rate 0); later ones were counted but sampled out
+		t.Fatalf("unhandled = %d", unhandled)
 	}
 }
 
@@ -343,5 +349,142 @@ func TestIngestClampsFarPastClock(t *testing.T) {
 	}
 	if err := st.Pool.QueryRow(ctx, `SELECT first_seen FROM releases WHERE project_id = $1 AND release = '1.0'`, p.ID).Scan(&at); err != nil || !at.Equal(late) {
 		t.Fatalf("releases.first_seen = %v %v, want %v", at, err, late)
+	}
+}
+
+// TestIngestRegressionAlertsOnce: the envelope that flips a resolved issue
+// to regression reports it (alert job, SSE); the ones after it — the
+// issue keeps crashing — do not, or one issue would starve every other
+// regression alert for the cooldown.
+func TestIngestRegressionAlertsOnce(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+	ts := now.Format(time.RFC3339)
+	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.0", ts, 1)), now), now)
+	if err != nil || len(res.NewIssues) != 1 {
+		t.Fatalf("first: %+v %v", res, err)
+	}
+	fp := res.NewIssues[0]
+	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "resolved"}); err != nil {
+		t.Fatal(err)
+	}
+	st.Pool.Exec(ctx, "DELETE FROM jobs")
+	for i := 2; i <= 4; i++ {
+		res, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", ts, i)), now), now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := i == 2; (len(res.Regressions) == 1) != want {
+			t.Errorf("envelope %d: regressions=%v, want reported=%v", i, res.Regressions, want)
+		}
+	}
+	var n int
+	st.Pool.QueryRow(ctx, "SELECT count(*) FROM jobs WHERE kind = 'alert' AND args->>'type' = 'regression'").Scan(&n)
+	if n != 1 {
+		t.Fatalf("regression alert jobs = %d, want 1", n)
+	}
+}
+
+// TestIngestHostileStrings: a \u0000 character (valid JSON, refused by
+// Postgres) or a string past an index row's size must not fail the
+// envelope — the SDK would resend it forever; and a field of the wrong
+// JSON type is dropped, not the event.
+func TestIngestHostileStrings(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+	long := strings.Repeat("x", 3000)
+	body := `{"event_id":"aa","timestamp":"` + now.Format(time.RFC3339) + `","level":"error","platform":"android",
+	 "release":"` + long + `","environment":"a\u0000b","transaction":"` + long + `","user":{"id":"` + long + `"},
+	 "tags":{"k\u0000":"v\u0000","` + strings.Repeat("k", 40) + `":"dropped","ok":"` + long + `"},
+	 "contexts":{"device":{"model":"m\u0000"},"os":{"version":"` + long + `"}},
+	 "exception":{"values":[{"type":"E\u0000rr","value":"boom\u0000","stacktrace":{"frames":[{"filename":"F\u0000.java","function":"f","lineno":"12","in_app":true}]}}]}}`
+	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(body), now), now)
+	if err != nil || res.Stored != 1 {
+		t.Fatalf("hostile strings: %+v %v", res, err)
+	}
+	var release, env, transaction, user, model, osv, errType string
+	var tags []byte
+	if err = st.Pool.QueryRow(ctx, "SELECT release, environment, transaction, user_id, device_model, os_version, error_type, tags FROM events").Scan(&release, &env, &transaction, &user, &model, &osv, &errType, &tags); err != nil {
+		t.Fatal(err)
+	}
+	if len(release) != 200 || env != "ab" || len(transaction) != 200 || len(user) != 128 || model != "m" || len(osv) != 200 || errType != "Err" {
+		t.Errorf("bounds: release=%d env=%q transaction=%d user=%d model=%q os=%d type=%q", len(release), env, len(transaction), len(user), model, len(osv), errType)
+	}
+	s := string(tags)
+	if !strings.Contains(s, `"k": "v"`) || strings.Contains(s, "dropped") || strings.Contains(s, strings.Repeat("x", 201)) {
+		t.Errorf("tags = %s", s)
+	}
+	var title string
+	if err := st.Pool.QueryRow(ctx, "SELECT title FROM issues").Scan(&title); err != nil || strings.Contains(title, "\x00") || title != "Err: boom" {
+		t.Errorf("issue title = %q %v", title, err)
+	}
+}
+
+// TestIngestSessionBounds: aggregate counts past int32 are clamped (the
+// column is INTEGER: it wrapped negative), and a session started in the
+// far future is taken as now (it would live in the default partition for
+// good and hold a dirty hour forever).
+func TestIngestSessionBounds(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+	sess := []byte(`{}` + "\n" + `{"type":"sessions"}` + "\n" +
+		`{"attrs":{"release":"1.1"},"aggregates":[{"started":"2200-01-01T00:00:00Z","exited":3000000000}]}` + "\n")
+	if res, err := in.Ingest(ctx, p, sentry.Parse(sess, now), now); err != nil || res.Sessions != 1 {
+		t.Fatalf("sessions: %+v %v", res, err)
+	}
+	var count int64
+	var started time.Time
+	if err := st.Pool.QueryRow(ctx, "SELECT count, started_at FROM sessions").Scan(&count, &started); err != nil {
+		t.Fatal(err)
+	}
+	if count != math.MaxInt32 || started.After(now.Add(time.Minute)) {
+		t.Fatalf("count=%d started=%v", count, started)
+	}
+}
+
+// TestIngestClampedResendDedupes: an event whose clock was far off gets
+// the server's time; the SDK's resend gets a different one, and must
+// still be recognized as the same event (not counted twice).
+func TestIngestClampedResendDedupes(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+	future := now.Add(3 * time.Hour).Format(time.RFC3339)
+	env := envelope(crash("1.0", future, 1))
+	if res, err := in.Ingest(ctx, p, sentry.Parse(env, now), now); err != nil || res.Stored != 1 {
+		t.Fatalf("first: %+v %v", res, err)
+	}
+	later := now.Add(2 * time.Minute)
+	res, err := in.Ingest(ctx, p, sentry.Parse(env, later), later)
+	if err != nil || res.Duplicates != 1 || res.Stored != 0 {
+		t.Fatalf("resend: %+v %v", res, err)
+	}
+	var n int64
+	st.Pool.QueryRow(ctx, "SELECT max(event_count) FROM issues").Scan(&n)
+	if n != 1 {
+		t.Fatalf("event_count = %d, want 1", n)
 	}
 }

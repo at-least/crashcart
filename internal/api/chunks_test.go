@@ -7,12 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
 
 func sha(b []byte) string {

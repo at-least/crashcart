@@ -64,7 +64,7 @@ func (f IssueFilter) where() (string, []any) {
 	return strings.Join(w, " AND "), args
 }
 
-const issueColumns = `project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count,
+const issueColumns = `project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count,
 	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at`
 
 // Bounds on a filter: an OFFSET is a sort-and-discard in Postgres, and a
@@ -103,7 +103,7 @@ func (s *Store) ListIssues(ctx context.Context, f IssueFilter) (issues []sqlc.Is
 	defer r.Close()
 	for r.Next() {
 		var is sqlc.Issue
-		if err := r.Scan(&is.ProjectID, &is.Fingerprint, &is.Title, &is.Level, &is.ErrorType, &is.Screen, &is.Platform, &is.Status, &is.StatusBy,
+		if err := r.Scan(&is.ProjectID, &is.Fingerprint, &is.Title, &is.Level, &is.ErrorType, &is.Transaction, &is.Platform, &is.Status, &is.StatusBy,
 			&is.EventCount, &is.StoredCount, &is.FirstSeen, &is.LastSeen, &is.FirstRelease, &is.LastRelease, &is.Releases, &is.ResolvedReleases,
 			&is.CreatedAt, &is.UpdatedAt, &total); err != nil {
 			return nil, 0, err

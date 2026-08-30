@@ -1,6 +1,9 @@
 package ingest
 
-import "regexp"
+import (
+	"encoding/json"
+	"regexp"
+)
 
 var (
 	emailRe = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
@@ -22,6 +25,42 @@ var ipAddressField = regexp.MustCompile(`"ip_address"\s*:\s*"[^"]*"`)
 // body, plus the ip_address fields.
 func RedactRaw(s string) string {
 	return ipAddressField.ReplaceAllString(RedactText(s), `"ip_address":"[redacted]"`)
+}
+
+// redactRawUser masks user.id / user.username in a raw event document the
+// way RedactUserID masks the column — the event page shows the payload,
+// and a masked column next to the plain id one click away would be no
+// redaction. Only the user object is re-encoded; on any parse failure the
+// document is returned as is (the text rules have already run over it).
+func redactRawUser(raw []byte) []byte {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(raw, &top) != nil || len(top["user"]) == 0 {
+		return raw
+	}
+	var user map[string]any
+	if json.Unmarshal(top["user"], &user) != nil {
+		return raw
+	}
+	changed := false
+	for _, k := range []string{"id", "username"} {
+		if s, ok := user[k].(string); ok && s != "" {
+			user[k] = RedactUserID(s)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	u, err := json.Marshal(user)
+	if err != nil {
+		return raw
+	}
+	top["user"] = u
+	out, err := json.Marshal(top)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // RedactText scrubs emails, card numbers and phone-like sequences.

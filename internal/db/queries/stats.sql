@@ -5,26 +5,26 @@
 -- back, in order.
 
 -- name: Timeline :many
--- Events / crashes per bucket, split into the top `top` releases (by
--- crashes, then events) plus 'other'; every bucket for every series,
+-- Events / unhandled per bucket, split into the top `top` releases (by
+-- unhandled, then events) plus 'other'; every bucket for every series,
 -- ordered by bucket, then series rank.
 WITH s AS (
     SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, release,
-           sum(events) AS events, sum(crashes) AS crashes
+           sum(events) AS events, sum(unhandled) AS unhandled
     FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz)
     GROUP BY 1, 2),
 ranked AS (
-    SELECT release, row_number() OVER (ORDER BY sum(crashes) DESC, sum(events) DESC, release) AS rank
+    SELECT release, row_number() OVER (ORDER BY sum(unhandled) DESC, sum(events) DESC, release) AS rank
     FROM s GROUP BY release),
 series AS (
     SELECT CASE WHEN rank <= sqlc.arg(top)::bigint THEN release ELSE 'other' END AS series, min(rank) AS rank
     FROM ranked GROUP BY 1),
 folded AS (
     SELECT s.bucket, CASE WHEN r.rank <= sqlc.arg(top)::bigint THEN s.release ELSE 'other' END AS series,
-           sum(s.events) AS events, sum(s.crashes) AS crashes
+           sum(s.events) AS events, sum(s.unhandled) AS unhandled
     FROM s JOIN ranked r USING (release) GROUP BY 1, 2)
 SELECT b::timestamptz AS bucket, se.series AS release,
-       COALESCE(f.events, 0)::bigint AS events, COALESCE(f.crashes, 0)::bigint AS crashes
+       COALESCE(f.events, 0)::bigint AS events, COALESCE(f.unhandled, 0)::bigint AS unhandled
 FROM crashcart_buckets(sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS b
 CROSS JOIN series se
 LEFT JOIN folded f ON f.bucket = b AND f.series = se.series
@@ -32,7 +32,7 @@ ORDER BY b, se.rank;
 
 -- name: Totals :one
 SELECT COALESCE(sum(events), 0)::bigint AS events,
-       COALESCE(sum(crashes), 0)::bigint AS crashes,
+       COALESCE(sum(unhandled), 0)::bigint AS unhandled,
        COALESCE(sum(errors), 0)::bigint AS errors
 FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz);
 
@@ -47,7 +47,7 @@ GROUP BY level;
 SELECT s.release,
        COALESCE(r.platforms, '{}'::text[])::text[] AS platforms,
        COALESCE(r.first_seen, min(s.bucket))::timestamptz AS first_seen, max(s.bucket)::timestamptz AS last_seen,
-       sum(s.events)::bigint AS events, sum(s.crashes)::bigint AS crashes, sum(s.errors)::bigint AS errors
+       sum(s.events)::bigint AS events, sum(s.unhandled)::bigint AS unhandled, sum(s.errors)::bigint AS errors
 FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz) AS s
 LEFT JOIN releases r ON r.project_id = s.project_id AND r.release = s.release
 WHERE s.release <> ''
@@ -55,11 +55,11 @@ GROUP BY s.release, r.platforms, r.first_seen ORDER BY max(s.bucket) DESC, s.rel
 
 -- name: ReleaseTimeline :many
 WITH h AS (
-    SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, sum(events) AS events, sum(crashes) AS crashes
+    SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, sum(events) AS events, sum(unhandled) AS unhandled
     FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz)
     WHERE release = sqlc.arg(release)::text
     GROUP BY 1)
-SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events, COALESCE(h.crashes, 0)::bigint AS crashes
+SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events, COALESCE(h.unhandled, 0)::bigint AS unhandled
 FROM crashcart_buckets(sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS b
 LEFT JOIN h ON h.bucket = b
 ORDER BY b;
@@ -82,19 +82,19 @@ GROUP BY e.project_id, e.release
 ORDER BY max(e.bucket) DESC, e.release DESC
 LIMIT 1;
 
--- name: CrashSpikeInputs :many
--- Per project: crashes in the exact last hour (from the raw table, so the
+-- name: UnhandledSpikeInputs :many
+-- Per project: unhandled in the exact last hour (from the raw table, so the
 -- top of the hour does not matter) vs. the 24 full hourly buckets before
--- that hour. Projects with no crashes in either are omitted.
+-- that hour. Projects with no unhandled in either are omitted.
 WITH recent AS (
     -- Per project (every events index leads with project_id: this is the
-    -- events_project_crash index per project, not a scan of the partition).
+    -- events_project_unhandled index per project, not a scan of the partition).
     SELECT p.id AS project_id,
            (SELECT count(*) FROM events e WHERE e.project_id = p.id AND e.occurred_at >= sqlc.arg(recent_from)::timestamptz
-              AND crashcart_is_crash(e.level, e.handled)) AS n
+              AND e.handled = false) AS n
     FROM projects p),
 baseline AS (
-    SELECT project_id, sum(crashes) AS n FROM event_stats_hourly
+    SELECT project_id, sum(unhandled) AS n FROM event_stats_hourly
     WHERE bucket >= sqlc.arg(baseline_from)::timestamptz AND bucket < sqlc.arg(baseline_to)::timestamptz
     GROUP BY project_id)
 SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
@@ -112,14 +112,15 @@ GROUP BY platform ORDER BY events DESC;
 -- Called in the transaction that writes or updates events: the hours
 -- touched (distinct, UTC hour starts) are recomputed by the rollup job and
 -- read live until then. gen moves so a mark that lands while the job runs
--- is not cleared by it.
+-- is not cleared by it. Rows insert in bucket order (the upsert locks each
+-- row until commit; two writers in opposite orders would deadlock).
 INSERT INTO event_stats_dirty (project_id, bucket)
-SELECT sqlc.arg(project_id)::bigint, unnest(sqlc.arg(buckets)::timestamptz[])
+SELECT sqlc.arg(project_id)::bigint, b FROM unnest(sqlc.arg(buckets)::timestamptz[]) AS b ORDER BY b
 ON CONFLICT (project_id, bucket) DO UPDATE SET gen = event_stats_dirty.gen + 1;
 
 -- name: MarkSessionStatsDirty :exec
 INSERT INTO session_stats_dirty (project_id, bucket)
-SELECT sqlc.arg(project_id)::bigint, unnest(sqlc.arg(buckets)::timestamptz[])
+SELECT sqlc.arg(project_id)::bigint, b FROM unnest(sqlc.arg(buckets)::timestamptz[]) AS b ORDER BY b
 ON CONFLICT (project_id, bucket) DO UPDATE SET gen = session_stats_dirty.gen + 1;
 
 -- name: CountDirtyStats :one

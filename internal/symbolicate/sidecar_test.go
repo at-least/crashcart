@@ -31,7 +31,7 @@ shift 2
 printf '['
 sep=''
 for a in "$@"; do
-  if [ "$a" = "0x10" ]; then
+  if [ "$a" = "0x10" ] || [ "$a" = "0x100000010" ]; then
     printf '%s{"Address":"0x10","ModuleName":"App","Symbol":[{"FunctionName":"-[Cart load]","FileName":"/src/Cart.m","Line":7},{"FunctionName":"outer","FileName":"/src/Outer.m","Line":1}]}' "$sep"
   else
     printf '%s{"Address":"%s","ModuleName":"App","Symbol":[{"FunctionName":"","FileName":"","Line":0}]}' "$sep" "$a"
@@ -80,8 +80,24 @@ func TestSidecarProtocol(t *testing.T) {
 		t.Fatalf("warm: %v loads=%d", err, loads)
 	}
 
-	// Bad keys are refused.
-	for _, key := range []string{"../etc", "a b", ""} {
+	// A Mach-O file linked at 0x100000000: offsets are asked as linked
+	// addresses (the fake resolves 0x100000010; llvm-symbolizer resolves
+	// nothing for a bare offset in an iOS dSYM).
+	img := fakeMachOText(0x0100000c, 0x100000000)
+	res, err = c.Resolve(context.Background(), "8-200", func(context.Context) ([]byte, error) { return img, nil }, addrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ = os.ReadFile(argsFile)
+	if !strings.HasSuffix(string(args), "\n0x100000010\n0x100000020\n") {
+		t.Fatalf("llvm-symbolizer args for a Mach-O = %q", args)
+	}
+	if len(res) != 2 || res[0].Function != "-[Cart load]" || res[1].Resolved() {
+		t.Fatalf("results = %+v", res)
+	}
+
+	// Bad keys are refused (a leading dot would name a temp file the eviction skips).
+	for _, key := range []string{"../etc", "a b", "", ".hidden"} {
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/symbols/"+key, strings.NewReader("x"))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

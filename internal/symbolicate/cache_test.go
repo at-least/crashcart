@@ -22,8 +22,8 @@ func TestCacheEviction(t *testing.T) {
 	}
 	oldest := cacheKey{p.ID, KindProGuard, "r0"}
 	// Nothing uploaded for "new": a negative entry, cached like any other.
-	if m := s.load(context.Background(), cacheKey{p.ID, KindProGuard, "new"}); m != nil {
-		t.Fatalf("mapping for an unknown release = %v", m)
+	if m, err := s.load(context.Background(), cacheKey{p.ID, KindProGuard, "new"}); m != nil || err != nil {
+		t.Fatalf("mapping for an unknown release = %v %v", m, err)
 	}
 	if len(s.cache) != cacheMax {
 		t.Fatalf("cache size = %d, want %d", len(s.cache), cacheMax)
@@ -39,7 +39,7 @@ func TestCacheEviction(t *testing.T) {
 	}
 	// A cached negative entry is served without a fetch until missTTL.
 	s.cache[cacheKey{p.ID, KindProGuard, "new"}].loadedAt = time.Now().Add(-2 * missTTL)
-	s.cache[cacheKey{p.ID, KindProGuard, debugPrefix + "abc"}] = &cacheEntry{mapping: &ProGuardMapping{}, loadedAt: time.Now()}
+	s.cache[cacheKey{p.ID, KindProGuard, debugPrefix + "abc"}] = &cacheEntry{mapping: &ProGuardMapping{}, loadedAt: time.Now(), checkedAt: time.Now()}
 	s.load(context.Background(), cacheKey{p.ID, KindProGuard, "new"})
 	if e := s.cache[cacheKey{p.ID, KindProGuard, "new"}]; e == nil || time.Since(e.loadedAt) > time.Minute {
 		t.Error("an expired negative entry is re-fetched")
@@ -56,4 +56,45 @@ func TestCacheEviction(t *testing.T) {
 	}
 	// Empty cache: nothing to evict, no panic.
 	(&Service{}).evictOldestLocked()
+}
+
+// TestCacheRevalidation: a parsed mapping is served until its rows change
+// — an upload through another replica (Invalidate never reaches this
+// process) must be picked up after revalidateTTL, and a mapping whose
+// rows are unchanged is not re-read.
+func TestCacheRevalidation(t *testing.T) {
+	st := testdb.New(t)
+	p := newProject(t, st)
+	ctx := context.Background()
+	s := &Service{Store: st}
+	upload(t, st, p, KindProGuard, "1.0", "", "mapping.txt", []byte("com.example.A -> a.b:\n    void load() -> c\n"))
+	k := cacheKey{p.ID, KindProGuard, "1.0"}
+	v, err := s.load(ctx, k)
+	m1, _ := v.(*ProGuardMapping)
+	if err != nil || m1 == nil {
+		t.Fatalf("load: %v %v", v, err)
+	}
+	// Rows unchanged: the same parsed object is served after the TTL.
+	s.cache[k].checkedAt = time.Now().Add(-2 * revalidateTTL)
+	if v, _ := s.load(ctx, k); v != any(m1) {
+		t.Fatal("unchanged rows must keep the parsed mapping")
+	}
+	// A re-upload elsewhere (a new row, no Invalidate here) is seen once the TTL passes.
+	upload(t, st, p, KindProGuard, "1.0", "", "mapping2.txt", []byte("com.example.B -> a.c:\n    void run() -> d\n"))
+	if v, _ := s.load(ctx, k); v != any(m1) {
+		t.Fatal("within the TTL the cached mapping is served")
+	}
+	s.cache[k].checkedAt = time.Now().Add(-2 * revalidateTTL)
+	v, err = s.load(ctx, k)
+	m2, _ := v.(*ProGuardMapping)
+	if err != nil || m2 == nil || m2 == m1 || len(m2.Classes) != 2 {
+		t.Fatalf("after the upload: %+v %v (same object: %v)", v, err, m2 == m1)
+	}
+	// A database failure while loading is an error, not "no mapping".
+	s.cache = nil
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := s.load(cancelled, k); err == nil {
+		t.Fatal("a failed load must be an error (the job retries), not a miss")
+	}
 }

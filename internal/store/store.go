@@ -51,7 +51,27 @@ const (
 	LeaderSweep      int64 = 0x63726173 + 2
 	LeaderRollup     int64 = 0x63726173 + 3
 	LeaderPartitions int64 = 0x63726173 + 4 // transaction-scoped: one partition creation at a time
+	LeaderSetup      int64 = 0x63726173 + 5 // transaction-scoped: the first user is created once
 )
+
+// CreateFirstUser creates u only while the users table is empty, under a
+// transaction-scoped advisory lock so two concurrent setup posts cannot
+// both succeed. created is false when a user already existed.
+func (s *Store) CreateFirstUser(ctx context.Context, u sqlc.CreateUserParams) (user sqlc.User, created bool, err error) {
+	err = s.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", LeaderSetup); err != nil {
+			return err
+		}
+		n, err := q.CountUsers(ctx)
+		if err != nil || n > 0 {
+			return err
+		}
+		user, err = q.CreateUser(ctx, u)
+		created = err == nil
+		return err
+	})
+	return user, created, err
+}
 
 // RunAsLeader runs fn while holding the session advisory lock key, and
 // reports false without running it when another replica holds the lock —

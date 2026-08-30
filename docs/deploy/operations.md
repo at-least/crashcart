@@ -57,7 +57,7 @@ a schedule instead:
 
 ```
 crashcart retention     partitions, expired data, stats rollup  (every few minutes)
-crashcart alerts        check for crash spikes  (every 10 minutes)
+crashcart alerts        check for unhandled-error spikes  (every 10 minutes)
 ```
 
 ## Health check

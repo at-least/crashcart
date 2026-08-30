@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/crashcartapp/crashcart/internal/metrics"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/jackc/pgx/v5"
 
@@ -29,8 +30,15 @@ const (
 
 const (
 	// missTTL is how long a negative lookup (no mapping uploaded) is
-	// remembered before the database is asked again.
-	missTTL = 60 * time.Second
+	// remembered before the database is asked again; revalidateTTL how
+	// long a parsed mapping is served before a cheap version check (row
+	// count and latest upload time) confirms it is still current — an
+	// upload through another replica must not leave a stale mapping here.
+	missTTL       = 60 * time.Second
+	revalidateTTL = 60 * time.Second
+	// fetchTimeout bounds one load of a mapping from the database (shared
+	// by every caller waiting for it, so no single caller's budget cuts it short).
+	fetchTimeout = 2 * time.Minute
 	// cacheMax bounds the parsed mappings kept in memory.
 	cacheMax = 64
 	// ReleaseMax bounds the events one Release() call queues (newest
@@ -50,8 +58,9 @@ type Service struct {
 	Store *store.Store
 	DSYM  *DSYMClient // Enabled() false when no sidecar
 
-	mu    sync.Mutex
-	cache map[cacheKey]*cacheEntry
+	mu     sync.Mutex
+	cache  map[cacheKey]*cacheEntry
+	flight singleflight.Group // one load per key at a time, however many events wait for it
 }
 
 // cacheKey identifies one mapping: release-scoped ("1.2.3") or
@@ -63,9 +72,13 @@ type cacheKey struct {
 }
 
 type cacheEntry struct {
-	mapping  any // *ProGuardMapping | *SourceMapSet | nil (negative)
-	loadedAt time.Time
+	mapping   any // *ProGuardMapping | *SourceMapSet | nil (negative)
+	loadedAt  time.Time
+	checkedAt time.Time // last time version was confirmed against the database
+	version   string    // symbol_files rows behind this entry: "<count>/<latest upload µs>"
 }
+
+func (k cacheKey) String() string { return fmt.Sprintf("%d/%s/%s", k.projectID, k.kind, k.key) }
 
 const debugPrefix = "debug:"
 
@@ -86,8 +99,9 @@ func (s *Service) Resolve(ctx context.Context, projectID int64, ev *sentry.Event
 // (reading its bytes from the database): the job worker does, ingest
 // does not — there the miss is an error, so the event goes to a job.
 func (s *Service) resolve(ctx context.Context, projectID int64, ev *sentry.Event, upload bool) ([]sentry.Frame, bool, error) {
-	if frames, ok := s.Inline(ctx, projectID, ev); ok {
-		return frames, true, nil
+	frames, ok, err := s.Inline(ctx, projectID, ev)
+	if err != nil || ok {
+		return frames, ok, err
 	}
 	if s.DSYM.Enabled() && isNative(ev) {
 		return s.dsym(ctx, projectID, ev, upload)
@@ -98,27 +112,37 @@ func (s *Service) resolve(ctx context.Context, projectID int64, ev *sentry.Event
 // Inline resolves ev's frames with a proguard/sourcemap mapping. The
 // mapping is looked up in the database on a cache miss (at most once per
 // minute per key) and kept in memory afterwards. ok=false when no mapping
-// exists or nothing applies to the event.
-func (s *Service) Inline(ctx context.Context, projectID int64, ev *sentry.Event) ([]sentry.Frame, bool) {
+// exists or nothing applies to the event; err is a database failure
+// (the caller retries — "no mapping" and "could not load the mapping"
+// must not look the same, or the event is never revisited).
+func (s *Service) Inline(ctx context.Context, projectID int64, ev *sentry.Event) ([]sentry.Frame, bool, error) {
 	frames := ev.Frames()
 	if len(frames) == 0 || s.Store == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	if wantsProGuard(ev) {
-		if m := s.proguardFor(ctx, projectID, ev); m != nil {
+		m, err := s.proguardFor(ctx, projectID, ev)
+		if err != nil {
+			return nil, false, err
+		}
+		if m != nil {
 			if out, changed := m.ResolveAll(frames); changed {
-				return out, true
+				return out, true, nil
 			}
 		}
 	}
 	if wantsSourceMap(ev) && ev.Release != "" {
-		if set := s.sourceMapsFor(ctx, projectID, ev.Release); set != nil {
+		set, err := s.sourceMapsFor(ctx, projectID, ev.Release)
+		if err != nil {
+			return nil, false, err
+		}
+		if set != nil {
 			if out, changed := set.ResolveAll(frames); changed {
-				return out, true
+				return out, true, nil
 			}
 		}
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 func wantsProGuard(ev *sentry.Event) bool {
@@ -149,54 +173,109 @@ func wantsSourceMap(ev *sentry.Event) bool {
 
 // proguardFor finds the mapping by debug_id (debug_meta.images of type
 // proguard) first, then by release.
-func (s *Service) proguardFor(ctx context.Context, projectID int64, ev *sentry.Event) *ProGuardMapping {
+func (s *Service) proguardFor(ctx context.Context, projectID int64, ev *sentry.Event) (*ProGuardMapping, error) {
 	for _, im := range ev.DebugImages {
 		if im.Type != "proguard" || im.DebugID == "" {
 			continue
 		}
-		v := s.load(ctx, cacheKey{projectID, KindProGuard, debugPrefix + normalizeDebugID(im.DebugID)})
+		v, err := s.load(ctx, cacheKey{projectID, KindProGuard, debugPrefix + normalizeDebugID(im.DebugID)})
+		if err != nil {
+			return nil, err
+		}
 		if m, ok := v.(*ProGuardMapping); ok {
-			return m
+			return m, nil
 		}
 	}
 	if ev.Release == "" {
-		return nil
+		return nil, nil
 	}
-	m, _ := s.load(ctx, cacheKey{projectID, KindProGuard, ev.Release}).(*ProGuardMapping)
-	return m
+	v, err := s.load(ctx, cacheKey{projectID, KindProGuard, ev.Release})
+	m, _ := v.(*ProGuardMapping)
+	return m, err
 }
 
-func (s *Service) sourceMapsFor(ctx context.Context, projectID int64, release string) *SourceMapSet {
-	set, _ := s.load(ctx, cacheKey{projectID, KindSourceMap, release}).(*SourceMapSet)
-	return set
+func (s *Service) sourceMapsFor(ctx context.Context, projectID int64, release string) (*SourceMapSet, error) {
+	v, err := s.load(ctx, cacheKey{projectID, KindSourceMap, release})
+	set, _ := v.(*SourceMapSet)
+	return set, err
 }
 
 // load returns the cached mapping for k, fetching and parsing it when the
-// entry is missing or a negative entry has expired. nil = no mapping.
-func (s *Service) load(ctx context.Context, k cacheKey) any {
+// entry is missing, a negative entry has expired, or the rows behind a
+// positive one have changed (checked at most every revalidateTTL). nil,
+// nil = no mapping; an error is a database failure, never cached.
+func (s *Service) load(ctx context.Context, k cacheKey) (any, error) {
 	s.mu.Lock()
 	e, ok := s.cache[k]
-	if ok && (e.mapping != nil || time.Since(e.loadedAt) < missTTL) {
+	if ok && e.mapping == nil && time.Since(e.loadedAt) >= missTTL {
+		ok = false
+	}
+	if ok && e.mapping != nil && time.Since(e.checkedAt) >= revalidateTTL {
 		s.mu.Unlock()
-		return e.mapping
+		v, err := s.version(ctx, k)
+		s.mu.Lock()
+		if err == nil && v == e.version {
+			e.checkedAt = time.Now()
+		} else if err == nil {
+			ok = false // re-uploaded (possibly through another replica): reload
+		} // on an error the cached mapping is served: it was right a minute ago
+	}
+	if ok {
+		s.mu.Unlock()
+		return e.mapping, nil
 	}
 	s.mu.Unlock()
 
-	mapping, err := s.fetch(ctx, k)
-	if err != nil {
-		return nil // transient (cancelled request, database hiccup): do not cache the miss
+	// One fetch per key however many events wait for it (a crash burst
+	// right after a release would otherwise parse the mapping N times),
+	// on its own deadline: the first caller's budget must not cut short
+	// a load everyone else is waiting for.
+	ch := s.flight.DoChan(k.String(), func() (any, error) {
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+		defer cancel()
+		mapping, version, err := s.fetch(fctx, k)
+		if err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.cache == nil {
+			s.cache = map[cacheKey]*cacheEntry{}
+		}
+		if len(s.cache) >= cacheMax {
+			s.evictOldestLocked()
+		}
+		now := time.Now()
+		s.cache[k] = &cacheEntry{mapping: mapping, loadedAt: now, checkedAt: now, version: version}
+		return mapping, nil
+	})
+	select {
+	case r := <-ch:
+		return r.Val, r.Err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cache == nil {
-		s.cache = map[cacheKey]*cacheEntry{}
+// version is the cheap fingerprint of the symbol_files rows behind k —
+// the same one fetch derives from the rows it read.
+func (s *Service) version(ctx context.Context, k cacheKey) (string, error) {
+	debugID, release := "", k.key
+	if strings.HasPrefix(k.key, debugPrefix) {
+		debugID, release = strings.TrimPrefix(k.key, debugPrefix), ""
 	}
-	if len(s.cache) >= cacheMax {
-		s.evictOldestLocked()
+	row, err := s.Store.SymbolFilesVersion(ctx, sqlc.SymbolFilesVersionParams{ProjectID: k.projectID, Kind: sqlc.SymbolKind(k.kind), Release: release, DebugID: debugID})
+	if err != nil {
+		return "", err
 	}
-	s.cache[k] = &cacheEntry{mapping: mapping, loadedAt: time.Now()}
-	return mapping
+	return versionOf(row.N, row.Latest), nil
+}
+
+func versionOf(n int64, latest time.Time) string {
+	if n == 0 {
+		return "0/0"
+	}
+	return fmt.Sprintf("%d/%d", n, latest.UnixMicro())
 }
 
 func (s *Service) evictOldestLocked() {
@@ -213,31 +292,47 @@ func (s *Service) evictOldestLocked() {
 	}
 }
 
-// fetch reads and parses the symbol file(s) for k. nil, nil is a definite
-// miss (cached for missTTL); an error is transient and is not cached.
-func (s *Service) fetch(ctx context.Context, k cacheKey) (any, error) {
+// fetch reads and parses the symbol file(s) for k and returns the version
+// of the rows it read. A nil mapping is a definite miss (cached for
+// missTTL); an error is transient and is not cached.
+func (s *Service) fetch(ctx context.Context, k cacheKey) (mapping any, version string, err error) {
 	var files []sqlc.SymbolFile
 	if strings.HasPrefix(k.key, debugPrefix) {
 		id := strings.TrimPrefix(k.key, debugPrefix)
 		f, err := s.Store.SymbolFileByDebugID(ctx, sqlc.SymbolFileByDebugIDParams{ProjectID: k.projectID, DebugID: &id})
-		if errors.Is(err, pgx.ErrNoRows) || (err == nil && string(f.Kind) != k.kind) {
-			return nil, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, versionOf(0, time.Time{}), nil
 		}
 		if err != nil {
-			return nil, err
+			return nil, "", err
+		}
+		if string(f.Kind) != k.kind {
+			return nil, versionOf(0, time.Time{}), nil // SymbolFilesVersion filters by kind too
 		}
 		files = []sqlc.SymbolFile{f}
 	} else {
-		var err error
 		files, err = s.Store.SymbolFilesForRelease(ctx, sqlc.SymbolFilesForReleaseParams{ProjectID: k.projectID, Release: k.key, Kind: sqlc.SymbolKind(k.kind)})
 		if err != nil {
-			return nil, err
-		}
-		if len(files) == 0 {
-			return nil, nil
+			return nil, "", err
 		}
 	}
-	switch k.kind {
+	var latest time.Time
+	for _, f := range files {
+		if f.UploadedAt.After(latest) {
+			latest = f.UploadedAt
+		}
+	}
+	version = versionOf(int64(len(files)), latest)
+	if len(files) == 0 {
+		return nil, version, nil
+	}
+	m, err := parseFiles(k.kind, files)
+	return m, version, err
+}
+
+// parseFiles builds the in-memory mapping of one cache key from its rows.
+func parseFiles(kind string, files []sqlc.SymbolFile) (any, error) {
+	switch kind {
 	case KindProGuard:
 		// Several mapping files for one release are concatenated: classes
 		// are disjoint per module, so one merged table serves them all.
@@ -320,7 +415,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 	}
 
 	newFP := sentry.Fingerprint(ev, frames)
-	location := sentry.ErrorLocation(frames)
+	location := sentry.Culprit(frames)
 	symbols, err := json.Marshal(frames)
 	if err != nil {
 		return err
@@ -332,7 +427,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 	return s.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
 		if err := q.SetEventSymbols(ctx, sqlc.SetEventSymbolsParams{
 			ProjectID: projectID, EventID: eventID, OccurredAt: row.OccurredAt, Symbols: symbols,
-			Fingerprint: newFP.Ptr(), ErrorLocation: nilIfEmpty(location),
+			Fingerprint: newFP.Ptr(), Culprit: nilIfEmpty(location),
 		}); err != nil {
 			return err
 		}
@@ -348,7 +443,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 		}
 		if _, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
 			ProjectID: projectID, Fingerprint: newFP, Title: ev.IssueTitle(), Level: row.Level,
-			ErrorType: nilIfEmpty(ev.ErrorType), Screen: nilIfEmpty(ev.Screen), Platform: nilIfEmpty(ev.Platform),
+			ErrorType: nilIfEmpty(ev.ErrorType), Transaction: nilIfEmpty(ev.Transaction), Platform: nilIfEmpty(ev.Platform),
 			EventCount: 1, StoredCount: 1, FirstSeen: row.OccurredAt, LastSeen: row.OccurredAt, FirstRelease: row.Release,
 			Releases: []string{ev.Release},
 		}); err != nil {
@@ -498,7 +593,7 @@ func (s *Service) dsymFile(ctx context.Context, projectID int64, release string,
 			return &(*releaseFiles)[i], nil
 		}
 	}
-	if len(*releaseFiles) == 1 {
+	if want == "" && len(*releaseFiles) == 1 { // an image with no name: the release's one dSYM is the only guess there is
 		return &(*releaseFiles)[0], nil
 	}
 	return nil, nil

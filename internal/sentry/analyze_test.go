@@ -17,7 +17,7 @@ func eventJSON(fields string) *Event {
 }
 
 // Native frames whose address no debug image covers must not put the raw
-// (ASLR-randomized) address in the fingerprint: two crashes at different
+// (ASLR-randomized) address in the fingerprint: two unhandled at different
 // load addresses are one issue.
 func TestFingerprintUnmappedAddressIsStable(t *testing.T) {
 	ev := func(addr string) *Event {
@@ -97,5 +97,28 @@ func TestParseSessionStatusAndLimits(t *testing.T) {
 	env = Parse(envelope(`{"type":"sessions"}`, `{"attrs":{"release":"2.0"},"aggregates":[`+strings.Join(aggs, ",")+`]}`), now)
 	if len(env.Sessions) != MaxSessions || env.Dropped != 10 {
 		t.Fatalf("sessions parsed = %d dropped = %d", len(env.Sessions), env.Dropped)
+	}
+}
+
+// TestNeedsSymbolicationGate: the ingest gate must let through what the
+// resolver can handle — a webpack bundle without ".min." in its name, a
+// Kotlin event, an Android event whose mapping is matched by release
+// (no debug_meta) — and keep out what nothing could resolve.
+func TestNeedsSymbolicationGate(t *testing.T) {
+	js := func(file string, col int) *Event {
+		return &Event{Platform: "javascript", Exceptions: []Exception{{Frames: []Frame{{Filename: file, Lineno: 1, Colno: col}}}}}
+	}
+	if !js("https://app/main.3f2a1c.js", 13).NeedsSymbolication() {
+		t.Error("a minified bundle not named .min. must be symbolicated")
+	}
+	if js("https://app/main.js", 0).NeedsSymbolication() {
+		t.Error("no column: nothing to map")
+	}
+	android := &Event{Platform: "kotlin", Exceptions: []Exception{{Frames: []Frame{{Module: "a.b", Function: "c", Lineno: 1}}}}}
+	if !android.NeedsSymbolication() {
+		t.Error("a kotlin event with frames may have a release-matched mapping")
+	}
+	if (&Event{Platform: "android"}).NeedsSymbolication() {
+		t.Error("no frames: nothing to map")
 	}
 }

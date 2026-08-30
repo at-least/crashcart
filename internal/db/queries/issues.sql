@@ -6,8 +6,10 @@
 -- issue seen again on a release outside the set it had been seen on when
 -- it was resolved (old builds in the field are inside that set; a fixed
 -- release is not). Returns the row after the update plus whether it was
--- created in this call.
-INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform,
+-- created in this call and whether this call flipped it to regression
+-- (prev is the statement's snapshot of the row before the upsert).
+WITH prev AS (SELECT status FROM issues WHERE project_id = $1 AND fingerprint = $2)
+INSERT INTO issues (project_id, fingerprint, title, level, error_type, transaction, platform,
                     event_count, stored_count, first_seen, last_seen, first_release, last_release, releases)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, COALESCE(sqlc.arg(releases)::text[], '{}'))
 ON CONFLICT (project_id, fingerprint) DO UPDATE SET
@@ -23,7 +25,8 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
                          AND NOT (COALESCE(issues.resolved_releases, '{}') @> EXCLUDED.releases)
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now()
-RETURNING *, (xmax = 0) AS created;
+RETURNING *, (xmax = 0) AS created,
+          COALESCE(issues.status = 'regression' AND (SELECT status FROM prev) = 'resolved', false)::bool AS regressed;
 
 -- name: GetIssue :one
 SELECT * FROM issues WHERE project_id = $1 AND fingerprint = $2;
@@ -53,6 +56,10 @@ SELECT status, count(*) AS n FROM issues WHERE project_id = $1 GROUP BY status;
 
 -- name: CountNewIssues :one
 SELECT count(*) FROM issues WHERE project_id = $1 AND first_seen >= $2;
+
+-- name: CountNewIssuesIn :one
+-- New issues in [from, to).
+SELECT count(*) FROM issues WHERE project_id = $1 AND first_seen >= sqlc.arg(from_at) AND first_seen < sqlc.arg(to_at);
 
 -- name: ListRegressions :many
 SELECT * FROM issues WHERE project_id = $1 AND status = 'regression' ORDER BY last_seen DESC LIMIT $2;

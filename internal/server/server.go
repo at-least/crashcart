@@ -29,6 +29,7 @@ type Deps struct {
 	Log      *slog.Logger
 	Symbols  *symbolicate.Service
 	Listener *store.Listener // optional: wakes the viewer's SSE stream on issue notifications
+	Stopping <-chan struct{} // optional: closed at shutdown, ends the SSE streams
 }
 
 // New builds the root handler.
@@ -41,7 +42,7 @@ func New(d Deps) http.Handler {
 	mux.Handle("POST /api/{project}/store", in.Handler())
 
 	(&api.Handler{Store: d.Store, Cfg: d.Cfg, Symbols: d.Symbols, Log: d.Log}).Register(mux)
-	(&web.Web{Store: d.Store, Cfg: d.Cfg, Log: d.Log, Symbols: d.Symbols, Listener: d.Listener}).Register(mux)
+	(&web.Web{Store: d.Store, Cfg: d.Cfg, Log: d.Log, Symbols: d.Symbols, Listener: d.Listener, Stopping: d.Stopping}).Register(mux)
 	// GET /metrics: Prometheus text format, behind an API key (scrapers
 	// send it as a bearer token) and the API rate limit.
 	registerGauges(d.Store)

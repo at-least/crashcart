@@ -10,18 +10,18 @@ import (
 )
 
 func TestViewStateRoundTrip(t *testing.T) {
-	q, _ := url.ParseQuery("win=24h&status=resolved&sort=events&offset=50&before=2026-08-29T10%3A00%3A00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1&level=fatal&release=1.2&tag.build=42&bogus=1&search_col=error_type&search_q=NPE&crash=1")
+	q, _ := url.ParseQuery("win=24h&status=resolved&sort=events&offset=50&before=2026-08-29T10%3A00%3A00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1&level=fatal&release=1.2&tag.build=42&bogus=1&search_col=error_type&search_q=NPE&handled=false")
 	s := ParseViewState("app", q)
 	if s.Slug != "app" || s.Win != "24h" || s.Status != "resolved" || s.Sort != "events" || s.Offset != 50 || s.Before != "2026-08-29T10:00:00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1" {
 		t.Errorf("state = %+v", s)
 	}
-	if s.Filters["level"] != "fatal" || s.Filters["release"] != "1.2" || s.Filters["tag.build"] != "42" || s.Filters["error_type"] != "NPE" || s.Filters["crash"] != "1" {
+	if s.Filters["level"] != "fatal" || s.Filters["release"] != "1.2" || s.Filters["tag.build"] != "42" || s.Filters["error_type"] != "NPE" || s.Filters["handled"] != "false" {
 		t.Errorf("filters = %v", s.Filters)
 	}
 	if _, ok := s.Filters["bogus"]; ok {
 		t.Error("unknown params are not filters")
 	}
-	want := "/p/app/issues?before=2026-08-29T10%3A00%3A00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1&crash=1&error_type=NPE&level=fatal&offset=50&release=1.2&sort=events&status=resolved&tag.build=42&win=24h"
+	want := "/p/app/issues?before=2026-08-29T10%3A00%3A00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1&error_type=NPE&handled=false&level=fatal&offset=50&release=1.2&sort=events&status=resolved&tag.build=42&win=24h"
 	if got := s.Href("/issues"); got != want {
 		t.Errorf("href = %s\nwant %s", got, want)
 	}
@@ -112,7 +112,7 @@ func TestFormat(t *testing.T) {
 	}
 	var nilStr *string
 	x := "x"
-	if deref(nilStr) != "" || deref(&x) != "x" || derefStr(nilStr) != "" || derefStr(&x) != "x" || i64(7) != "7" || itoa(-3) != "-3" {
+	if deref(nilStr) != "" || deref(&x) != "x" || i64(7) != "7" || itoa(-3) != "-3" {
 		t.Error("deref / i64 / itoa")
 	}
 }
@@ -153,5 +153,24 @@ func TestViewStateBounds(t *testing.T) {
 	}
 	if len(s.Filters["q"]) != store.MaxFilterLen || s.Filters["release"] != "1.0" {
 		t.Errorf("filters = %v", s.Filters)
+	}
+}
+
+// TestSafeNext: the post-login target stays on this site — a path only;
+// scheme-relative and backslash forms (a slash to browsers) are refused.
+func TestSafeNext(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                     "/",
+		"/p/shop?win=7d":       "/p/shop?win=7d",
+		"https://evil.example": "/",
+		"//evil.example/x":     "/",
+		`/\evil.example`:       "/",
+		"/%5Cevil.example":     "/%5Cevil.example", // a literal path segment, not a host
+		"javascript:alert(1)":  "/",
+		"/p/shop#frag":         "/p/shop#frag",
+	} {
+		if got := safeNext(in); got != want {
+			t.Errorf("safeNext(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
