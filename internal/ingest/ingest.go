@@ -40,7 +40,7 @@ import (
 // Limits on what one request may carry.
 const (
 	MaxBody      = 20 << 20 // 20 MB envelope
-	MaxEvents    = 500
+	MaxEvents    = sentry.MaxEvents
 	WriteTimeout = 30 * time.Second // the write outlives a client that hangs up
 	keyCacheTTL  = 10 * time.Second // a rotated DSN key stops working within this
 	// SymbolicateBudget is how long one envelope may spend in the

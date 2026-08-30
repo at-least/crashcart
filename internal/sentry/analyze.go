@@ -15,18 +15,51 @@ import (
 // 32-hex-char digest, safe as a primary key and URL segment. "" means the
 // event has nothing to group by.
 func Fingerprint(e *Event, frames []Frame) ID {
-	var sig string
-	switch {
-	case len(e.SDKFingerprint) > 0:
-		sig = "sdk:" + strings.Join(e.SDKFingerprint, "|")
-	case e.ErrorType != "":
-		sig = e.Platform + ":" + e.ErrorType + ":" + strings.Join(frameSignature(e, frames), "|")
-	case groupableMessage(e):
-		sig = "msg:" + e.Platform + ":" + normalizeMessage(e.Message) + ":" + strings.Join(frameSignature(e, frames), "|")
-	default:
+	sig := defaultSignature(e, frames)
+	if len(e.SDKFingerprint) > 0 {
+		// The SDK's own fingerprint; "{{ default }}" in it stands for the
+		// default grouping (Sentry's convention: ["{{ default }}", key]
+		// means "the usual issue, split by key").
+		parts := make([]string, len(e.SDKFingerprint))
+		hasDefault := false
+		for i, p := range e.SDKFingerprint {
+			if isDefaultToken(p) {
+				parts[i] = "{{default}}=" + sig
+				hasDefault = true
+			} else {
+				parts[i] = p
+			}
+		}
+		if !(hasDefault && len(parts) == 1) { // ["{{ default }}"] alone is the default grouping itself
+			sig = "sdk:" + strings.Join(parts, "|")
+		}
+	}
+	if sig == "" {
 		return ""
 	}
 	return DerivedID([]byte(sig))
+}
+
+// defaultSignature is the grouping signature without an SDK fingerprint:
+// exception type + stack, or (error-level) message + stack. "" when there
+// is nothing to group by.
+func defaultSignature(e *Event, frames []Frame) string {
+	switch {
+	case e.ErrorType != "":
+		return e.Platform + ":" + e.ErrorType + ":" + strings.Join(frameSignature(e, frames), "|")
+	case groupableMessage(e):
+		return "msg:" + e.Platform + ":" + normalizeMessage(e.Message) + ":" + strings.Join(frameSignature(e, frames), "|")
+	}
+	return ""
+}
+
+// isDefaultToken: "{{ default }}" in any spacing / case.
+func isDefaultToken(s string) bool {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{{") || !strings.HasSuffix(s, "}}") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(s[2:len(s)-2]), "default")
 }
 
 // frameSignature renders the last five code frames (in-app when the SDK
@@ -67,7 +100,13 @@ func frameSignature(e *Event, frames []Frame) []string {
 			if images == nil {
 				images = e.imageTable()
 			}
-			fn = images.relative(f.InstrAddr)
+			// An address no debug image covers is left out of the
+			// signature: it is the raw, ASLR-randomized value, different
+			// on every run, and would make every crash its own issue.
+			// The image's name (when the frame carries one) stands in.
+			if fn = images.relative(f.InstrAddr); fn == "" && f.Package != "" {
+				fn = baseName(f.Package) + "+?"
+			}
 		}
 		if fn == "" {
 			fn = "?"
@@ -134,19 +173,19 @@ func (e *Event) imageTable() imageTable {
 	return t
 }
 
-// relative maps an instruction address to "<debug_id>+<offset>"; the raw
-// address is returned when no image contains it.
+// relative maps an instruction address to "<debug_id>+<offset>"; "" when
+// no image contains it (or it does not parse).
 func (t imageTable) relative(addr string) string {
 	a, ok := ParseHex(addr)
 	if !ok {
-		return addr
+		return ""
 	}
 	for _, im := range t {
 		if a >= im.base && a < im.end {
 			return im.id + "+0x" + strconv.FormatUint(a-im.base, 16)
 		}
 	}
-	return addr
+	return ""
 }
 
 // ImageFor returns the index of the debug image containing addr, or -1.

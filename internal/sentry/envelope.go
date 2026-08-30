@@ -238,13 +238,26 @@ func Parse(body []byte, now time.Time) Envelope {
 		}
 		switch ih.Type {
 		case "event":
+			if len(env.Events) > MaxEvents {
+				env.Dropped++ // over the limit already: the request is refused, do not parse the rest
+				continue
+			}
 			if ev := ParseEvent(hdr.EventID, fallbackTS, itemBody, now); ev != nil {
 				env.Events = append(env.Events, ev)
 			} else {
 				env.Invalid++
 			}
 		case "session", "sessions":
-			env.Sessions = append(env.Sessions, parseSessions(itemBody, now)...)
+			if len(env.Sessions) >= MaxSessions {
+				env.Dropped++
+				continue
+			}
+			ss := parseSessions(itemBody, now)
+			if n := MaxSessions - len(env.Sessions); len(ss) > n {
+				env.Dropped += len(ss) - n
+				ss = ss[:n]
+			}
+			env.Sessions = append(env.Sessions, ss...)
 		case "transaction", "attachment", "profile", "replay_event", "replay_recording",
 			"client_report", "check_in", "log", "statsd", "feedback", "user_report", "span":
 			env.Dropped++
@@ -254,6 +267,15 @@ func Parse(body []byte, now time.Time) Envelope {
 	}
 	return env
 }
+
+// Limits on one envelope. Parse stops parsing event items once it holds
+// MaxEvents+1 (enough for ingest to refuse the request) and session rows
+// at MaxSessions (the rest are dropped): a 20 MB body must not become
+// hundreds of thousands of parsed events before it is rejected.
+const (
+	MaxEvents   = 500
+	MaxSessions = 5000
+)
 
 func cutLine(b []byte) (line, rest []byte) {
 	if i := bytes.IndexByte(b, '\n'); i >= 0 {
@@ -717,6 +739,9 @@ func parseSessions(body []byte, now time.Time) []Session {
 	return out
 }
 
+// validSessionStatus mirrors the session_status enum.
+var validSessionStatus = map[string]bool{"ok": true, "exited": true, "crashed": true, "errored": true, "abnormal": true}
+
 func sessionFrom(s rawSession, now time.Time) (Session, bool) {
 	rel, env := s.Release, s.Environment
 	if s.Attrs != nil {
@@ -727,8 +752,8 @@ func sessionFrom(s rawSession, now time.Time) (Session, bool) {
 			env = s.Attrs.Environment
 		}
 	}
-	if rel == "" || s.Status == "" {
-		return Session{}, false
+	if rel == "" || !validSessionStatus[s.Status] {
+		return Session{}, false // the status is a Postgres enum: an unknown value would fail the whole envelope
 	}
 	ts := parseTimestamp(s.Started)
 	if ts.IsZero() {
