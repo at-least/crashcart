@@ -258,3 +258,8 @@ CREATE TABLE release_health_hourly (
     crashed    BIGINT NOT NULL,
     errored    BIGINT NOT NULL
 );
+
+CREATE TABLE crashcart_schema (
+    version    INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

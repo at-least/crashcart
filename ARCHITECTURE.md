@@ -231,8 +231,13 @@ to the number of issues, so the bytes fit in the database of any single
 machine, and a second store would have bought nothing but a second thing
 to run, back up and keep consistent.
 
-**No migrations.** `internal/db/schema.sql` is the whole schema; `db.Init`
-creates it on the first start against an empty database (under an advisory
-lock, so replicas can start together) and does nothing afterwards. Until
-there are deployed databases to carry forward, a schema change is an edit
-to that file and a fresh database (`export` / `import` moves data).
+**No migrations, but a version.** `internal/db/schema.sql` is the whole
+schema; `db.Init` creates it on the first start against an empty database
+(under an advisory lock, so replicas can start together). The schema
+carries its version in `crashcart_schema` (one row, written by
+`schema.sql`; `db.SchemaVersion` is read from the same statement), and on
+every later start `Init` compares the two and refuses to run against a
+database of another version — a newer binary on an older database fails
+at startup with instructions, not at the first query. A schema change is
+an edit to that file plus a bump of the version, and a database moves
+between versions with `export` / `import`.

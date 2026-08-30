@@ -31,7 +31,7 @@ cmd/crashcart/        main.go: subcommands
 internal/
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, ErrorLocation
-  db/                 schema.sql (the whole schema, created on first start — no migrations), sqlc_schema.sql
+  db/                 schema.sql (the whole schema, created on first start — no migrations; carries a version Init checks), sqlc_schema.sql
                       (mirror for sqlc; the stats views appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
   store/              Store = pool + Blobs + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out)

@@ -34,7 +34,9 @@ first. This is the default when no subcommand is given.
 
 Creates the schema in an empty database and exits (every command does
 this on start; `init` is for a deploy pipeline step, or to prepare a
-database before `import`).
+database before `import`). On a database that already has a schema it
+checks the schema version and exits non-zero on a mismatch (see
+[Upgrading](/deploy/operations#upgrading)).
 
 ## `retention`
 

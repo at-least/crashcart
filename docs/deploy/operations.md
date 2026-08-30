@@ -32,8 +32,20 @@ Change `RETENTION_DAYS` and restart; it applies to existing data.
 
 ## Upgrading
 
-Pull the new image or binary and restart. Migrations run on start. Back
-up first if you want to be able to roll back.
+Pull the new image or binary and restart. There are no migrations: the
+schema carries a version, and a binary refuses to start against a
+database of another version, saying so in the log. When that happens the
+data moves by export / import:
+
+```
+crashcart export > backup.ndjson      # with the old binary, old DATABASE_URL
+createdb crashcart_new                 # (or any empty database)
+DATABASE_URL=… crashcart import < backup.ndjson   # with the new binary
+```
+
+then point `DATABASE_URL` at the new database and start. A release note
+says whether an upgrade changes the schema; most do not. Back up first
+either way if you want to be able to roll back.
 
 ## Running without a long-lived server
 

@@ -1,18 +1,41 @@
 // Package db owns the schema: one embedded schema.sql, created on the first
 // start against an empty database. There is no migration history — the
-// schema is the file.
+// schema is the file, and it carries a version (crashcart_schema) that
+// Init checks so a binary never runs against a database of another one.
 package db
 
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 //go:embed schema.sql
 var schema string
+
+// SchemaVersion is the version schema.sql declares (its
+// `INSERT INTO crashcart_schema`). Bump it in schema.sql with every
+// change to the schema; Init refuses a database at any other version.
+var SchemaVersion = mustSchemaVersion()
+
+func mustSchemaVersion() int {
+	m := regexp.MustCompile(`INSERT INTO crashcart_schema \(version\) VALUES \((\d+)\)`).FindStringSubmatch(schema)
+	if m == nil {
+		panic("schema.sql: no crashcart_schema version")
+	}
+	v, _ := strconv.Atoi(m[1])
+	return v
+}
+
+// ErrSchemaVersion: the database was created by a binary with another
+// schema. It wraps the message an operator needs.
+var ErrSchemaVersion = errors.New("schema version mismatch")
 
 // initLock is the advisory lock key so replicas can start together.
 const initLock = 0x6372617368 // "crash"
@@ -36,7 +59,7 @@ func Init(ctx context.Context, pool *pgxpool.Pool) (created bool, err error) {
 		return false, err
 	}
 	if exists {
-		return false, nil
+		return false, checkVersion(ctx, conn.Conn())
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -47,6 +70,28 @@ func Init(ctx context.Context, pool *pgxpool.Pool) (created bool, err error) {
 		return false, fmt.Errorf("create schema: %w", err)
 	}
 	return true, tx.Commit(ctx)
+}
+
+// checkVersion compares the database's schema version with SchemaVersion.
+// A database without the version table predates it and is treated as
+// version 0.
+func checkVersion(ctx context.Context, conn *pgx.Conn) error {
+	var have int
+	err := conn.QueryRow(ctx, "SELECT version FROM crashcart_schema LIMIT 1").Scan(&have)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) && !isUndefinedTable(err) {
+		return err
+	}
+	if have == SchemaVersion {
+		return nil
+	}
+	return fmt.Errorf("%w: database has schema version %d, this crashcart needs %d — there are no migrations: "+
+		"run `crashcart export` with the old version, `crashcart import` into an empty database with this one, then point DATABASE_URL at it",
+		ErrSchemaVersion, have, SchemaVersion)
+}
+
+func isUndefinedTable(err error) bool {
+	var pgErr interface{ SQLState() string }
+	return errors.As(err, &pgErr) && pgErr.SQLState() == "42P01"
 }
 
 // Connect opens a pool and pings it.

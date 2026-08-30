@@ -383,3 +383,13 @@ LANGUAGE SQL STABLE AS $$
     SELECT bucket, project_id, release, platform, level, events, crashes, errors FROM event_stats_hourly
     WHERE project_id = pid AND bucket >= from_at AND bucket < to_at
 $$;
+
+-- ── schema version ─────────────────────────────────────────────────────
+-- One row. db.Init compares it with db.SchemaVersion (the version this
+-- binary's schema.sql is) and refuses to start on a mismatch: there are no
+-- migrations, a database from another schema is moved with export / import.
+CREATE TABLE crashcart_schema (
+    version    INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO crashcart_schema (version) VALUES (1);
