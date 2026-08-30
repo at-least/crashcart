@@ -104,31 +104,48 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	var firstErr error
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			// Shutting down: hand the rest of the batch back untouched.
-			if err := w.Store.ReleaseJob(context.WithoutCancel(ctx), j.ID); err != nil {
-				return len(jobs), err
+			if err := w.Store.ReleaseJob(context.WithoutCancel(ctx), j.ID); err != nil && firstErr == nil {
+				firstErr = err
 			}
 			continue
 		}
-		if err := w.dispatch(ctx, j, lease); err != nil {
-			return len(jobs), err
+		// One job's outcome failing to record must not leave the rest of
+		// the batch leased and untouched until the lease expires.
+		if err := w.dispatch(ctx, j); err != nil {
+			w.log().Error("jobs: record outcome", "id", j.ID, "kind", j.Kind, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
+	}
+	if firstErr != nil {
+		return len(jobs), firstErr
 	}
 	return len(jobs), ctx.Err()
 }
 
 // dispatch runs one job and records the outcome (auto-commit; nothing is
-// held open while the handler runs).
-func (w *Worker) dispatch(ctx context.Context, j sqlc.Job, lease time.Duration) error {
+// held open while the handler runs). The returned error is a failure to
+// record the outcome, not the handler's.
+func (w *Worker) dispatch(ctx context.Context, j sqlc.Job) error {
 	bg := context.WithoutCancel(ctx)
 	h, ok := w.Handlers[string(j.Kind)]
 	if !ok {
 		w.log().Warn("jobs: unknown kind, dropping", "id", j.ID, "kind", j.Kind, "project", j.ProjectID)
 		return w.Store.DeleteJob(bg, j.ID)
 	}
-	hctx, cancel := context.WithTimeout(ctx, lease)
+	// The handler's deadline is the lease itself (claimed for the whole
+	// batch): past it the job is claimable by another worker, so running
+	// on would run it twice.
+	deadline := time.Now().Add(defaultLease)
+	if j.LockedUntil != nil {
+		deadline = *j.LockedUntil
+	}
+	hctx, cancel := context.WithDeadline(ctx, deadline)
 	err := w.run(hctx, h, j)
 	cancel()
 	if err == nil {

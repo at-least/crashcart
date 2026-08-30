@@ -167,7 +167,7 @@ CREATE TABLE jobs (
     last_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX jobs_pending ON jobs (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8;
+CREATE UNIQUE INDEX jobs_pending ON jobs (kind, project_id, args) WHERE attempts < 8;
 
 CREATE TABLE alert_rules (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,

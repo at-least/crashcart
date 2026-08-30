@@ -115,7 +115,7 @@ func (q *Queries) DeleteJob(ctx context.Context, id int64) error {
 const enqueueJob = `-- name: EnqueueJob :exec
 
 INSERT INTO jobs (kind, project_id, args, run_after) VALUES ($1, $2, $3, $4)
-ON CONFLICT (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8 DO NOTHING
+ON CONFLICT (kind, project_id, args) WHERE attempts < 8 DO UPDATE SET run_after = LEAST(jobs.run_after, EXCLUDED.run_after)
 `
 
 type EnqueueJobParams struct {
@@ -125,8 +125,10 @@ type EnqueueJobParams struct {
 	RunAfter  time.Time       `json:"run_after"`
 }
 
-// Enqueues dedupe against the pending job with the same (kind, project,
-// args) — jobs_pending — so a resend or a repeated upload queues once.
+// Enqueues dedupe against the live job with the same (kind, project,
+// args) — jobs_pending: pending, leased or backing off — so a resend or a
+// repeated upload queues once. A job waiting out a backoff is pulled
+// forward to the new run_after: the enqueue wanted it now.
 func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) error {
 	_, err := q.db.Exec(ctx, enqueueJob,
 		arg.Kind,
@@ -140,7 +142,7 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) error {
 const enqueueJobs = `-- name: EnqueueJobs :exec
 INSERT INTO jobs (kind, project_id, args, run_after)
 SELECT unnest($1::text[])::job_kind, unnest($2::bigint[]), unnest($3::jsonb[]), unnest($4::timestamptz[])
-ON CONFLICT (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8 DO NOTHING
+ON CONFLICT (kind, project_id, args) WHERE attempts < 8 DO UPDATE SET run_after = LEAST(jobs.run_after, EXCLUDED.run_after)
 `
 
 type EnqueueJobsParams struct {
@@ -167,7 +169,7 @@ SELECT 'symbolicate', e.project_id, jsonb_build_object('event', replace(e.event_
 FROM events e
 WHERE e.project_id = $1 AND e.release = $2 AND e.symbolicated = false AND e.fingerprint IS NOT NULL
 ORDER BY e.occurred_at DESC LIMIT $3
-ON CONFLICT (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8 DO NOTHING
+ON CONFLICT (kind, project_id, args) WHERE attempts < 8 DO UPDATE SET run_after = LEAST(jobs.run_after, EXCLUDED.run_after)
 `
 
 type EnqueueSymbolicateReleaseParams struct {
@@ -188,11 +190,12 @@ func (q *Queries) EnqueueSymbolicateRelease(ctx context.Context, arg EnqueueSymb
 }
 
 const expireJobs = `-- name: ExpireJobs :execrows
-DELETE FROM jobs WHERE created_at < now() - INTERVAL '7 days'
+DELETE FROM jobs WHERE attempts >= 8 AND created_at < now() - INTERVAL '7 days'
 `
 
 // A job that failed 8 times is dead: never claimed again, kept with its
-// last_error for a week so the failure can be seen, then dropped.
+// last_error for a week so the failure can be seen, then dropped. (Only
+// dead jobs: a live one older than that is still due.)
 func (q *Queries) ExpireJobs(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, expireJobs)
 	if err != nil {
@@ -202,10 +205,12 @@ func (q *Queries) ExpireJobs(ctx context.Context) (int64, error) {
 }
 
 const releaseJob = `-- name: ReleaseJob :exec
-UPDATE jobs SET locked_until = NULL, attempts = attempts - 1 WHERE id = $1
+UPDATE jobs SET locked_until = NULL, attempts = GREATEST(0, attempts - 1)
+WHERE id = $1 AND locked_until IS NOT NULL AND locked_until >= now()
 `
 
-// Shutdown mid-job: give the lease back without counting an attempt.
+// Shutdown mid-job: give the lease back without counting an attempt (only
+// while the lease is still ours: an expired one may have been claimed).
 func (q *Queries) ReleaseJob(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, releaseJob, id)
 	return err

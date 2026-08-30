@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -87,6 +89,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go func() { <-ctx.Done(); stop() }() // a second signal during shutdown kills the process the default way
 
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -208,10 +211,17 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	if err := retention.Reconcile(ctx, st, cfg, log); err != nil {
 		fatal(log, err)
 	}
+	// Shutdown order: stop accepting, drain the HTTP handlers (an ingest
+	// write may take up to ingest.WriteTimeout), then stop the workers and
+	// schedulers (workCtx) and wait for the job in hand to record its
+	// outcome. Envelopes accepted while the workers were already gone
+	// would leave jobs to the other replicas or the next start.
+	workCtx, stopWork := context.WithCancel(context.Background())
+	defer stopWork()
 	// One LISTEN connection wakes the workers and the SSE streams (polling
 	// stays as the fallback).
 	listener := &store.Listener{Pool: st.Pool, Log: log}
-	go listener.Run(ctx)
+	go listener.Run(workCtx)
 	handlers := map[string]jobs.Handler{
 		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
 			var a struct {
@@ -243,52 +253,77 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 			return notifier.Issue(ctx, j.ProjectID, a.Type, a.Fingerprint)
 		},
 	}
+	var work sync.WaitGroup
 	for i := 0; i < max(cfg.Workers, 1); i++ {
 		wake, _ := listener.Subscribe(store.ChannelJobs, "")
-		go (&jobs.Worker{Store: st, Log: log, Handlers: handlers, Wake: wake}).Run(ctx)
+		work.Add(1)
+		go func() {
+			defer work.Done()
+			(&jobs.Worker{Store: st, Log: log, Handlers: handlers, Wake: wake}).Run(workCtx)
+		}()
 	}
 	// Scheduled work runs on one replica at a time: each tick takes a
 	// Postgres advisory lock and skips when another process holds it.
-	go every(ctx, time.Minute, leader(st, log, store.LeaderRollup, func() {
-		if _, err := retention.Rollup(ctx, st, cfg); err != nil {
-			log.Error("stats rollup", "err", err)
-		}
-	}))
-	go every(ctx, cfg.AlertInterval, leader(st, log, store.LeaderSpikeCheck, func() {
-		if err := notifier.CheckSpikes(ctx); err != nil {
-			log.Error("crash-spike check", "err", err)
-		}
-	}))
-	go every(ctx, time.Hour, leader(st, log, store.LeaderSweep, func() {
-		if err := retention.Sweep(ctx, st, cfg, log); err != nil {
-			log.Error("retention sweep", "err", err)
-		}
-	}))
+	tick := func(d time.Duration, key int64, name string, fn func(context.Context) error) {
+		work.Add(1)
+		go func() {
+			defer work.Done()
+			every(workCtx, d, leader(workCtx, st, log, key, func() {
+				if err := fn(workCtx); err != nil && workCtx.Err() == nil {
+					log.Error(name, "err", err)
+				}
+			}))
+		}()
+	}
+	tick(time.Minute, store.LeaderRollup, "stats rollup", func(ctx context.Context) error { _, err := retention.Rollup(ctx, st, cfg); return err })
+	tick(cfg.AlertInterval, store.LeaderSpikeCheck, "crash-spike check", notifier.CheckSpikes)
+	tick(time.Hour, store.LeaderSweep, "retention sweep", func(ctx context.Context) error { return retention.Sweep(ctx, st, cfg, log) })
 
+	// Request contexts derive from connCtx: cancelling it ends the SSE
+	// streams (which would otherwise hold Shutdown until its deadline);
+	// ingest writes run on a detached context and finish regardless.
+	connCtx, closeConns := context.WithCancel(context.Background())
+	defer closeConns()
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           server.New(server.Deps{Store: st, Cfg: cfg, Log: log, Symbols: syms, Listener: listener}),
+		BaseContext:       func(net.Listener) context.Context { return connCtx },
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      0, // SSE
 		IdleTimeout:       120 * time.Second,
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		log.Info("shutting down")
+		closeConns()
+		shutdown, cancel := context.WithTimeout(context.Background(), ingest.WriteTimeout+5*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdown)
+		if err := srv.Shutdown(shutdown); err != nil {
+			log.Warn("shutdown: http", "err", err)
+		}
 	}()
 	log.Info("listening", "addr", cfg.Addr, "workers", cfg.Workers)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fatal(log, err)
 	}
+	<-done
+	stopWork()
+	drained := make(chan struct{})
+	go func() { work.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(30 * time.Second):
+		log.Warn("shutdown: workers still busy, exiting")
+	}
 }
 
 // leader wraps a tick so it runs only on the replica that wins the lock.
-func leader(st *store.Store, log *slog.Logger, key int64, fn func()) func() {
+func leader(ctx context.Context, st *store.Store, log *slog.Logger, key int64, fn func()) func() {
 	return func() {
-		if _, err := st.RunAsLeader(context.Background(), key, fn); err != nil {
+		if _, err := st.RunAsLeader(ctx, key, fn); err != nil && ctx.Err() == nil {
 			log.Error("scheduler: leader lock", "err", err)
 		}
 	}
@@ -338,7 +373,9 @@ func symbolicateSidecar(cfg config.Config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	srv := &http.Server{Addr: cfg.Addr, Handler: sc.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -348,5 +385,6 @@ func symbolicateSidecar(cfg config.Config, log *slog.Logger) error {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-done
 	return nil
 }

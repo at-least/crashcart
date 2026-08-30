@@ -50,6 +50,7 @@ const (
 	LeaderSpikeCheck int64 = 0x63726173 + 1 // "cras" + n
 	LeaderSweep      int64 = 0x63726173 + 2
 	LeaderRollup     int64 = 0x63726173 + 3
+	LeaderPartitions int64 = 0x63726173 + 4 // transaction-scoped: one partition creation at a time
 )
 
 // RunAsLeader runs fn while holding the session advisory lock key, and

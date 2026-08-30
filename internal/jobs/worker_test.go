@@ -182,3 +182,69 @@ func TestWorkerLeaseExpires(t *testing.T) {
 		t.Fatalf("after lease expiry: %d %v %+v", len(got), err, got)
 	}
 }
+
+// TestEnqueueWhileLeasedOrBackingOff: the same (kind, project, args)
+// enqueued while a job is leased is one row (the retry would otherwise
+// collide with it), and an enqueue during a backoff pulls it forward.
+func TestEnqueueWhileLeasedOrBackingOff(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	args := []byte(`{"event": 1}`)
+	enqueue := func(at time.Time) {
+		t.Helper()
+		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	enqueue(time.Now())
+	got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("claim: %d %v", len(got), err)
+	}
+	enqueue(time.Now()) // while leased
+	if n, _ := st.CountJobs(ctx); n != 1 {
+		t.Fatalf("jobs after enqueue during lease = %d, want 1", n)
+	}
+	// The retry must not collide with a second row.
+	msg := "x"
+	if err := st.RetryJob(ctx, sqlc.RetryJobParams{ID: got[0].ID, LastError: &msg, RunAfter: time.Now().Add(10 * time.Minute)}); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	// Backing off: a new enqueue makes it due now.
+	enqueue(time.Now())
+	var runAfter time.Time
+	if err := st.Pool.QueryRow(ctx, "SELECT run_after FROM jobs").Scan(&runAfter); err != nil || runAfter.After(time.Now().Add(time.Second)) {
+		t.Fatalf("run_after after re-enqueue = %v %v (want now)", runAfter, err)
+	}
+	if n, _ := st.CountJobs(ctx); n != 1 {
+		t.Fatalf("jobs = %d", n)
+	}
+}
+
+// TestHandlerDeadlineIsLease: a handler's context ends when the lease
+// does, however late in the batch the job runs.
+func TestHandlerDeadlineIsLease(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var deadline time.Time
+	w := &Worker{Store: st, Lease: 200 * time.Millisecond, Handlers: map[string]Handler{
+		"alert": func(ctx context.Context, j sqlc.Job, _ json.RawMessage) error {
+			deadline, _ = ctx.Deadline()
+			if j.LockedUntil == nil || !deadline.Equal(*j.LockedUntil) {
+				t.Errorf("deadline %v != locked_until %v", deadline, j.LockedUntil)
+			}
+			return nil
+		},
+	}}
+	if _, err := w.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if deadline.IsZero() {
+		t.Fatal("handler not run")
+	}
+}

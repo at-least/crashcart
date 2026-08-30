@@ -235,8 +235,10 @@ CREATE TABLE jobs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX jobs_run_after ON jobs (run_after, id);
--- One pending job per (kind, project, args): enqueues use ON CONFLICT DO NOTHING.
-CREATE UNIQUE INDEX jobs_pending ON jobs (kind, project_id, args) WHERE locked_until IS NULL AND attempts < 8;
+-- One live job per (kind, project, args) — pending, leased or backing off —
+-- so an enqueue while one is running cannot leave a second row that the
+-- first would collide with when it is retried or released.
+CREATE UNIQUE INDEX jobs_pending ON jobs (kind, project_id, args) WHERE attempts < 8;
 
 -- ── alerts ─────────────────────────────────────────────────────────────
 
@@ -392,4 +394,4 @@ CREATE TABLE crashcart_schema (
     version    INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO crashcart_schema (version) VALUES (1);
+INSERT INTO crashcart_schema (version) VALUES (2);

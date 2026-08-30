@@ -96,6 +96,21 @@ func ensurePartition(ctx context.Context, st *store.Store, table, column string,
 		return nil
 	}
 	return pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error {
+		// Replicas start (and sweep) together: one creates the partition
+		// at a time, the others find it once they hold the lock.
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", store.LeaderPartitions); err != nil {
+			return err
+		}
+		// A catalog scan, not to_regclass: inside a transaction the
+		// name lookup can answer from a catalog snapshot taken before
+		// the other replica's CREATE TABLE committed.
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = $1 AND n.nspname = current_schema())`, name).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
 		def := table + "_default"
 		// Nothing lands in the default partition while its rows for this
 		// week move out and the partition is attached.

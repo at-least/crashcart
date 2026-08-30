@@ -281,3 +281,25 @@ func TestRollupKeepsExpiredHours(t *testing.T) {
 		t.Fatalf("recent hour rolled = %d %v", events, err)
 	}
 }
+
+// TestEnsurePartitionsConcurrently: replicas starting together must not
+// fail on the partition the other one just created.
+func TestEnsurePartitionsConcurrently(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	cfg := config.Config{RetentionDays: 7}
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	errs := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		go func() { errs <- EnsurePartitions(ctx, st, cfg, now) }()
+	}
+	for i := 0; i < 4; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent EnsurePartitions: %v", err)
+		}
+	}
+	parts, err := Partitions(ctx, st, "events")
+	if err != nil || len(parts) != 5 {
+		t.Fatalf("partitions = %d %v", len(parts), err)
+	}
+}

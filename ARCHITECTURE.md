@@ -159,8 +159,13 @@ died — makes the job claimable again. Kinds: `symbolicate {event, at}` (the ti
 `resymbolicate {release}`, `alert {type, fingerprint}`. Retries with
 backoff; after 8 attempts a job is dead: never claimed again, kept with its
 `last_error` for a week (`DeadJobs`), then dropped. A partial unique index
-(`jobs_pending`) keeps one pending job per `(kind, project, args)`, so
-enqueues are `ON CONFLICT DO NOTHING`. Workers wake on
+(`jobs_pending`) keeps one live job per `(kind, project, args)` —
+pending, leased or backing off — so enqueues are `ON CONFLICT DO UPDATE`
+that only pull `run_after` forward: a repeat while the job is running
+cannot leave a second row for the retry to collide with, and an enqueue
+during a backoff makes the job due now. A handler's deadline is the
+lease itself, so a job never runs on past the moment another worker may
+claim it. Workers wake on
 `NOTIFY crashcart_jobs` (a trigger on insert, fired at commit; one LISTEN
 connection per process — `store.Listener`) and poll every 30 s as the
 fallback; the SSE "new issues" stream wakes the same way on
@@ -169,7 +174,16 @@ fallback; the SSE "new issues" stream wakes the same way on
 **Scheduled work runs on one replica.** The stats rollup (every minute),
 the spike check and the retention sweep (hourly) tick in every process,
 but each tick takes a Postgres advisory lock (`store.RunAsLeader`) and
-skips when another replica holds it.
+skips when another replica holds it. Partition creation (at startup on
+every replica, and in the sweep) serializes on a transaction-scoped
+advisory lock and re-checks under it, so replicas starting together do
+not race on `CREATE TABLE`.
+
+**Shutdown drains in order.** On SIGTERM the server stops accepting and
+drains the HTTP handlers (an ingest write may take `ingest.WriteTimeout`;
+the SSE streams are cut at once, they reconnect); only then are the
+workers and schedulers stopped, and the process waits for the job in
+hand to record its outcome. A second signal exits immediately.
 
 **Access is users and API keys, in Postgres.** The viewer needs a signed-in
 user: `users` (email, bcrypt hash) and `user_sessions` (the cookie token
