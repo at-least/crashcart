@@ -69,18 +69,21 @@ const debugPrefix = "debug:"
 // sidecar failed or ran out of time, so a "symbolicate" job should finish
 // the work later.
 func (s *Service) Resolve(ctx context.Context, projectID int64, ev *sentry.Event) (frames []sentry.Frame, ok, retry bool) {
-	frames, ok, err := s.resolve(ctx, projectID, ev)
+	frames, ok, err := s.resolve(ctx, projectID, ev, false)
 	return frames, ok, err != nil
 }
 
 // resolve is the shared symbolication path of Resolve and Event: inline
 // mappings, else the sidecar. err is only a sidecar / database failure.
-func (s *Service) resolve(ctx context.Context, projectID int64, ev *sentry.Event) ([]sentry.Frame, bool, error) {
+// upload allows sending a symbol file the sidecar does not have yet
+// (reading its bytes from the database): the job worker does, ingest
+// does not — there the miss is an error, so the event goes to a job.
+func (s *Service) resolve(ctx context.Context, projectID int64, ev *sentry.Event, upload bool) ([]sentry.Frame, bool, error) {
 	if frames, ok := s.Inline(ctx, projectID, ev); ok {
 		return frames, true, nil
 	}
 	if s.DSYM.Enabled() && isNative(ev) {
-		return s.dsym(ctx, projectID, ev)
+		return s.dsym(ctx, projectID, ev, upload)
 	}
 	return nil, false, nil
 }
@@ -299,7 +302,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 	if ev.Release == "" && row.Release != nil {
 		ev.Release = *row.Release
 	}
-	frames, ok, err := s.resolve(ctx, projectID, ev)
+	frames, ok, err := s.resolve(ctx, projectID, ev, true)
 	if err != nil {
 		return fmt.Errorf("dsym: %w", err)
 	}
@@ -365,9 +368,9 @@ func isNative(ev *sentry.Event) bool {
 }
 
 // dsym resolves native frames through the sidecar, one request per debug
-// image that has a dSYM (by debug_id, else by release). ok=false when no
-// frame resolved; err only for sidecar / database failures.
-func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event) ([]sentry.Frame, bool, error) {
+// image. The sidecar caches symbol files by SymbolKey; the bytes are read
+// from the database only when it reports a miss and upload is set.
+func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event, upload bool) ([]sentry.Frame, bool, error) {
 	frames := ev.Frames()
 	out := make([]sentry.Frame, len(frames))
 	copy(out, frames)
@@ -394,7 +397,7 @@ func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event) (
 		return nil, false, nil
 	}
 
-	var releaseFiles []sqlc.SymbolFile
+	var releaseFiles []symbolFileMeta
 	releaseLoaded := false
 	resolved := false
 	for im, lks := range byImage {
@@ -415,7 +418,12 @@ func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event) (
 		for i, lk := range lks {
 			addrs[i] = DSYMAddr{Address: lk.addr - base, Module: module}
 		}
-		results, err := s.DSYM.Resolve(ctx, file.Data, addrs)
+		var load func(context.Context) ([]byte, error)
+		if upload {
+			id := file.ID
+			load = func(ctx context.Context) ([]byte, error) { return s.Store.SymbolFileData(ctx, id) }
+		}
+		results, err := s.DSYM.Resolve(ctx, SymbolKey(file.ID, file.UploadedAt), load, addrs)
 		if err != nil {
 			return nil, false, err
 		}
@@ -439,14 +447,24 @@ func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event) (
 	return out, resolved, nil
 }
 
+// SymbolKey names one uploaded symbol file to the sidecar: the row's id
+// and upload time, so a re-upload under the same name is a new key and a
+// stale cached copy is never used.
+func SymbolKey(id int64, uploadedAt time.Time) string {
+	return fmt.Sprintf("%d-%d", id, uploadedAt.Unix())
+}
+
+// symbolFileMeta is a symbol_files row without its data.
+type symbolFileMeta = sqlc.SymbolFileMetasForReleaseRow
+
 // dsymFile finds the symbol file for image: by debug_id, else among the
-// release's dSYMs by code_file basename (or the only one).
-func (s *Service) dsymFile(ctx context.Context, projectID int64, release string, image sentry.DebugImage, releaseFiles *[]sqlc.SymbolFile, loaded *bool) (*sqlc.SymbolFile, error) {
+// release's dSYMs by the image's file name (the only one, if just one).
+func (s *Service) dsymFile(ctx context.Context, projectID int64, release string, image sentry.DebugImage, releaseFiles *[]symbolFileMeta, loaded *bool) (*symbolFileMeta, error) {
 	if image.DebugID != "" {
 		id := normalizeDebugID(image.DebugID)
-		f, err := s.Store.SymbolFileByDebugID(ctx, sqlc.SymbolFileByDebugIDParams{ProjectID: projectID, DebugID: &id})
+		f, err := s.Store.SymbolFileMetaByDebugID(ctx, sqlc.SymbolFileMetaByDebugIDParams{ProjectID: projectID, DebugID: &id})
 		if err == nil && f.Kind == KindDSYM {
-			return &f, nil
+			return &symbolFileMeta{ID: f.ID, ProjectID: f.ProjectID, Kind: f.Kind, Release: f.Release, DebugID: f.DebugID, Filename: f.Filename, Size: f.Size, UploadedAt: f.UploadedAt}, nil
 		}
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
@@ -456,7 +474,7 @@ func (s *Service) dsymFile(ctx context.Context, projectID int64, release string,
 		return nil, nil
 	}
 	if !*loaded {
-		files, err := s.Store.SymbolFilesForRelease(ctx, sqlc.SymbolFilesForReleaseParams{ProjectID: projectID, Release: release, Kind: KindDSYM})
+		files, err := s.Store.SymbolFileMetasForRelease(ctx, sqlc.SymbolFileMetasForReleaseParams{ProjectID: projectID, Release: release, Kind: KindDSYM})
 		if err != nil {
 			return nil, err
 		}
@@ -475,8 +493,6 @@ func (s *Service) dsymFile(ctx context.Context, projectID int64, release string,
 	return nil, nil
 }
 
-// findImage picks the debug image containing addr: by the frame's
-// image_addr first, then by [image_addr, image_addr+image_size).
 func findImage(ev *sentry.Event, f sentry.Frame, addr uint64) int {
 	if f.ImageAddr != "" {
 		for i, im := range ev.DebugImages {

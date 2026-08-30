@@ -19,6 +19,7 @@ crashcart user passwd <email>                change an account's password
 crashcart apikey create <name>               create an API key; prints the secret once
 crashcart apikey list                        list API keys with last use
 crashcart apikey revoke <id>                 revoke an API key
+crashcart symbolicate                        dSYM symbolication sidecar (needs llvm-symbolizer, no database)
 ```
 
 With Docker Compose, prefix with `docker compose exec crashcart /crashcart`.
@@ -37,6 +38,14 @@ this on start; `init` is for a deploy pipeline step, or to prepare a
 database before `import`). On a database that already has a schema it
 checks the schema version and exits non-zero on a mismatch (see
 [Upgrading](/deploy/operations#upgrading)).
+
+## `symbolicate`
+
+Runs the dSYM symbolication sidecar: HTTP on `LISTEN_ADDR`, `llvm-symbolizer`
+from `PATH`, a disk cache of the dSYMs it has used (`SYMBOLICATE_CACHE_DIR`,
+`SYMBOLICATE_CACHE_MAX_MB`). The only subcommand that does not read
+`DATABASE_URL`; the server reaches it through `SYMBOLICATE_URL`. See
+[Symbolication](/guide/symbolication#ios-macos).
 
 ## `retention`
 

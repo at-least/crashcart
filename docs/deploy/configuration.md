@@ -37,6 +37,8 @@ data too.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SYMBOLICATE_URL` | off | Address of the dSYM sidecar, e.g. `http://symbolicate:8080` |
+| `SYMBOLICATE_CACHE_DIR` | `$TMPDIR/crashcart-symbols` | `crashcart symbolicate` only: where the sidecar keeps the dSYMs it has used |
+| `SYMBOLICATE_CACHE_MAX_MB` | `4096` | `crashcart symbolicate` only: bound of that cache; least recently used dSYMs are dropped |
 | `TELEGRAM_BOT_TOKEN` | — | Bot token for Telegram alerts |
 | `CUSTOM_TAGS` | — | Comma-separated tag keys to offer as filters in the viewer, e.g. `tenant,feature_flag` |
 

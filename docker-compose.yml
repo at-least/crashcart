@@ -36,11 +36,17 @@ services:
       - "8080:8080"
     restart: unless-stopped
 
-  # Optional dSYM symbolication sidecar (llvm-symbolizer). ProGuard and
-  # source maps resolve in-process and do not need it.
+  # Optional dSYM symbolication sidecar (the same binary next to
+  # llvm-symbolizer, with a disk cache of the dSYMs). ProGuard and source
+  # maps resolve in-process and do not need it.
   # symbolicate:
-  #   build: ./container/symbolicate
+  #   build:
+  #     context: .
+  #     dockerfile: container/symbolicate/Dockerfile
+  #   volumes:
+  #     - symbols:/var/cache/crashcart-symbols
   #   restart: unless-stopped
 
 volumes:
   pgdata:
+  # symbols:

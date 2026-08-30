@@ -124,7 +124,10 @@ The schema is created on start.
 
 ## iOS crashes
 
-dSYM symbolication runs in a separate container
-(`container/symbolicate` in the repository). Run it with Docker or Podman
-next to the service and set `SYMBOLICATE_URL=http://localhost:<port>` in
-`/etc/crashcart.env`. Android and JavaScript need nothing extra.
+dSYM symbolication is the same binary run as `crashcart symbolicate` on a
+machine that has `llvm-symbolizer` (the `llvm` package on Debian/Ubuntu),
+listening on its own `LISTEN_ADDR` — as a second systemd unit, or as the
+`container/symbolicate` image with Docker or Podman. Set
+`SYMBOLICATE_URL=http://localhost:<port>` in `/etc/crashcart.env`. It
+needs no database; its cache lives in `SYMBOLICATE_CACHE_DIR`. Android
+and JavaScript need nothing extra.

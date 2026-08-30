@@ -279,9 +279,12 @@ PersistentVolumeClaim. See [Operations](./operations#backups).
 
 ## iOS crashes
 
-Run the `container/symbolicate` image from the repository as its own
+Run the `container/symbolicate` image from the repository (the same
+binary as `crashcart symbolicate`, with llvm-symbolizer) as its own
 Deployment + Service in the namespace and set
-`SYMBOLICATE_URL: http://symbolicate:8080` in the ConfigMap. Android and
+`SYMBOLICATE_URL: http://symbolicate:8080` in the ConfigMap. Give it a
+volume at `/var/cache/crashcart-symbols` if you want its dSYM cache to
+survive restarts (it refills from the database otherwise). Android and
 JavaScript need nothing extra.
 
 ## If something doesn't work

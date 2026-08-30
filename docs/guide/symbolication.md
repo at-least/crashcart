@@ -68,12 +68,19 @@ Keep `release` identical in `Sentry.init()` and the upload.
 
 ## iOS / macOS
 
-dSYM symbolication needs the sidecar container. With Docker Compose,
-uncomment the `symbolicate` service in `docker-compose.yml` and set
+dSYM symbolication needs the sidecar: the same `crashcart` binary run as
+`crashcart symbolicate` in a container that has `llvm-symbolizer`
+(`container/symbolicate/Dockerfile`). With Docker Compose, uncomment the
+`symbolicate` service in `docker-compose.yml` and set
 `SYMBOLICATE_URL=http://symbolicate:8080` in `.env`; other installs run
-the `container/symbolicate` image next to CrashCart and set
-`SYMBOLICATE_URL` to its address. Then upload dSYMs with
-`sentry-cli debug-files upload`.
+that image next to CrashCart and set `SYMBOLICATE_URL` to its address.
+Then upload dSYMs with `sentry-cli debug-files upload`.
+
+The sidecar keeps the dSYMs it has used on disk (`SYMBOLICATE_CACHE_DIR`,
+bounded by `SYMBOLICATE_CACHE_MAX_MB`, 4096 by default), so a dSYM is
+fetched from the database once, not per crash. The first crash of a build
+is symbolicated by the job worker a moment after it is stored; later ones
+at ingest.
 
 Without the sidecar, iOS crashes are still collected and grouped — the
 frames just stay as addresses.

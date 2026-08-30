@@ -10,7 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -50,6 +53,8 @@ const usage = `usage: crashcart <command>
   apikey create <name>               create an API key and print its secret (shown once)
   apikey list                        list API keys
   apikey revoke <id>                 revoke an API key
+  symbolicate      dSYM symbolication sidecar (needs llvm-symbolizer, no database;
+                   LISTEN_ADDR, SYMBOLICATE_CACHE_DIR, SYMBOLICATE_CACHE_MAX_MB)
   version          print the version and exit
 `
 
@@ -70,6 +75,12 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		fatal(log, err)
+	}
+	if cmd == "symbolicate" {
+		if err := symbolicateSidecar(cfg, log); err != nil {
+			fatal(log, err)
+		}
+		return
 	}
 	if cfg.DatabaseURL == "" {
 		fatal(log, errors.New("DATABASE_URL is required"))
@@ -299,4 +310,43 @@ func every(ctx context.Context, d time.Duration, fn func()) {
 func fatal(log *slog.Logger, err error) {
 	log.Error("fatal", "err", err)
 	os.Exit(1)
+}
+
+// symbolicateSidecar runs the dSYM sidecar: an HTTP server around
+// llvm-symbolizer with a disk cache (internal/symbolicate.Sidecar). It has
+// no database; the main process reaches it through SYMBOLICATE_URL.
+func symbolicateSidecar(cfg config.Config, log *slog.Logger) error {
+	dir := os.Getenv("SYMBOLICATE_CACHE_DIR")
+	if dir == "" {
+		dir = filepath.Join(os.TempDir(), "crashcart-symbols")
+	}
+	var maxBytes int64
+	if v := os.Getenv("SYMBOLICATE_CACHE_MAX_MB"); v != "" {
+		mb, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || mb <= 0 {
+			return fmt.Errorf("SYMBOLICATE_CACHE_MAX_MB: %q", v)
+		}
+		maxBytes = mb << 20
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	sc := &symbolicate.Sidecar{Dir: dir, MaxBytes: maxBytes, Log: log}
+	if _, err := exec.LookPath("llvm-symbolizer"); err != nil {
+		log.Warn("symbolicate: llvm-symbolizer not on PATH; /health reports it and requests will fail")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	srv := &http.Server{Addr: cfg.Addr, Handler: sc.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdown)
+	}()
+	log.Info("symbolicate sidecar listening", "addr", cfg.Addr, "cache_dir", dir, "version", version)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }

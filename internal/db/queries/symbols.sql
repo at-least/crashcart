@@ -31,3 +31,16 @@ UPDATE symbol_files SET release = sqlc.arg(release)
 WHERE project_id = sqlc.arg(project_id) AND release IS NULL
   AND ((sqlc.narg(debug_id)::text IS NOT NULL AND debug_id = sqlc.narg(debug_id)::text)
     OR (sqlc.narg(debug_id)::text IS NULL AND kind = 'proguard' AND uploaded_at > sqlc.arg(since)));
+
+-- name: SymbolFileMetaByDebugID :one
+-- The dSYM path: the row without its data (the sidecar keeps the bytes,
+-- SymbolFileData fetches them only when it does not have them yet).
+SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
+FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1;
+
+-- name: SymbolFileMetasForRelease :many
+SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
+FROM symbol_files WHERE project_id = $1 AND release = sqlc.arg(release)::text AND kind = $2;
+
+-- name: SymbolFileData :one
+SELECT data FROM symbol_files WHERE id = $1;

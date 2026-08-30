@@ -37,7 +37,8 @@ internal/
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out)
   auth/               Access (API keys, user sessions, bcrypt), CORS, RateLimit (in-memory), SentryKey
   ingest/             POST /api/{id}/envelope|store; Ingest(); PII redaction
-  symbolicate/        proguard / sourcemap (in-process), dsym (sidecar client), Service (cache + Resolve at ingest + job handlers)
+  symbolicate/        proguard / sourcemap (in-process), dsym (sidecar client), sidecar (the dSYM server: llvm-symbolizer + disk cache),
+                      Service (cache + Resolve at ingest + job handlers)
   jobs/               worker loop (SKIP LOCKED), handlers by kind
   alerts/             notifier (webhook, telegram), crash-spike scheduler
   retention/          weekly partitions (ensure / drop), stats rollup (dirty keys), sweeps (issues, jobs, chunks, symbol files)
@@ -47,7 +48,7 @@ internal/
   seed/               demo data
   server/             mux wiring
   testdb/             TEST_DATABASE_URL helper: fresh schema per test
-container/symbolicate/  Python + llvm-symbolizer sidecar
+container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`, internal/symbolicate/sidecar.go) + llvm-symbolizer
 ```
 
 ## Conventions

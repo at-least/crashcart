@@ -127,8 +127,10 @@ patch release of that line) in `docker-compose.yml`.
 ## iOS crashes
 
 To symbolicate iOS / macOS crashes, uncomment the `symbolicate` service
-in `docker-compose.yml` and set `SYMBOLICATE_URL=http://symbolicate:8080`
-in `.env`. Android and JavaScript need nothing extra.
+(and its `symbols` volume) in `docker-compose.yml` and set
+`SYMBOLICATE_URL=http://symbolicate:8080` in `.env`. It is the same
+binary with llvm-symbolizer next to it. Android and JavaScript need
+nothing extra.
 
 ## Backups
 

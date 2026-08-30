@@ -139,6 +139,17 @@ func (q *Queries) SymbolFileByDebugID(ctx context.Context, arg SymbolFileByDebug
 	return i, err
 }
 
+const symbolFileData = `-- name: SymbolFileData :one
+SELECT data FROM symbol_files WHERE id = $1
+`
+
+func (q *Queries) SymbolFileData(ctx context.Context, id int64) ([]byte, error) {
+	row := q.db.QueryRow(ctx, symbolFileData, id)
+	var data []byte
+	err := row.Scan(&data)
+	return data, err
+}
+
 const symbolFileExists = `-- name: SymbolFileExists :one
 SELECT EXISTS (SELECT 1 FROM symbol_files WHERE project_id = $1 AND kind = $2 AND (release = $3::text OR debug_id = ANY($4::text[])))
 `
@@ -160,6 +171,96 @@ func (q *Queries) SymbolFileExists(ctx context.Context, arg SymbolFileExistsPara
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const symbolFileMetaByDebugID = `-- name: SymbolFileMetaByDebugID :one
+SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
+FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1
+`
+
+type SymbolFileMetaByDebugIDParams struct {
+	ProjectID int64   `json:"project_id"`
+	DebugID   *string `json:"debug_id"`
+}
+
+type SymbolFileMetaByDebugIDRow struct {
+	ID         int64      `json:"id"`
+	ProjectID  int64      `json:"project_id"`
+	Kind       SymbolKind `json:"kind"`
+	Release    *string    `json:"release"`
+	DebugID    *string    `json:"debug_id"`
+	Filename   string     `json:"filename"`
+	Size       int64      `json:"size"`
+	UploadedAt time.Time  `json:"uploaded_at"`
+}
+
+// The dSYM path: the row without its data (the sidecar keeps the bytes,
+// SymbolFileData fetches them only when it does not have them yet).
+func (q *Queries) SymbolFileMetaByDebugID(ctx context.Context, arg SymbolFileMetaByDebugIDParams) (SymbolFileMetaByDebugIDRow, error) {
+	row := q.db.QueryRow(ctx, symbolFileMetaByDebugID, arg.ProjectID, arg.DebugID)
+	var i SymbolFileMetaByDebugIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Release,
+		&i.DebugID,
+		&i.Filename,
+		&i.Size,
+		&i.UploadedAt,
+	)
+	return i, err
+}
+
+const symbolFileMetasForRelease = `-- name: SymbolFileMetasForRelease :many
+SELECT id, project_id, kind, release, debug_id, filename, size, uploaded_at
+FROM symbol_files WHERE project_id = $1 AND release = $3::text AND kind = $2
+`
+
+type SymbolFileMetasForReleaseParams struct {
+	ProjectID int64      `json:"project_id"`
+	Kind      SymbolKind `json:"kind"`
+	Release   string     `json:"release"`
+}
+
+type SymbolFileMetasForReleaseRow struct {
+	ID         int64      `json:"id"`
+	ProjectID  int64      `json:"project_id"`
+	Kind       SymbolKind `json:"kind"`
+	Release    *string    `json:"release"`
+	DebugID    *string    `json:"debug_id"`
+	Filename   string     `json:"filename"`
+	Size       int64      `json:"size"`
+	UploadedAt time.Time  `json:"uploaded_at"`
+}
+
+func (q *Queries) SymbolFileMetasForRelease(ctx context.Context, arg SymbolFileMetasForReleaseParams) ([]SymbolFileMetasForReleaseRow, error) {
+	rows, err := q.db.Query(ctx, symbolFileMetasForRelease, arg.ProjectID, arg.Kind, arg.Release)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SymbolFileMetasForReleaseRow{}
+	for rows.Next() {
+		var i SymbolFileMetasForReleaseRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Kind,
+			&i.Release,
+			&i.DebugID,
+			&i.Filename,
+			&i.Size,
+			&i.UploadedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const symbolFilesForRelease = `-- name: SymbolFilesForRelease :many

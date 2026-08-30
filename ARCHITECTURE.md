@@ -115,14 +115,27 @@ nothing to keep consistent with anything else.
 **Symbolicate at ingest.** ProGuard and source maps resolve in-process (mappings are loaded
 from the database on first use and cached); dSYM goes through the sidecar
 with a per-envelope time budget (`ingest.SymbolicateBudget`) — only when
-the sidecar fails or runs out of time is a `symbolicate` job queued. An
-event with no mapping yet is stored as-is, without a job: uploading a
+the sidecar fails, runs out of time or does not have the dSYM yet is a
+`symbolicate` job queued. An event with no mapping yet is stored as-is, without a job: uploading a
 symbol file re-queues the release's unsymbolicated events (the newest
 2000, anywhere in the retention window — `resymbolicate` fans out to one
 `symbolicate` job per event in a single `INSERT … SELECT`), which may move
 them to a new issue.
 `symbol_files.release` is NULL for a mapping matched by debug id only
 (`UNIQUE NULLS NOT DISTINCT` keeps one row per project/kind/release/filename).
+
+**The dSYM sidecar is the same binary with LLVM next to it.** `crashcart
+symbolicate` (`internal/symbolicate.Sidecar`) is an HTTP server around
+`llvm-symbolizer` in its own container (`container/symbolicate`), the
+only image that carries LLVM; it has no database. It keeps the dSYMs it
+has seen on disk (least recently used, `SYMBOLICATE_CACHE_MAX_MB`) under
+a key made of the `symbol_files` row's id and upload time, so a re-upload
+is a new key. A request names the key and the addresses; a miss is a
+404, and only then are the bytes read from the database and sent once
+(`PUT /symbols/{key}`). At ingest a miss is not filled — the event is
+stored as-is and its `symbolicate` job sends the file — so an SDK request
+never waits on a few hundred MB leaving Postgres, and a dSYM crosses the
+wire once per sidecar, not once per crash.
 
 **Retention is a DROP TABLE.** `internal/retention` keeps weekly
 partitions (`events_pYYYYMMDD`, Monday-aligned) from one week before the

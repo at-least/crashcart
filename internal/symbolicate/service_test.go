@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +23,54 @@ import (
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
+
+// fakeSidecar implements the sidecar protocol in memory: PUT stores by
+// key, POST answers 404 until the key is stored, then `answer`. warm
+// pre-populates every key (a sidecar that already has the file).
+type fakeSidecar struct {
+	answer func() any
+	warm   bool
+	stored map[string][]byte
+	posts  []string // symbol keys asked for
+	frames string   // the last POST's frames, as JSON
+	puts   int
+}
+
+func (f *fakeSidecar) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	f.stored = map[string][]byte{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/symbols/"):
+			body, _ := io.ReadAll(r.Body)
+			f.stored[strings.TrimPrefix(r.URL.Path, "/symbols/")] = body
+			f.puts++
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/symbolicate":
+			var req struct {
+				Symbol string          `json:"symbol"`
+				Frames json.RawMessage `json:"frames"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			f.posts = append(f.posts, req.Symbol)
+			f.frames = string(req.Frames)
+			if _, ok := f.stored[req.Symbol]; !ok && !f.warm {
+				http.Error(w, `{"error":"unknown symbol"}`, http.StatusNotFound)
+				return
+			}
+			switch a := f.answer().(type) {
+			case int:
+				http.Error(w, "sidecar error", a)
+			default:
+				json.NewEncoder(w).Encode(map[string]any{"frames": a})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
 
 func newProject(t *testing.T, st *store.Store) sqlc.Project {
 	t.Helper()
@@ -211,17 +261,13 @@ func TestEventDSYM(t *testing.T) {
 	ctx := context.Background()
 	p := newProject(t, st)
 
-	var gotFrames string
-	var gotBody int
-	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotFrames = r.Header.Get("X-Frames")
-		gotBody = int(r.ContentLength)
-		json.NewEncoder(w).Encode(map[string]any{"frames": []map[string]any{
+	fake := &fakeSidecar{answer: func() any {
+		return []map[string]any{
 			{"function": "-[CartViewController loadCart:]", "filename": "/Users/dev/App/CartViewController.m", "lineno": 88},
 			{"function": "??", "filename": "??", "lineno": 0},
-		}})
-	}))
-	defer sidecar.Close()
+		}
+	}}
+	sidecar := fake.server(t)
 	svc := &Service{Store: st, DSYM: NewDSYMClient(sidecar.URL)}
 
 	debugID := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
@@ -236,12 +282,16 @@ func TestEventDSYM(t *testing.T) {
 	if err := svc.Event(ctx, p.ID, id, at); err != nil {
 		t.Fatal(err)
 	}
-	if gotBody != len("MACHO-BYTES") {
-		t.Errorf("sidecar body length = %d", gotBody)
+	// Cold sidecar: asked, missed, sent the bytes once, asked again.
+	if fake.puts != 1 || len(fake.posts) != 2 || fake.posts[0] != fake.posts[1] {
+		t.Errorf("sidecar traffic: puts=%d posts=%v", fake.puts, fake.posts)
+	}
+	if got := fake.stored[fake.posts[0]]; string(got) != "MACHO-BYTES" {
+		t.Errorf("sidecar received %q", got)
 	}
 	var addrs []struct{ Address, Module string }
-	if err := json.Unmarshal([]byte(gotFrames), &addrs); err != nil || len(addrs) != 2 {
-		t.Fatalf("X-Frames = %s (%v)", gotFrames, err)
+	if err := json.Unmarshal([]byte(fake.frames), &addrs); err != nil || len(addrs) != 2 {
+		t.Fatalf("frames = %s (%v)", fake.frames, err)
 	}
 	if addrs[0].Address != "0xe2b50" || addrs[0].Module != "App" || addrs[1].Address != "0xe3000" {
 		t.Errorf("addresses = %+v", addrs)
@@ -270,10 +320,7 @@ func TestEventDSYMSidecarErrorRetries(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
 	p := newProject(t, st)
-	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "llvm-symbolizer timed out", http.StatusGatewayTimeout)
-	}))
-	defer sidecar.Close()
+	sidecar := (&fakeSidecar{warm: true, answer: func() any { return http.StatusGatewayTimeout }}).server(t)
 	svc := &Service{Store: st, DSYM: NewDSYMClient(sidecar.URL)}
 	upload(t, st, p, KindDSYM, "2.0", "", "App.dSYM", []byte("x"))
 	raw := fmt.Sprintf(`{"platform":"cocoa","release":"2.0","timestamp":%d,"exception":{"values":[{"type":"SIGSEGV","stacktrace":{"frames":[{"instruction_addr":"0x104900010"}]}}]},"debug_meta":{"images":[{"type":"macho","code_file":"App","image_addr":"0x104900000","image_size":4096}]}}`, time.Now().Unix())
@@ -305,14 +352,14 @@ func TestResolveAtIngest(t *testing.T) {
 	ctx := context.Background()
 	p := newProject(t, st)
 	fail := false
-	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// warm: the sidecar already has the file (the cold case is TestResolveAtIngestColdSidecar).
+	fake := &fakeSidecar{warm: true, answer: func() any {
 		if fail {
-			http.Error(w, "down", http.StatusBadGateway)
-			return
+			return http.StatusBadGateway
 		}
-		json.NewEncoder(w).Encode(map[string]any{"frames": []map[string]any{{"function": "-[Cart load]", "filename": "/src/Cart.m", "lineno": 7}}})
-	}))
-	defer sidecar.Close()
+		return []map[string]any{{"function": "-[Cart load]", "filename": "/src/Cart.m", "lineno": 7}}
+	}}
+	sidecar := fake.server(t)
 	svc := &Service{Store: st, DSYM: NewDSYMClient(sidecar.URL)}
 	in := &ingest.Ingester{Store: st, Cfg: config.Config{}, Symbols: svc, Log: slog.Default()}
 	upload(t, st, p, KindDSYM, "2.0", "", "App.dSYM", []byte("x"))
@@ -358,5 +405,50 @@ func TestResolveAtIngest(t *testing.T) {
 	rows.Close()
 	if len(kinds) != 3 || kinds[2] != "symbolicate" {
 		t.Errorf("jobs = %v, want [alert alert symbolicate]", kinds)
+	}
+}
+
+// TestResolveAtIngestColdSidecar: when the sidecar does not have the
+// symbol file yet, ingest does not read the bytes from the database inside
+// the request — the event is stored as-is with a symbolicate job, and the
+// job sends the file once and resolves.
+func TestResolveAtIngestColdSidecar(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st)
+	fake := &fakeSidecar{answer: func() any {
+		return []map[string]any{{"function": "-[Cart load]", "filename": "/src/Cart.m", "lineno": 7}}
+	}}
+	sidecar := fake.server(t)
+	svc := &Service{Store: st, DSYM: NewDSYMClient(sidecar.URL)}
+	in := &ingest.Ingester{Store: st, Cfg: config.Config{}, Symbols: svc, Log: slog.Default()}
+	upload(t, st, p, KindDSYM, "2.0", "", "App.dSYM", []byte("MACHO"))
+	body := fmt.Sprintf(`{"event_id":"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1","platform":"cocoa","release":"2.0","timestamp":%d,"level":"fatal","exception":{"values":[{"type":"SIGSEGV","mechanism":{"handled":false},"stacktrace":{"frames":[{"instruction_addr":"0x104900010","in_app":true}]}}]},"debug_meta":{"images":[{"type":"macho","code_file":"App","image_addr":"0x104900000","image_size":4096}]}}`, time.Now().Unix())
+	envelope := []byte(fmt.Sprintf("{}\n{\"type\":\"event\",\"length\":%d}\n%s\n", len(body), body))
+	now := time.Now().UTC()
+	res, err := in.Ingest(ctx, p, sentry.Parse(envelope, now), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.puts != 0 || len(fake.posts) != 1 {
+		t.Fatalf("ingest must only ask, not upload: puts=%d posts=%v", fake.puts, fake.posts)
+	}
+	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"})
+	if err != nil || row.Symbolicated {
+		t.Fatalf("stored as-is: %+v %v", row, err)
+	}
+	if res.Jobs != 2 { // new_issue alert + symbolicate
+		t.Fatalf("jobs = %d, want 2", res.Jobs)
+	}
+	// The job sends the file and resolves.
+	if err := svc.Event(ctx, p.ID, row.EventID, row.OccurredAt); err != nil {
+		t.Fatal(err)
+	}
+	if fake.puts != 1 || string(fake.stored[fake.posts[len(fake.posts)-1]]) != "MACHO" {
+		t.Fatalf("job upload: puts=%d stored=%v", fake.puts, fake.stored)
+	}
+	row, _ = st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: row.EventID})
+	if !row.Symbolicated || row.ErrorLocation == nil || *row.ErrorLocation != "Cart.m:7" {
+		t.Fatalf("after job: %+v", row)
 	}
 }

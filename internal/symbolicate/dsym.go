@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,11 +12,13 @@ import (
 	"time"
 )
 
-// MaxDSYMFrames bounds what is forwarded to the container per request.
+// MaxDSYMFrames bounds what is forwarded to the sidecar per request.
 const MaxDSYMFrames = 200
 
-// DSYMClient talks to the symbolication container (container/symbolicate):
-// the binary streams as the request body, frames ride in the X-Frames header.
+// DSYMClient talks to the symbolication sidecar (Sidecar, run as
+// `crashcart symbolicate`). The sidecar caches symbol files by key; a
+// request names the key and only when the sidecar does not have the file
+// yet are its bytes read from the database and sent (PUT).
 type DSYMClient struct {
 	BaseURL string
 	HTTP    *http.Client
@@ -23,11 +26,16 @@ type DSYMClient struct {
 
 // NewDSYMClient returns a client for baseURL ("" disables it).
 func NewDSYMClient(baseURL string) *DSYMClient {
-	return &DSYMClient{BaseURL: baseURL, HTTP: &http.Client{Timeout: 60 * time.Second}}
+	return &DSYMClient{BaseURL: baseURL, HTTP: &http.Client{Timeout: 5 * time.Minute}}
 }
 
-// Enabled reports whether a container URL is configured.
+// Enabled reports whether a sidecar URL is configured.
 func (c *DSYMClient) Enabled() bool { return c != nil && c.BaseURL != "" }
+
+// ErrNotCached: the sidecar does not have the symbol file and the caller
+// asked not to send it (Resolve with a nil loader — the ingest path,
+// which leaves the upload to the job worker).
+var ErrNotCached = errors.New("symbol file not cached by the sidecar")
 
 // DSYMAddr is one address to look up: the offset into the image (the
 // sidecar runs llvm-symbolizer on the binary, so addresses are relative
@@ -38,7 +46,7 @@ type DSYMAddr struct {
 }
 
 // DSYMResult is what the sidecar returns for one address; Function is
-// "??" (or empty) when the address is not covered.
+// empty (or "??") when the address is not covered.
 type DSYMResult struct {
 	Function string `json:"function"`
 	Filename string `json:"filename"`
@@ -50,42 +58,93 @@ func (r DSYMResult) Resolved() bool {
 	return r.Function != "" && r.Function != "??" && r.Function != "?"
 }
 
-// Resolve sends the dSYM plus addresses; the result is index-aligned with
-// addrs (truncated to MaxDSYMFrames).
-func (c *DSYMClient) Resolve(ctx context.Context, dsym []byte, addrs []DSYMAddr) ([]DSYMResult, error) {
+// Resolve symbolicates addrs against the symbol file named key. When the
+// sidecar does not have the file, load is called for its bytes, which are
+// sent once (PUT) before retrying; with load nil, ErrNotCached is
+// returned instead. The result is index-aligned with addrs (truncated to
+// MaxDSYMFrames).
+func (c *DSYMClient) Resolve(ctx context.Context, key string, load func(context.Context) ([]byte, error), addrs []DSYMAddr) ([]DSYMResult, error) {
 	if len(addrs) > MaxDSYMFrames {
 		addrs = addrs[:MaxDSYMFrames]
 	}
+	results, found, err := c.symbolicate(ctx, key, addrs)
+	if err != nil || found {
+		return results, err
+	}
+	if load == nil {
+		return nil, ErrNotCached
+	}
+	data, err := load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.put(ctx, key, data); err != nil {
+		return nil, err
+	}
+	results, found, err = c.symbolicate(ctx, key, addrs)
+	if err == nil && !found {
+		err = fmt.Errorf("symbolicate sidecar: %s still unknown after upload", key)
+	}
+	return results, err
+}
+
+func (c *DSYMClient) symbolicate(ctx context.Context, key string, addrs []DSYMAddr) ([]DSYMResult, bool, error) {
 	type addr struct {
 		Address string `json:"address"`
 		Module  string `json:"module"`
 	}
-	wire := make([]addr, len(addrs))
+	req := struct {
+		Symbol string `json:"symbol"`
+		Frames []addr `json:"frames"`
+	}{Symbol: key, Frames: make([]addr, len(addrs))}
 	for i, a := range addrs {
-		wire[i] = addr{Address: "0x" + strconv.FormatUint(a.Address, 16), Module: a.Module}
+		req.Frames[i] = addr{Address: "0x" + strconv.FormatUint(a.Address, 16), Module: a.Module}
 	}
-	hdr, _ := json.Marshal(wire)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/symbolicate", bytes.NewReader(dsym))
+	body, _ := json.Marshal(req)
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/symbolicate", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("X-Frames", string(hdr))
-	req.ContentLength = int64(len(dsym))
-	resp, err := c.HTTP.Do(req)
+	r.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(r)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("symbolicate container: %s: %s", resp.Status, bytes.TrimSpace(body))
+		return nil, false, sidecarError(resp)
 	}
 	var out struct {
 		Frames []DSYMResult `json:"frames"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return out.Frames, nil
+	return out.Frames, true, nil
+}
+
+func (c *DSYMClient) put(ctx context.Context, key string, data []byte) error {
+	r, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+"/symbols/"+key, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	r.Header.Set("Content-Type", "application/octet-stream")
+	r.ContentLength = int64(len(data))
+	resp, err := c.HTTP.Do(r)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return sidecarError(resp)
+	}
+	return nil
+}
+
+func sidecarError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("symbolicate sidecar: %s: %s", resp.Status, bytes.TrimSpace(body))
 }
