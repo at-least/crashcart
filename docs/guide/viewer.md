@@ -24,13 +24,13 @@ shareable link.
 
 ## Issues
 
-`/p/{slug}/issues` — the issue list. Columns: title (error type + location),
+`/p/{slug}/issues` — the issue list. Columns: title (with the culprit under it),
 level, event count, affected users, first and last seen, a sparkline of the
 last 24 hours, and the first/last release.
 
-Filter by **status** (`unresolved`, `triaged`, `resolved`, `regression`,
+Filter by **status** (`unresolved`, `resolved`, `regression`,
 `ignored`), release, and free-text search (`q=` matches title and
-location). Select rows to change status in bulk.
+culprit). Select rows to change status in bulk.
 
 ### Keyboard triage
 
@@ -39,7 +39,6 @@ location). Select rows to change status in bulk.
 | `j` / `k` | Next / previous issue |
 | `r` | Mark resolved |
 | `i` | Ignore |
-| `t` | Mark triaged |
 | `x` | Toggle selection |
 
 A banner appears when new issues arrive while the page is open; it does

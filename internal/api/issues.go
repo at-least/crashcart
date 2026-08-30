@@ -19,8 +19,8 @@ const sparklineHours = 7 * 24
 // is what a client may set — "regression" is ingest's verdict (an event
 // on a release outside resolved_releases), never a request's.
 var (
-	issueStatuses    = map[string]bool{"unresolved": true, "triaged": true, "resolved": true, "ignored": true, "regression": true}
-	writableStatuses = map[string]bool{"unresolved": true, "triaged": true, "resolved": true, "ignored": true}
+	issueStatuses    = map[string]bool{"unresolved": true, "resolved": true, "ignored": true, "regression": true}
+	writableStatuses = map[string]bool{"unresolved": true, "resolved": true, "ignored": true}
 )
 
 // issueOut is the JSON shape of an issue.
@@ -211,7 +211,7 @@ func (h *Handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !writableStatuses[in.Status] {
-		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, triaged, resolved, ignored")
+		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, resolved, ignored")
 		return
 	}
 	fp, ok := sentry.ParseID(r.PathValue("fingerprint"))
@@ -241,7 +241,7 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !writableStatuses[in.Status] {
-		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, triaged, resolved, ignored")
+		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, resolved, ignored")
 		return
 	}
 	if len(in.Fingerprints) == 0 {

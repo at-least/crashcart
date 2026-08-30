@@ -61,8 +61,10 @@ func frameLocation(f sentry.Frame) string {
 	return f.InstrAddr
 }
 
-// stacksOf builds the display stacks of an event: the symbolicated frames
-// (events.symbols) replace the primary exception's frames when present.
+// stacksOf builds the display stacks of an event: the main exception
+// (the one thrown last, which titles the issue) first, its causes under
+// it; the symbolicated frames (events.symbols) replace the main
+// exception's frames when present.
 func stacksOf(e sqlc.Event, ev *sentry.Event) []Stack {
 	if ev == nil {
 		return nil
@@ -71,11 +73,21 @@ func stacksOf(e sqlc.Event, ev *sentry.Event) []Stack {
 	if len(e.Symbols) > 0 {
 		_ = json.Unmarshal(e.Symbols, &symbols)
 	}
+	order := make([]int, 0, len(ev.Exceptions))
+	if len(ev.Exceptions) > 0 {
+		order = append(order, ev.Primary)
+		for i := range ev.Exceptions {
+			if i != ev.Primary {
+				order = append(order, i)
+			}
+		}
+	}
 	var out []Stack
-	for i, ex := range ev.Exceptions {
+	for _, i := range order {
+		ex := ev.Exceptions[i]
 		frames := ex.Frames
 		sym := false
-		if i == 0 && len(symbols) > 0 {
+		if i == ev.Primary && len(symbols) > 0 {
 			frames, sym = symbols, true
 		}
 		st := Stack{Type: ex.Type, Value: ex.Value, Handled: ex.Handled, Mechanism: ex.Mechanism, Symbolicated: sym}

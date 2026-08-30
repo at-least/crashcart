@@ -88,7 +88,7 @@
   updateBulk();
 
   /* ── Keyboard triage: j/k move, x select, Enter open,
-     r resolve, i ignore, t triage (selected rows, else the focused one) ── */
+     r resolve, i ignore (selected rows, else the focused one) ── */
   var focused = -1;
   function focusRow(i) {
     var rows = issueRows();
@@ -145,7 +145,6 @@
         break;
       case "r": bulk("resolved"); break;
       case "i": bulk("ignored"); break;
-      case "t": bulk("triaged"); break;
       default: return;
     }
     e.preventDefault();

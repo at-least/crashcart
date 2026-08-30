@@ -20,7 +20,7 @@ var schema string
 // SchemaVersion is the version of schema.sql this binary carries. Bump it
 // with every change to the schema; Init writes it into crashcart_schema on
 // creation and refuses a database at any other version.
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 // ErrSchemaVersion: the database was created by a binary with another
 // schema. It wraps the message an operator needs.

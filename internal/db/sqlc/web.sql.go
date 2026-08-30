@@ -241,7 +241,7 @@ func (q *Queries) PortalLatestReleases(ctx context.Context, arg PortalLatestRele
 
 const portalOpenIssues = `-- name: PortalOpenIssues :many
 SELECT project_id, count(*)::bigint AS n FROM issues
-WHERE status IN ('unresolved', 'triaged', 'regression') GROUP BY 1
+WHERE status IN ('unresolved', 'regression') GROUP BY 1
 `
 
 type PortalOpenIssuesRow struct {

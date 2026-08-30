@@ -5,9 +5,10 @@ what you triage; the events underneath are the evidence.
 
 ## How events become issues
 
-Events are grouped by their stack trace — the frames from your own code,
-ignoring SDK and system frames. Events without a stack trace (messages)
-group by type and text.
+Events are grouped by their exception chain — the types of every
+exception in it, and the frames of the one thrown last from your own
+code, ignoring SDK and system frames. Events without a stack trace
+(messages) group by type and text. An SDK-set `fingerprint` wins.
 
 Obfuscated and readable stacks look different, so an issue can be split in
 two until a [symbol file](./symbolication) arrives. CrashCart
@@ -18,13 +19,15 @@ Upload mappings when you ship a release, not after the crashes come in.
 
 | Status | Meaning |
 |---|---|
-| **Unresolved** | New, nobody has looked at it |
-| **Triaged** | Acknowledged, someone is on it |
+| **Unresolved** | Open |
 | **Resolved** | Fixed. CrashCart remembers which releases it had been seen on |
-| **Regression** | Was resolved, then seen again on a release it had *never* been seen on |
-| **Ignored** | Known, won't fix. Hidden from the default list |
+| **Regression** | Was resolved, then seen again on a release it had *never* been seen on (Sentry's *Regressed*) |
+| **Ignored** | Known, won't fix. Hidden from the default list (Sentry's *Archived*) |
 
-A resolved issue that keeps crashing on **releases it was already known
+These are Sentry's statuses; resolving works like Sentry's "resolve in
+next release":
+
+a resolved issue that keeps crashing on **releases it was already known
 on** stays resolved — old builds in the field aren't a regression. It
 becomes a regression when it shows up on a release it had never been
 seen on before you resolved it: the one that was supposed to carry the
@@ -35,8 +38,10 @@ Change status on the issue page, in bulk from the list, or with the
 
 ## What an issue shows
 
-- **Title** — error type and where in your code it happened, e.g.
-  `NullPointerException at CartFragment.java:142`
+- **Title** — Sentry's `Type: value` of the exception thrown last, e.g.
+  `NullPointerException: Attempt to invoke virtual method`, with the
+  culprit (`com.example.CartFragment in onCreateView`) and the
+  transaction under it; the causes are listed in the stack trace
 - **Events** — exact count, including events dropped by
   [sampling](./projects#sampling-and-daily-quota)
 - **Users** — how many distinct users hit it

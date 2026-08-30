@@ -409,7 +409,7 @@ func (w *Web) sparklines(ctx context.Context, projectID int64, fps []sentry.ID, 
 }
 
 // writableStatuses is what the viewer may set ("regression" is ingest's verdict).
-var writableStatuses = map[string]bool{"resolved": true, "ignored": true, "triaged": true, "unresolved": true}
+var writableStatuses = map[string]bool{"resolved": true, "ignored": true, "unresolved": true}
 
 // issuesBulk sets the status of the selected issues and answers with the
 // refreshed table fragment (the POST URL carries the list state).

@@ -66,7 +66,7 @@ so a dump loads into any database:
 ## `_meta`
 
 ```json
-{"t":"_meta","format":2,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
+{"t":"_meta","format":3,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
 ```
 
 - `format` — integer. A reader that supports format *N* must refuse a file
@@ -150,7 +150,7 @@ level             str    fatal error warning info debug
 error_type?       str
 transaction?      str    event.transaction (format 1 wrote this as `screen`; still read)
 platform?         str
-status            str    unresolved triaged resolved ignored regression; default unresolved
+status            str    unresolved resolved ignored regression; default unresolved (`triaged`, format 2 and earlier, imports as unresolved)
 event_count       int    events seen (including sampled-out)
 stored_count      int    events actually stored
 first_seen        ts
@@ -184,7 +184,7 @@ device_model?     str
 os_version?       str
 transaction?      str    event.transaction (format 1: `screen`; still read)
 error_type?       str
-culprit?          str    innermost in-app frame (format 1: `error_location`; still read)
+culprit?          str    Sentry's stack culprit, "module-or-file in function" (format 1: `error_location`; still read)
 handled?          bool
 sdk_name?         str
 user_id?          str
@@ -282,6 +282,9 @@ up); the rest expire or belong to the target database.
 
 ## Format history
 
+- **3** — issue status `triaged` is gone (Sentry has no such state); a
+  format-2 file's `triaged` imports as `unresolved`. Culprits are Sentry's
+  `module-or-file in function`.
 - **2** — Sentry vocabulary: `screen` → `transaction`, `error_location` →
   `culprit`, alert type `crash_spike` → `unhandled_spike`. A format-1 file
   still imports (the old names are read).
@@ -289,7 +292,7 @@ up); the rest expire or belong to the target database.
 
 ## Evolving the format
 
-- **Additive change** (new optional field, new table): keep `format` at 2.
+- **Additive change** (new optional field, new table): keep `format` at 3.
   Old readers ignore unknown fields and unknown `t`.
 - **Breaking change** (renamed/removed required field, changed encoding):
   bump `format`, keep reading the previous one for at least one release.

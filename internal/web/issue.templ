@@ -31,6 +31,9 @@ templ IssuePage(pg Page, d IssueData) {
 				if d.Issue.ErrorType != nil {
 					<span>{ *d.Issue.ErrorType }</span>
 				}
+				if d.Latest != nil && d.Latest.Culprit != nil {
+					<span title="culprit: the innermost in-app frame of the latest event">{ " · " + *d.Latest.Culprit }</span>
+				}
 				if d.Issue.Transaction != nil {
 					<span>{ " · " + *d.Issue.Transaction }</span>
 				}
@@ -51,7 +54,7 @@ templ IssuePage(pg Page, d IssueData) {
 					hx-swap="outerHTML"
 					hx-push-url="false"
 				>
-					for _, st := range []string{"unresolved", "triaged", "resolved", "ignored"} {
+					for _, st := range []string{"unresolved", "resolved", "ignored"} {
 						<option value={ st } selected?={ st == string(d.Issue.Status) }>{ statusLabels[st] }</option>
 					}
 					if d.Issue.Status == "regression" {

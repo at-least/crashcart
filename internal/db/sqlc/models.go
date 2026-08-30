@@ -147,7 +147,6 @@ type IssueStatus string
 
 const (
 	IssueStatusUnresolved IssueStatus = "unresolved"
-	IssueStatusTriaged    IssueStatus = "triaged"
 	IssueStatusResolved   IssueStatus = "resolved"
 	IssueStatusIgnored    IssueStatus = "ignored"
 	IssueStatusRegression IssueStatus = "regression"

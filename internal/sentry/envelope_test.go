@@ -31,8 +31,8 @@ func TestParseCrashEvent(t *testing.T) {
 	if e.Message != "NullPointerException: Attempt to invoke virtual method" {
 		t.Errorf("message = %q", e.Message)
 	}
-	if e.Release != "2.4.1" || e.DeviceModel != "Pixel 8" || e.OSVersion != "14" || e.Transaction != "CartFragment" {
-		t.Errorf("context fields wrong: %+v", e)
+	if e.Release != "" || e.DeviceModel != "Pixel 8" || e.OSVersion != "14" || e.Transaction != "CartFragment" {
+		t.Errorf("context fields wrong (contexts.app.app_version is not the release): %+v", e)
 	}
 	if e.ErrorType != "NullPointerException" || e.Handled == nil || *e.Handled || !e.IsUnhandled() {
 		t.Errorf("exception fields wrong")
@@ -46,7 +46,7 @@ func TestParseCrashEvent(t *testing.T) {
 	if string(e.Raw) != crashEvent {
 		t.Error("raw payload altered")
 	}
-	if loc := Culprit(e.Frames()); loc != "CartFragment.java:142" || len(e.Frames()) != 3 {
+	if loc := Culprit(e.Frames()); loc != "com/example/CartFragment.java in onCreateView" || len(e.Frames()) != 3 {
 		t.Errorf("error location = %q, frames = %d", loc, len(e.Frames()))
 	}
 	if e.IssueTitle() != "NullPointerException: Attempt to invoke virtual method" {
@@ -67,7 +67,9 @@ func TestParseCrashEvent(t *testing.T) {
 func TestParseFallbacks(t *testing.T) {
 	env := Parse(envelope(`{"type":"event"}`, `{"message":"hello","timestamp":1787998530.5,"release":"1.0","server_name":"web-1","contexts":{"runtime":{"name":"node","version":"22"}},"tags":[["k","v"],["n",1]]}`), now)
 	e := env.Events[0]
-	if e.Level != "error" || e.Message != "hello" || e.Release != "1.0" || e.DeviceModel != "web-1" || e.OSVersion != "node/22" {
+	// server_name is a tag (Sentry's), not the device; the runtime is not
+	// the OS.
+	if e.Level != "error" || e.Message != "hello" || e.Release != "1.0" || e.DeviceModel != "" || e.OSVersion != "" || e.Tags["server_name"] != "web-1" {
 		t.Errorf("fallbacks wrong: %+v", e)
 	}
 	if e.Tags["k"] != "v" || e.Tags["n"] != "1" {
@@ -123,6 +125,12 @@ func TestParseSessionsAndSkips(t *testing.T) {
 	if len(env.Events) != 1 || env.Events[0].Message != "after resync" {
 		t.Errorf("events = %+v", env.Events)
 	}
+	// errors > 0 on a session that did not crash: Sentry's errored session.
+	env = Parse(envelope(`{"type":"session"}`, `{"sid":"s3","status":"exited","errors":2,"attrs":{"release":"2.0"}}`,
+		`{"type":"session"}`, `{"sid":"s4","status":"crashed","errors":1,"attrs":{"release":"2.0"}}`), now)
+	if len(env.Sessions) != 2 || env.Sessions[0].Status != "errored" || env.Sessions[1].Status != "crashed" {
+		t.Errorf("errored sessions = %+v", env.Sessions)
+	}
 }
 
 func TestParseLengthWithNewlines(t *testing.T) {
@@ -144,7 +152,7 @@ func TestSDKFingerprint(t *testing.T) {
 }
 
 func TestLevelNormalization(t *testing.T) {
-	for in, want := range map[string]string{"warn": "warning", "CRITICAL": "fatal", "": "error", "Info": "info"} {
+	for in, want := range map[string]string{"warn": "warning", "CRITICAL": "fatal", "": "error", "Info": "info", "log": "info", "bogus": "error"} {
 		if got := normalizeLevel(in); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
 		}
@@ -155,27 +163,34 @@ func itoa(n int) string { return strconv.Itoa(n) }
 
 func TestChainedExceptionsJavaOrder(t *testing.T) {
 	// Java SDK: outer RuntimeException first (exception_id 0), its cause
-	// second (parent_id 0). The cause names the issue; handled comes from
-	// the outer one.
+	// second (parent_id 0). The thrown (outer) one names the issue and
+	// carries handled, as in Sentry; the cause is shown under it.
 	body := `{"exception":{"values":[
 	  {"type":"RuntimeException","value":"Unable to start activity","mechanism":{"type":"UncaughtExceptionHandler","handled":false,"exception_id":0},
 	   "stacktrace":{"frames":[{"module":"android.app.ActivityThread","function":"main","lineno":1}]}},
 	  {"type":"IllegalStateException","value":"cart total unavailable","mechanism":{"type":"chained","exception_id":1,"parent_id":0},
 	   "stacktrace":{"frames":[{"module":"android.app.Activity","function":"performCreate","lineno":2},{"module":"cc.smoke.MainActivity","function":"onCreate","lineno":47,"in_app":true}]}}]}}`
 	ev := ParseEvent("", now, []byte(body), now)
-	if ev.ErrorType != "IllegalStateException" || ev.Handled == nil || *ev.Handled || ev.Message != "IllegalStateException: cart total unavailable" {
+	if ev.ErrorType != "RuntimeException" || ev.Handled == nil || *ev.Handled || ev.Message != "RuntimeException: Unable to start activity" {
 		t.Fatalf("type=%q handled=%v message=%q", ev.ErrorType, ev.Handled, ev.Message)
 	}
-	if loc := Culprit(ev.Frames()); loc != "MainActivity:47" && loc != "?:47" {
-		t.Logf("location = %q", loc)
+	if loc := Culprit(ev.Frames()); loc != "android.app.ActivityThread in main" {
+		t.Fatalf("location = %q", loc)
 	}
-	if f := ev.Frames(); len(f) != 2 || f[1].Function != "onCreate" {
+	if f := ev.Frames(); len(f) != 1 || f[0].Function != "main" {
 		t.Fatalf("frames = %+v", f)
 	}
-	// Protocol order without ids: oldest first is the root cause.
-	body = `{"exception":{"values":[{"type":"KeyError","value":"x","mechanism":{"type":"generic","handled":true}},{"type":"ValueError","value":"wrapped"}]}}`
+	// The cause is part of the grouping: the same wrapper with another
+	// cause is another issue.
+	other := ParseEvent("", now, []byte(strings.Replace(body, "IllegalStateException", "NullPointerException", 1)), now)
+	if Fingerprint(ev, ev.Frames()) == Fingerprint(other, other.Frames()) {
+		t.Fatal("different causes must not share an issue")
+	}
+	// Protocol order without ids: oldest first, the last one was thrown.
+	// The mechanism of the thrown one decides handled; the cause's does not.
+	body = `{"exception":{"values":[{"type":"KeyError","value":"x","mechanism":{"type":"generic","handled":true}},{"type":"ValueError","value":"wrapped","mechanism":{"type":"excepthook","handled":false}}]}}`
 	ev = ParseEvent("", now, []byte(body), now)
-	if ev.ErrorType != "KeyError" || ev.Handled == nil || !*ev.Handled {
+	if ev.ErrorType != "ValueError" || ev.Handled == nil || *ev.Handled {
 		t.Fatalf("python order: type=%q handled=%v", ev.ErrorType, ev.Handled)
 	}
 }
@@ -191,11 +206,11 @@ func TestThreadFallbackAndSDKFrames(t *testing.T) {
 	// .NET: exception without stack, current thread carries it.
 	ev := ParseEvent("", now, []byte(`{"platform":"csharp","exception":{"values":[{"type":"InvalidOperationException","value":"handled boom"}]},
 	 "threads":{"values":[{"id":1,"current":true,"stacktrace":{"frames":[{"function":"Main","filename":"Program.cs","lineno":22,"in_app":true}]}}]}}`), now)
-	if loc := Culprit(ev.Frames()); loc != "Program.cs:22" {
+	if loc := Culprit(ev.Frames()); loc != "Program.cs in Main" {
 		t.Fatalf("thread fallback location = %q", loc)
 	}
-	if ev.Handled == nil || !*ev.Handled {
-		t.Fatalf("missing mechanism should mean handled: %v", ev.Handled)
+	if ev.Handled != nil || ev.IsUnhandled() {
+		t.Fatalf("no mechanism: neither handled nor unhandled, got %v", ev.Handled)
 	}
 	// Dart: two different errors from one entry point must not share a fingerprint.
 	mk := func(fn string) *Event {
@@ -216,7 +231,7 @@ func TestThreadFallbackAndSDKFrames(t *testing.T) {
 func TestBareArraysAndMessageEvents(t *testing.T) {
 	// sentry-go: exception and threads as bare arrays.
 	ev := ParseEvent("", now, []byte(`{"platform":"go","exception":[{"type":"*errors.errorString","value":"handled boom","stacktrace":{"frames":[{"abs_path":"/x/main.go","function":"main.main","lineno":67,"in_app":true}]}}],"threads":[{"id":1,"current":true}]}`), now)
-	if ev == nil || ev.ErrorType != "*errors.errorString" || Culprit(ev.Frames()) != "main.go:67" {
+	if ev == nil || ev.ErrorType != "*errors.errorString" || Culprit(ev.Frames()) != "main.go in main.main" {
 		t.Fatalf("bare arrays: %+v", ev)
 	}
 	// sentry-go panic("string"): a fatal message event with the thread stack.
@@ -225,7 +240,7 @@ func TestBareArraysAndMessageEvents(t *testing.T) {
 	  {"abs_path":"/x/main.go","function":"main.main","lineno":71,"in_app":true},
 	  {"abs_path":"/go/pkg/mod/github.com/getsentry/sentry-go@v0.49.0/hub.go","function":"sentry.(*Hub).Recover","lineno":10,"in_app":true}]}}]}`
 	ev = ParseEvent("", now, []byte(body), now)
-	if loc := Culprit(ev.Frames()); loc != "main.go:71" {
+	if loc := Culprit(ev.Frames()); loc != "main.go in main.main" {
 		t.Fatalf("panic location = %q", loc)
 	}
 	fp := Fingerprint(ev, ev.Frames())
@@ -242,7 +257,7 @@ func TestBareArraysAndMessageEvents(t *testing.T) {
 	ev = ParseEvent("", now, []byte(`{"platform":"native","exception":{"values":[{"type":"panic","stacktrace":{"frames":[
 	  {"abs_path":"/x/src/main.rs","filename":"main.rs","function":"sdkrust::main::{closure#1}","lineno":37,"in_app":true},
 	  {"abs_path":"/c/sentry-panic-0.49.2/src/lib.rs","filename":"lib.rs","function":"sentry_panic::panic_handler","lineno":128,"in_app":true}]}}]}}`), now)
-	if loc := Culprit(ev.Frames()); loc != "main.rs:37" {
+	if loc := Culprit(ev.Frames()); loc != "main.rs in sdkrust::main::{closure#1}" {
 		t.Fatalf("rust location = %q", loc)
 	}
 	// Native: address-only frames fingerprint by image+offset, not raw address.
@@ -266,11 +281,11 @@ func TestBareArraysAndMessageEvents(t *testing.T) {
 
 func TestAnonymousFramesAreCode(t *testing.T) {
 	ev := ParseEvent("", now, []byte(`{"platform":"node","exception":{"values":[{"type":"Error","value":"unhandled boom","mechanism":{"type":"auto.node.onuncaughtexception","handled":false},"stacktrace":{"frames":[{"filename":"/x/index.ts","function":"<anonymous>","lineno":16,"in_app":true,"module":"index.ts"}]}}]}}`), now)
-	if loc := Culprit(ev.Frames()); loc != "index.ts:16" {
+	if loc := Culprit(ev.Frames()); loc != "index.ts in <anonymous>" {
 		t.Fatalf("anonymous frame location = %q", loc)
 	}
 	ev = ParseEvent("", now, []byte(`{"platform":"java","level":"info","message":"hello","threads":{"values":[{"current":true,"stacktrace":{"frames":[{"module":"smoke.Main","function":"main","filename":"Main.java","lineno":20},{"module":"java.lang.Thread","function":"getStackTrace","filename":"Thread.java","lineno":1619}]}}]}}`), now)
-	if loc := Culprit(ev.Frames()); loc != "Main.java:20" {
+	if loc := Culprit(ev.Frames()); loc != "smoke.Main in main" {
 		t.Fatalf("java message location = %q", loc)
 	}
 }
@@ -281,7 +296,7 @@ func TestLocationAndGroupingRefinements(t *testing.T) {
 	  {"abs_path":"/x/src/main.rs","filename":"main.rs","function":"sdkrust::main::{closure#1}","lineno":37,"in_app":true,"package":"sdkrust"},
 	  {"function":"__rustc::rust_begin_unwind","in_app":true,"package":"__rustc"},
 	  {"abs_path":"/c/sentry-panic-0.49.2/src/lib.rs","filename":"lib.rs","function":"sentry_panic::panic_handler","lineno":128,"in_app":true}]}}]}}`), now)
-	if loc := Culprit(ev.Frames()); loc != "main.rs:37" {
+	if loc := Culprit(ev.Frames()); loc != "main.rs in sdkrust::main::{closure#1}" {
 		t.Fatalf("rust location = %q", loc)
 	}
 	// Go panic: a message event is titled by its message.

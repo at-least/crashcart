@@ -11,12 +11,12 @@ do not coin synonyms.
 |---|---|---|
 | **Event** | One error, message or crash report sent by an SDK (an envelope `event` item) | ~~log entry~~ ~~record~~ |
 | **Issue** | A group of events with the same fingerprint; the unit of triage | ~~error group~~ ~~bug~~ |
-| **Fingerprint** | Hash of the stack trace used for grouping | ~~signature~~ |
+| **Fingerprint** | Hash of the exception chain and the in-app stack used for grouping (an SDK `fingerprint` wins) | ~~signature~~ |
 | **Release** | The version the SDK reports (`event.release`) | ~~app version~~ ~~build~~ |
 | **Environment** | `event.environment`: production / staging / development | ~~env~~ ~~profile~~ |
 | **Platform** | SDK family: ios / android / javascript / node / python … | ~~OS~~ ~~device type~~ |
 | **Transaction** | `event.transaction`: the screen, route or request the event happened in | ~~screen~~ ~~page~~ |
-| **Culprit** | Where the error is: the innermost in-app frame, `File.ext:line` (Sentry shows it under the title) | ~~location~~ |
+| **Culprit** | Sentry's stack culprit: the innermost in-app frame as `module-or-file in function` (shown under the title) | ~~location~~ |
 | **Session** | One app run / page load reported for release health (`session` / `sessions` items) | |
 
 ## Event: level and handled
@@ -27,7 +27,7 @@ Two independent facts, as the SDK sends them:
 |---|---|---|
 | **Level** | `event.level` | Severity: `fatal` (the process died), `error`, `warning`, `info`, `debug` |
 | **Unhandled** | `exception.mechanism.handled = false` | The SDK caught the error in a last-resort handler — a crash, an uncaught exception, an unhandled rejection. Sentry's "Unhandled" tag |
-| **Handled** | `exception.mechanism.handled = true` | The app caught it and called `captureException` |
+| **Handled** | `exception.mechanism.handled = true` | The app caught it and called `captureException`. No mechanism at all: neither badge, as in Sentry |
 | **Mechanism** | `exception.mechanism.type` | How it was caught: `UncaughtExceptionHandler`, `signalhandler`, `mach`, `onerror`, `unhandledrejection`, `ANR`, … |
 
 A mobile / native crash is both `fatal` and unhandled; a JavaScript
@@ -40,7 +40,7 @@ events — the word is reserved for sessions.
 
 | Term | SDK source | Meaning |
 |---|---|---|
-| **Session status** | `session.status` | `exited`, `crashed`, `errored`, `abnormal` (`ok` while running) |
+| **Session status** | `session.status` (+ `errors`) | `exited`, `crashed`, `abnormal` (`ok` while running); **errored** = did not crash but `errors > 0` |
 | **Crashed sessions** | `status = crashed` | Sessions that ended in a crash |
 | **Crash-free rate** | computed | `1 − crashed ÷ total`, per release |
 | **Adoption** | computed | A release's share of the sessions in the window |
@@ -49,30 +49,34 @@ events — the word is reserved for sessions.
 
 | Status | Meaning |
 |---|---|
-| **unresolved** | New, not yet reviewed |
-| **triaged** | Acknowledged, being investigated |
+| **unresolved** | Open |
 | **resolved** | Fixed (records the releases it had been seen on) |
-| **regression** | Was resolved, reappeared on a release it had not been seen on before — only ingest sets it |
-| **ignored** | Known, won't fix |
+| **regression** | Was resolved, reappeared on a release it had not been seen on before — only ingest sets it (Sentry's *Regressed*, under "resolve in next release" rules) |
+| **ignored** | Known, won't fix (Sentry's *Archived*) |
+
+Sentry's statuses, without the substatuses (`new` / `ongoing` /
+`escalating`); there is no "triaged" state. An issue's `level` is its
+latest event's.
 
 ## Event fields
 
 | Column / field | Sentry SDK source | Example |
 |---|---|---|
 | `level` | `event.level` | fatal |
-| `message` | `logentry.formatted` / `message` / exception value | Attempt to invoke virtual method |
+| `message` | `logentry.formatted` / `message`, else `Type: value` of the main exception | Attempt to invoke virtual method |
 | `platform` | `event.platform` | android |
-| `release` | `event.release` (`contexts.app.app_version`) | 2.4.1 |
+| `release` | `event.release` only | 2.4.1 |
 | `environment` | `event.environment` | production |
 | `transaction` | `event.transaction` | CartFragment |
-| `error_type` | `exception.values[].type` (the primary exception) | NullPointerException |
-| `culprit` | computed: innermost in-app frame | CartFragment.java:142 |
-| `handled` | `exception.mechanism.handled` | false |
-| `device_model` | `contexts.device.model` | Pixel 8 |
-| `os_version` | `contexts.os.version` | 14 |
+| `error_type` | the main exception's `type`: the one thrown last (`values[-1]`, or the one without a `parent_id`); its causes are shown under it | NullPointerException |
+| `culprit` | computed: innermost in-app frame, `module-or-file in function` | com.example.CartFragment in onCreateView |
+| `handled` | `exception.mechanism.handled` (null without a mechanism) | false |
+| `device_model` | `contexts.device.model` only | Pixel 8 |
+| `os_version` | `contexts.os.version` only | 14 |
 | `user_id` | `user.id` | user-001 |
-| `device_id` | `tags.device_id` | did-abc-123 |
+| `device_id` | `tags.device_id` — a CrashCart convention, the SDKs send no device id | did-abc-123 |
 | `sdk_name` | `sdk.name` | sentry.java.android |
+| `tags.server_name` | `server_name` (Sentry makes it a tag) | web-1 |
 
 Issue title is Sentry's `Type: value`; the culprit and transaction are
 shown under it, not in it.

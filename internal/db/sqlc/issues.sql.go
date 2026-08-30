@@ -498,7 +498,7 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     last_seen    = GREATEST(issues.last_seen, EXCLUDED.last_seen),
     first_seen   = LEAST(issues.first_seen, EXCLUDED.first_seen),
     last_release = CASE WHEN EXCLUDED.last_seen >= issues.last_seen THEN COALESCE(EXCLUDED.last_release, issues.last_release) ELSE issues.last_release END,
-    level        = CASE WHEN EXCLUDED.level = 'fatal' THEN 'fatal' ELSE issues.level END,
+    level        = CASE WHEN EXCLUDED.last_seen >= issues.last_seen THEN EXCLUDED.level ELSE issues.level END, -- the latest event's, as in Sentry
     releases     = CASE WHEN issues.releases @> EXCLUDED.releases THEN issues.releases
                         ELSE (SELECT array_agg(DISTINCT r ORDER BY r) FROM unnest(issues.releases || EXCLUDED.releases) AS r) END,
     status       = CASE WHEN $14::bool AND issues.status = 'resolved'
@@ -552,11 +552,12 @@ type UpsertIssueRow struct {
 
 // Called once per (project, fingerprint) per envelope with the folded
 // count; `releases` are the distinct releases of the folded events (” for
-// none). Regression (only with regress = true — ingest; symbolication
-// moving an old event between issues is not new evidence): a resolved
-// issue seen again on a release outside the set it had been seen on when
-// it was resolved (old builds in the field are inside that set; a fixed
-// release is not). Returns the row after the update plus whether it was
+// none); `level` is the latest event's. Regression (only with regress =
+// true — ingest; symbolication moving an old event between issues is not
+// new evidence) is Sentry's "resolved in next release": a resolved issue
+// seen again on a release outside the set it had been seen on when it was
+// resolved (old builds in the field are inside that set; a fixed release
+// is not). Returns the row after the update plus whether it was
 // created in this call and whether this call flipped it to regression
 // (prev is the statement's snapshot of the row before the upsert).
 func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (UpsertIssueRow, error) {

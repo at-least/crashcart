@@ -45,7 +45,7 @@ import (
 )
 
 // Format is the NDJSON format version written in the _meta line.
-const Format = 2 // 2: transaction / culprit / unhandled_spike (was screen / error_location / crash_spike)
+const Format = 3 // 3: no triaged status; 2: transaction / culprit / unhandled_spike (was screen / error_location / crash_spike)
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
@@ -655,7 +655,7 @@ func (im *importer) line(b []byte) error {
 		if err != nil {
 			return err
 		}
-		if r.Status == "" {
+		if r.Status == "" || r.Status == "triaged" { // triaged: a state before format 3, not one of Sentry's
 			r.Status = "unresolved"
 		}
 		fp, ok := sentry.ParseID(r.Fingerprint)

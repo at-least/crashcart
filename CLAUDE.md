@@ -31,7 +31,7 @@ Local Postgres for tests: `docker run -d --name crashcart-test-pg -e POSTGRES_PA
 cmd/crashcart/        main.go: subcommands
 internal/
   config/             env → Config
-  sentry/             envelope parser, Frame, Fingerprint, ErrorLocation
+  sentry/             envelope parser, Frame, Fingerprint, Culprit
   db/                 schema.sql (the whole schema, created on first start — no migrations; carries a version Init checks), sqlc_schema.sql
                       (mirror for sqlc; the stats views appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
   store/              Store = pool + Blobs + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);

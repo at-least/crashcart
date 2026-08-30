@@ -21,7 +21,7 @@ import (
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
-const crashEvent = `{"event_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","timestamp":"%s","level":"fatal","platform":"android","environment":"production","transaction":"CartFragment","tags":{"device_id":"did-1","build":"42"},"user":{"id":"user-001","email":"u@example.com"},"sdk":{"name":"sentry.java.android"},"contexts":{"device":{"model":"Pixel 8","arch":"arm64"},"os":{"name":"Android","version":"14"},"app":{"app_version":"2.4.1"}},"exception":{"values":[{"type":"NullPointerException","value":"Attempt to invoke virtual method","mechanism":{"type":"UncaughtExceptionHandler","handled":false},"stacktrace":{"frames":[{"filename":"Looper.java","function":"loop","in_app":false,"lineno":10},{"filename":"com/example/CartFragment.java","function":"onCreateView","in_app":true,"lineno":142},{"instruction_addr":"0xdeadbeef","in_app":false}]}}]},"breadcrumbs":{"values":[{"timestamp":"2026-08-29T10:15:00Z","category":"navigation","message":"cart","level":"info"},{"timestamp":"2026-08-29T10:15:29Z","category":"http","message":"GET /api/cart 500","level":"error"}]}}`
+const crashEvent = `{"event_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","timestamp":"%s","level":"fatal","platform":"android","environment":"production","release":"2.4.1","transaction":"CartFragment","tags":{"device_id":"did-1","build":"42"},"user":{"id":"user-001","email":"u@example.com"},"sdk":{"name":"sentry.java.android"},"contexts":{"device":{"model":"Pixel 8","arch":"arm64"},"os":{"name":"Android","version":"14"},"app":{"app_version":"2.4.1"}},"exception":{"values":[{"type":"NullPointerException","value":"Attempt to invoke virtual method","mechanism":{"type":"UncaughtExceptionHandler","handled":false},"stacktrace":{"frames":[{"filename":"Looper.java","function":"loop","in_app":false,"lineno":10},{"filename":"com/example/CartFragment.java","function":"onCreateView","in_app":true,"lineno":142},{"instruction_addr":"0xdeadbeef","in_app":false}]}}]},"breadcrumbs":{"values":[{"timestamp":"2026-08-29T10:15:00Z","category":"navigation","message":"cart","level":"info"},{"timestamp":"2026-08-29T10:15:29Z","category":"http","message":"GET /api/cart 500","level":"error"}]}}`
 
 const sessionItem = `{"started":"%s","status":"crashed","attrs":{"release":"2.4.1","environment":"production"}}`
 
@@ -102,8 +102,8 @@ func TestPages(t *testing.T) {
 	}
 	assertPage(t, mux, "/p/shop/issues?status=resolved", "No issues")
 	assertPage(t, mux, "/p/shop/issues?q=NullPointer&win=24h", "/p/shop/issues/"+fp)
-	assertPage(t, mux, "/p/shop/issues/"+fp, "NullPointerException", "onCreateView", "CartFragment.java:142", "system frames", "0xdeadbeef", "Upload symbols", "Pixel 8", "unhandled", "hx-patch=\"/p/shop/issues/"+fp+"/status\"", "Events over 7d", "OS version")
-	evBody := assertPage(t, mux, "/p/shop/events", "Attempt to invoke virtual method", "CartFragment.java:142", "user-001", "tag build", "/p/shop/events/")
+	assertPage(t, mux, "/p/shop/issues/"+fp, "NullPointerException", "onCreateView", "com/example/CartFragment.java in onCreateView", "system frames", "0xdeadbeef", "Upload symbols", "Pixel 8", "unhandled", "hx-patch=\"/p/shop/issues/"+fp+"/status\"", "Events over 7d", "OS version")
+	evBody := assertPage(t, mux, "/p/shop/events", "Attempt to invoke virtual method", "com/example/CartFragment.java in onCreateView", "user-001", "tag build", "/p/shop/events/")
 	i := strings.Index(evBody, "/p/shop/events/")
 	id := evBody[i+len("/p/shop/events/"):]
 	id = id[:strings.IndexAny(id, "\"?")]
@@ -163,7 +163,7 @@ func TestBulkAndMutations(t *testing.T) {
 	assertPage(t, mux, "/p/shop/issues?status=resolved", "/p/shop/issues/"+fp)
 
 	// status select on the issue page → redirect
-	req = httptest.NewRequest("PATCH", "/p/shop/issues/"+fp+"/status", strings.NewReader("status=triaged"))
+	req = httptest.NewRequest("PATCH", "/p/shop/issues/"+fp+"/status", strings.NewReader("status=ignored"))
 	req.AddCookie(sessionCookie)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
@@ -172,7 +172,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 303 || rec.Header().Get("Location") != "/p/shop/issues/"+fp {
 		t.Errorf("status = %d %s", rec.Code, rec.Header().Get("Location"))
 	}
-	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "triaged" || got.StatusBy == nil || *got.StatusBy != "dev@example.com" {
+	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "ignored" || got.StatusBy == nil || *got.StatusBy != "dev@example.com" {
 		t.Errorf("status select: %+v", got)
 	}
 	patch := func(path, body string) int {

@@ -90,10 +90,10 @@ List parameters (all optional):
 
 | Parameter | Meaning |
 |---|---|
-| `status` | `unresolved` · `triaged` · `resolved` · `regression` · `ignored` |
+| `status` | `unresolved` · `resolved` · `regression` · `ignored` |
 | `level` | `fatal` · `error` · `warning` · `info` · `debug` |
 | `release` | Exact match on `last_release` |
-| `q` | Substring match on title and location |
+| `q` | Substring match on title and culprit |
 | `sort` | `last_seen` (default) · `first_seen` · `events` — always descending |
 | `limit`, `offset` | Page size (default 50) and offset |
 | `days`, `from`, `to` | Window on `last_seen`; default 7 days |

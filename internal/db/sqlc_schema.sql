@@ -1,7 +1,7 @@
 -- Enumerations: one definition, sqlc generates the Go constants.
 CREATE TYPE event_level    AS ENUM ('fatal', 'error', 'warning', 'info', 'debug');
 CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnormal');
-CREATE TYPE issue_status   AS ENUM ('unresolved', 'triaged', 'resolved', 'ignored', 'regression');
+CREATE TYPE issue_status   AS ENUM ('unresolved', 'resolved', 'ignored', 'regression');
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
 CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike');

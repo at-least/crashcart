@@ -548,7 +548,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			first := g[0]
 			var minAt, maxAt time.Time
 			var lastRelease *string
-			level := "error"
+			level := first.ev.Level
 			seenRel := map[string]bool{}
 			var releases []string
 			for _, pr := range g {
@@ -563,9 +563,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				if !at.Before(maxAt) {
 					maxAt = at
 					lastRelease = nilIfEmpty(pr.ev.Release)
-				}
-				if pr.ev.Level == "fatal" {
-					level = "fatal"
+					level = pr.ev.Level // the issue shows its latest event's level
 				}
 			}
 			// Sampling: keep the first N per issue (UnhandledKeepFactor × N

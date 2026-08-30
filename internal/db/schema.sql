@@ -12,7 +12,7 @@
 -- Enumerations: one definition, sqlc generates the Go constants.
 CREATE TYPE event_level    AS ENUM ('fatal', 'error', 'warning', 'info', 'debug');
 CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnormal');
-CREATE TYPE issue_status   AS ENUM ('unresolved', 'triaged', 'resolved', 'ignored', 'regression');
+CREATE TYPE issue_status   AS ENUM ('unresolved', 'resolved', 'ignored', 'regression');
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
 CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike');
@@ -102,9 +102,9 @@ CREATE TABLE events (
     device_model   TEXT,
     os_version     TEXT,
     transaction         TEXT,                             -- event.transaction
-    error_type     TEXT,                             -- exception.values[0].type
-    culprit TEXT,                             -- deepest in-app frame "File.ext:line"
-    handled        BOOLEAN,                          -- exception.mechanism.handled: false = unhandled, true = handled, null = no mechanism / no exception
+    error_type     TEXT,                             -- the main exception's type (the one thrown last)
+    culprit        TEXT,                             -- Sentry's stack culprit: innermost in-app frame as "module-or-file in function"
+    handled        BOOLEAN,                          -- exception.mechanism.handled: false = unhandled, true = handled, null = no mechanism / no exception (neither, as in Sentry)
     sdk_name       TEXT,
     user_id        TEXT,
     fingerprint    UUID,                             -- issues.fingerprint (null when nothing to group)
@@ -160,7 +160,7 @@ CREATE TABLE issues (
     project_id       BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     fingerprint      UUID NOT NULL,
     title            TEXT NOT NULL,
-    level            event_level NOT NULL,
+    level            event_level NOT NULL,             -- the latest event's level, as Sentry shows it
     error_type       TEXT,
     transaction           TEXT,
     platform         TEXT,
@@ -173,7 +173,7 @@ CREATE TABLE issues (
     first_release    TEXT,
     last_release     TEXT,
     releases         TEXT[] NOT NULL DEFAULT '{}',    -- every release this issue was seen on ('' = none); appended at ingest
-    resolved_releases TEXT[],                         -- `releases` at resolve time: a later event on a release outside it is a regression
+    resolved_releases TEXT[],                         -- `releases` at resolve time: a later event on a release outside it is a regression (Sentry's "resolve in next release")
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, fingerprint)

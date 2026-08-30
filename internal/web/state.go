@@ -17,7 +17,7 @@ import (
 type ViewState struct {
 	Slug   string // project slug ("" on the portal)
 	Win    string // 24h | 7d | 30d | 90d
-	Status string // issues tab: unresolved (default) | triaged | resolved | ignored | regression | all
+	Status string // issues tab: unresolved (default) | resolved | ignored | regression | all
 	Sort   string // issues sort: last_seen (default) | first_seen | events
 	Offset int    // issues pager
 	Before string // events cursor (store.Cursor.String()): rows after it, newest first
@@ -31,7 +31,7 @@ var Windows = []string{"24h", "7d", "30d", "90d"}
 var winDays = map[string]int{"24h": 1, "7d": 7, "30d": 30, "90d": 90}
 
 // IssueStatuses are the issue tabs in display order ("all" is added last).
-var IssueStatuses = []string{"unresolved", "triaged", "resolved", "ignored", "regression"}
+var IssueStatuses = []string{"unresolved", "resolved", "ignored", "regression"}
 
 var issueSorts = map[string]bool{"last_seen": true, "first_seen": true, "events": true}
 

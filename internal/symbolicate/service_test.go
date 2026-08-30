@@ -173,7 +173,7 @@ func TestEventProGuard(t *testing.T) {
 	if !row.Symbolicated || row.Fingerprint == nil || *row.Fingerprint == oldFP {
 		t.Fatalf("event after symbolication: symbolicated=%v fp=%v old=%s", row.Symbolicated, row.Fingerprint, oldFP)
 	}
-	if row.Culprit == nil || *row.Culprit != "CartFragment.java:46" {
+	if row.Culprit == nil || *row.Culprit != "com.example.CartFragment in loadCart" {
 		t.Errorf("culprit = %v", deref(row.Culprit))
 	}
 	var syms []sentry.Frame
@@ -236,8 +236,8 @@ func TestReleaseSourceMap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !row.Symbolicated || row.Culprit == nil || *row.Culprit != "a.js:3" {
-			t.Errorf("event %s: symbolicated=%v location=%v", id, row.Symbolicated, row.Culprit)
+		if !row.Symbolicated || row.Culprit == nil || *row.Culprit != "src/a.js in t" {
+			t.Errorf("event %s: symbolicated=%v culprit=%v", id, row.Symbolicated, deref(row.Culprit))
 		}
 	}
 	var left int
@@ -311,7 +311,7 @@ func TestEventDSYM(t *testing.T) {
 	if syms[1].Function != "" || syms[1].InstrAddr != "0x1049e3000" {
 		t.Errorf("unresolved frame should be kept as-is: %+v", syms[1])
 	}
-	if row.Culprit == nil || *row.Culprit != "CartViewController.m:88" {
+	if row.Culprit == nil || *row.Culprit != "CartViewController.m in -[CartViewController loadCart:]" {
 		t.Errorf("culprit = %v", deref(row.Culprit))
 	}
 }
@@ -373,7 +373,7 @@ func TestResolveAtIngest(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"})
-	if err != nil || !row.Symbolicated || row.Culprit == nil || *row.Culprit != "Cart.m:7" {
+	if err != nil || !row.Symbolicated || row.Culprit == nil || *row.Culprit != "Cart.m in -[Cart load]" {
 		t.Fatalf("stored symbolicated at ingest: %+v %v", row, err)
 	}
 	if res.Jobs != 1 { // the new_issue alert only
@@ -446,7 +446,7 @@ func TestResolveAtIngestColdSidecar(t *testing.T) {
 		t.Fatalf("job upload: puts=%d stored=%v", fake.puts, fake.stored)
 	}
 	row, _ = st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: row.EventID})
-	if !row.Symbolicated || row.Culprit == nil || *row.Culprit != "Cart.m:7" {
+	if !row.Symbolicated || row.Culprit == nil || *row.Culprit != "Cart.m in -[Cart load]" {
 		t.Fatalf("after job: %+v", row)
 	}
 }

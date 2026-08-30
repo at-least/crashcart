@@ -75,7 +75,7 @@ type Event struct {
 	DeviceModel    string
 	Transaction    string
 	ErrorType      string
-	Handled        *bool // exception.mechanism.handled: false = unhandled (Sentry's "Unhandled"), true = handled, nil = no mechanism
+	Handled        *bool // exception.mechanism.handled: false = unhandled (Sentry's "Unhandled"), true = handled, nil = no mechanism (neither)
 	SDKName        string
 	UserID         string
 	Tags           map[string]string
@@ -83,7 +83,7 @@ type Event struct {
 	Exceptions     []Exception // exception.values in SDK order
 	DebugImages    []DebugImage
 	SDKFingerprint []string
-	Primary        int     // index into Exceptions of the root cause
+	Primary        int     // index into Exceptions of the main exception: the one thrown last (Sentry's values[-1])
 	ThreadFrames   []Frame // crashed/current thread stack when there is no exception
 	// Clamped: the SDK's timestamp was replaced by the server's (a clock
 	// far off); a resend gets a different one, so dedupe cannot use it.
@@ -92,18 +92,20 @@ type Event struct {
 	Raw []byte
 }
 
-// DeviceID is the `device_id` tag, if any.
+// DeviceID is the `device_id` tag, if any — a CrashCart convention (the
+// SDKs do not send a device id; an app sets this tag for the device page).
 func (e *Event) DeviceID() string { return e.Tags["device_id"] }
 
 // IsUnhandled is Sentry's "Unhandled": the SDK caught the error in a
 // last-resort handler (a crash, an uncaught exception, an unhandled
 // rejection) — exception.mechanism.handled = false. level is severity
-// and says nothing about it; no mechanism means handled.
+// and says nothing about it; without a mechanism the event is neither
+// (Sentry sets no handled tag then).
 func (e *Event) IsUnhandled() bool {
 	return e.Handled != nil && !*e.Handled
 }
 
-// Frames returns the primary exception's frames (innermost last), or the
+// Frames returns the main exception's frames (innermost last), or the
 // crashed/current thread's stack for events without an exception.
 func (e *Event) Frames() []Frame {
 	if len(e.Exceptions) == 0 {
@@ -129,46 +131,26 @@ func threadFrames(threads []rawThread) []Frame {
 	return current
 }
 
-// primaryException picks the root cause of a chain and the exception that
-// was actually thrown. SDKs that link values with mechanism.exception_id /
-// parent_id (Java, .NET) may list the outer exception first; without ids
-// the protocol order is oldest (root cause) to newest (thrown).
-func primaryException(xs []Exception) (root, top int) {
+// mainException picks the exception that was actually thrown — the one
+// Sentry titles the issue with and takes handled from. The protocol lists
+// values oldest (root cause) to newest (thrown), so it is the last one;
+// SDKs that link values with mechanism.exception_id / parent_id (Java,
+// .NET) may list the outer exception first, and then it is the one
+// without a parent.
+func mainException(xs []Exception) int {
 	if len(xs) == 0 {
-		return 0, 0
+		return 0
 	}
-	linked := false
-	for _, x := range xs {
-		if x.ExceptionID != nil {
-			linked = true
-			break
-		}
-	}
-	if !linked {
-		return 0, len(xs) - 1
-	}
-	isParent := map[int]bool{}
-	for _, x := range xs {
-		if x.ParentID != nil {
-			isParent[*x.ParentID] = true
-		}
-	}
-	root, top = -1, -1
 	for i, x := range xs {
-		if x.ParentID == nil && top < 0 {
-			top = i
+		if x.ExceptionID != nil {
+			if x.ParentID == nil {
+				return i
+			}
+		} else if i == len(xs)-1 {
+			return i
 		}
-		if x.ExceptionID != nil && !isParent[*x.ExceptionID] {
-			root = i // the deepest cause: nobody's parent
-		}
 	}
-	if top < 0 {
-		top = 0
-	}
-	if root < 0 {
-		root = top
-	}
-	return root, top
+	return len(xs) - 1
 }
 
 // Session is one Sentry session (release health) item, or one row of a
@@ -361,7 +343,7 @@ type rawEvent struct {
 	Environment string                  `json:"environment"`
 	Release     string                  `json:"release"`
 	Transaction string                  `json:"transaction"`
-	ServerName  string                  `json:"server_name"`
+	ServerName  string                  `json:"server_name"` // becomes the server_name tag, as in Sentry
 	Tags        json.RawMessage         `json:"tags"`
 	Breadcrumbs valuesOf[rawBreadcrumb] `json:"breadcrumbs"`
 	Fingerprint []string                `json:"fingerprint"`
@@ -370,17 +352,8 @@ type rawEvent struct {
 			Model string `json:"model"`
 		} `json:"device"`
 		OS *struct {
-			Name    string `json:"name"`
 			Version string `json:"version"`
 		} `json:"os"`
-		App *struct {
-			AppVersion string `json:"app_version"`
-			AppBuild   string `json:"app_build"`
-		} `json:"app"`
-		Runtime *struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-		} `json:"runtime"`
 	} `json:"contexts"`
 	Exception valuesOf[rawException] `json:"exception"`
 	Threads   valuesOf[rawThread]    `json:"threads"`
@@ -445,26 +418,21 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	} else {
 		ev.EventID = DerivedID(trimmed)
 	}
+	// The columns are the Sentry fields of the same name, nothing else:
+	// no release from contexts.app, no OS from contexts.runtime, no device
+	// from server_name. server_name becomes a tag, as Sentry makes it.
 	if c := re.Contexts; c != nil {
 		if c.OS != nil {
 			ev.OSVersion = c.OS.Version
 		}
-		if ev.OSVersion == "" && c.Runtime != nil {
-			name := c.Runtime.Name
-			if name == "" {
-				name = "?"
-			}
-			ev.OSVersion = name + "/" + c.Runtime.Version
-		}
 		if c.Device != nil {
 			ev.DeviceModel = c.Device.Model
 		}
-		if c.App != nil && c.App.AppVersion != "" && ev.Release == "" {
-			ev.Release = c.App.AppVersion
-		}
 	}
-	if ev.DeviceModel == "" {
-		ev.DeviceModel = re.ServerName
+	if re.ServerName != "" {
+		if _, ok := ev.Tags["server_name"]; !ok {
+			ev.Tags["server_name"] = re.ServerName
+		}
 	}
 	for _, x := range re.Exception.Values {
 		ex := Exception{Type: x.Type, Value: x.Value}
@@ -478,29 +446,19 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 		}
 		ev.Exceptions = append(ev.Exceptions, ex)
 	}
-	// The root cause names the issue; the thrown (outermost) exception
-	// carries the handled flag. A cause without its own stack borrows the
-	// crashed thread's.
+	// The exception thrown last (Sentry's main exception) names the issue
+	// and carries the handled flag; its causes are shown under it. One
+	// without its own stack borrows the crashed thread's.
 	if len(ev.Exceptions) > 0 {
-		root, top := primaryException(ev.Exceptions)
-		ev.Primary = root
-		ev.ErrorType = ev.Exceptions[root].Type
-		ev.Handled = ev.Exceptions[top].Handled
-		if ev.Handled == nil {
-			ev.Handled = ev.Exceptions[root].Handled
-		}
-		if ev.Handled == nil {
-			// Every SDK marks its unhandled paths with handled:false
-			// explicitly; a captureException without a mechanism is a
-			// caught exception.
-			handled := true
-			ev.Handled = &handled
-		}
-		if len(ev.Exceptions[root].Frames) == 0 {
+		main := mainException(ev.Exceptions)
+		ev.Primary = main
+		ev.ErrorType = ev.Exceptions[main].Type
+		ev.Handled = ev.Exceptions[main].Handled
+		if len(ev.Exceptions[main].Frames) == 0 {
 			// .NET sends a never-thrown exception without a stack and the
 			// capturing thread's stack under threads; native SDKs mark the
 			// crashed thread.
-			ev.Exceptions[root].Frames = threadFrames(re.Threads.Values)
+			ev.Exceptions[main].Frames = threadFrames(re.Threads.Values)
 		}
 	} else {
 		ev.ThreadFrames = threadFrames(re.Threads.Values)
@@ -619,28 +577,31 @@ func (e *Event) sanitize() {
 	}
 }
 
-// clampFuture: a client clock more than an hour ahead is wrong; the
-// event is taken as happening now. (The mirror rule for the past lives
-// in ingest, which knows the retention window.)
+// clampFuture: a timestamp more than a minute ahead of the server
+// (Relay's max_secs_in_future) is a wrong clock; the event is taken as
+// happening now. (The mirror rule for the past lives in ingest, which
+// knows the retention window.)
 func clampFuture(t, now time.Time) (time.Time, bool) {
-	if t.After(now.Add(time.Hour)) {
+	if t.After(now.Add(time.Minute)) {
 		return now, true
 	}
 	return t, false
 }
 
+// normalizeLevel accepts the spellings Relay does (warn, critical, log)
+// and defaults to error, the protocol's default level.
 func normalizeLevel(l string) string {
 	switch l = strings.ToLower(strings.TrimSpace(l)); l {
-	case "":
-		return "error"
 	case "warn":
 		return "warning"
 	case "critical":
 		return "fatal"
+	case "log":
+		return "info"
 	case "fatal", "error", "warning", "info", "debug":
 		return l
 	default:
-		return "info"
+		return "error"
 	}
 }
 
@@ -779,6 +740,7 @@ func Truncate(s string, n int) string {
 type rawSession struct {
 	SID     string          `json:"sid"`
 	Status  string          `json:"status"`
+	Errors  int             `json:"errors"` // errors seen in the session: > 0 makes an ok/exited session "errored"
 	Release string          `json:"release"`
 	Started json.RawMessage `json:"started"`
 	Attrs   *struct {
@@ -847,7 +809,9 @@ func parseSessions(body []byte, now time.Time) []Session {
 	return out
 }
 
-// validSessionStatus mirrors the session_status enum.
+// validSessionStatus mirrors the session_status enum. The wire statuses
+// are ok, exited, crashed, abnormal; errored is derived (errors > 0) and
+// accepted as well.
 var validSessionStatus = map[string]bool{"ok": true, "exited": true, "crashed": true, "errored": true, "abnormal": true}
 
 func sessionFrom(s rawSession, now time.Time) (Session, bool) {
@@ -869,5 +833,9 @@ func sessionFrom(s rawSession, now time.Time) (Session, bool) {
 		ts = now
 	}
 	ts, _ = clampFuture(ts, now)
-	return Session{SID: clean(s.SID, maxSessionID), Release: rel, Environment: env, Status: s.Status, StartedAt: ts, Count: 1}, true
+	status := s.Status
+	if s.Errors > 0 && (status == "ok" || status == "exited") {
+		status = "errored" // Sentry's errored session: it did not crash, but saw errors
+	}
+	return Session{SID: clean(s.SID, maxSessionID), Release: rel, Environment: env, Status: status, StartedAt: ts, Count: 1}, true
 }

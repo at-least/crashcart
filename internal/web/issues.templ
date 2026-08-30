@@ -2,7 +2,7 @@ package web
 
 import "strings"
 
-var statusLabels = map[string]string{"unresolved": "Unresolved", "triaged": "Triaged", "resolved": "Resolved", "ignored": "Ignored", "regression": "Regression", "all": "All"}
+var statusLabels = map[string]string{"unresolved": "Unresolved", "resolved": "Resolved", "ignored": "Ignored", "regression": "Regression", "all": "All"}
 
 var sortLabels = [][2]string{{"last_seen", "Last seen"}, {"first_seen", "First seen"}, {"events", "Events"}}
 
@@ -58,7 +58,6 @@ templ Issues(pg Page, d IssuesData) {
 			<div data-slot="button-group" role="group">
 				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="resolved">Resolve</button>
 				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="ignored">Ignore</button>
-				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="triaged">Triage</button>
 				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="unresolved">Reopen</button>
 			</div>
 		</div>

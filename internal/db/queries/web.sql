@@ -41,7 +41,7 @@ ORDER BY project_id, last DESC, release DESC;
 
 -- name: PortalOpenIssues :many
 SELECT project_id, count(*)::bigint AS n FROM issues
-WHERE status IN ('unresolved', 'triaged', 'regression') GROUP BY 1;
+WHERE status IN ('unresolved', 'regression') GROUP BY 1;
 
 -- name: PortalReleaseHealth :many
 -- Session totals of one release per project (the latest active one).

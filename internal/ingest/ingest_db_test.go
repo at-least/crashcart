@@ -488,3 +488,63 @@ func TestIngestClampedResendDedupes(t *testing.T) {
 		t.Fatalf("event_count = %d, want 1", n)
 	}
 }
+
+// TestIngestSentrySemantics pins the Sentry rules ingest follows: an
+// issue's level is its latest event's (not the worst ever seen), an
+// exception without a mechanism is neither handled nor unhandled, and a
+// session that reports errors > 0 without crashing is an errored session
+// in release health.
+func TestIngestSentrySemantics(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+	ev := func(id, level, ts string) string {
+		return fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":%q,"platform":"android","release":"1.0",
+		 "exception":{"values":[{"type":"E","value":"x","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id, ts, level)
+	}
+	older, newer := now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-time.Minute).Format(time.RFC3339)
+	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(ev("a", "fatal", older)), now), now)
+	if err != nil || len(res.NewIssues) != 1 {
+		t.Fatalf("first: %+v %v", res, err)
+	}
+	fp := res.NewIssues[0]
+	// A later event at warning: the issue shows warning. An even older
+	// fatal one arriving afterwards does not change it back.
+	for _, e := range []string{ev("b", "warning", newer), ev("c", "fatal", now.Add(-3*time.Hour).Format(time.RFC3339))} {
+		if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(e), now), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issue, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	if err != nil || issue.Level != "warning" {
+		t.Fatalf("issue level = %q (want the latest event's), err %v", issue.Level, err)
+	}
+	var handled *bool
+	if err := st.Pool.QueryRow(ctx, "SELECT handled FROM events WHERE event_id = $1", sentry.DerivedID([]byte("a"))).Scan(&handled); err == nil && handled != nil {
+		t.Fatalf("no mechanism: handled should be NULL, got %v", *handled)
+	}
+	var n int
+	if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM events WHERE handled IS NULL").Scan(&n); err != nil || n != 3 {
+		t.Fatalf("events without a mechanism: %d %v", n, err)
+	}
+
+	sess := []byte(`{}` + "\n" +
+		`{"type":"session"}` + "\n" + `{"sid":"s1","status":"exited","errors":2,"started":"` + newer + `","attrs":{"release":"1.0"}}` + "\n" +
+		`{"type":"session"}` + "\n" + `{"sid":"s2","status":"exited","errors":0,"started":"` + newer + `","attrs":{"release":"1.0"}}` + "\n" +
+		`{"type":"session"}` + "\n" + `{"sid":"s3","status":"crashed","errors":1,"started":"` + newer + `","attrs":{"release":"1.0"}}` + "\n")
+	if res, err := in.Ingest(ctx, p, sentry.Parse(sess, now), now); err != nil || res.Sessions != 3 {
+		t.Fatalf("sessions: %+v %v", res, err)
+	}
+	var total, crashed, errored int64
+	if err := st.Pool.QueryRow(ctx, "SELECT sum(total), sum(crashed), sum(errored) FROM release_health_hourly WHERE project_id = $1", p.ID).Scan(&total, &crashed, &errored); err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || crashed != 1 || errored != 1 {
+		t.Fatalf("release health total=%d crashed=%d errored=%d, want 3/1/1", total, crashed, errored)
+	}
+}

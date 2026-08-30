@@ -1,7 +1,6 @@
 package sentry
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -41,16 +40,30 @@ func Fingerprint(e *Event, frames []Frame) ID {
 }
 
 // defaultSignature is the grouping signature without an SDK fingerprint:
-// exception type + stack, or (error-level) message + stack. "" when there
-// is nothing to group by.
+// the exception chain's types + the main exception's stack, or
+// (error-level) message + stack. "" when there is nothing to group by.
 func defaultSignature(e *Event, frames []Frame) string {
 	switch {
 	case e.ErrorType != "":
-		return e.Platform + ":" + e.ErrorType + ":" + strings.Join(frameSignature(e, frames), "|")
+		return e.Platform + ":" + e.chainTypes() + ":" + strings.Join(frameSignature(e, frames), "|")
 	case groupableMessage(e):
 		return "msg:" + e.Platform + ":" + normalizeMessage(e.Message) + ":" + strings.Join(frameSignature(e, frames), "|")
 	}
 	return ""
+}
+
+// chainTypes is the exception types of the chain, oldest first: like
+// Sentry, a wrapper thrown at one place with two different causes is two
+// issues.
+func (e *Event) chainTypes() string {
+	if len(e.Exceptions) <= 1 {
+		return e.ErrorType
+	}
+	ts := make([]string, 0, len(e.Exceptions))
+	for _, x := range e.Exceptions {
+		ts = append(ts, x.Type)
+	}
+	return strings.Join(ts, "<")
 }
 
 // isDefaultToken: "{{ default }}" in any spacing / case.
@@ -219,7 +232,7 @@ func (e *Event) IssueTitle() string {
 			first, _, _ := strings.Cut(strings.TrimSpace(e.Message), "\n")
 			return Truncate(first, 100)
 		}
-		t = "Unknown"
+		t = "<unknown>"
 	}
 	if len(e.Exceptions) > e.Primary {
 		if v, _, _ := strings.Cut(strings.TrimSpace(e.Exceptions[e.Primary].Value), "\n"); v != "" {
@@ -229,9 +242,9 @@ func (e *Event) IssueTitle() string {
 	return t
 }
 
-// Culprit is "File.ext:line" of the innermost code frame, ranked:
-// in-app with a file and line, then in-app, then any frame with a file and
-// line, then whatever is innermost. "" without usable frames.
+// Culprit is Sentry's stack culprit, "module-or-file in function" of the
+// innermost in-app code frame (else the innermost code frame with a
+// name), no line number. "" without usable frames.
 func Culprit(frames []Frame) string {
 	var best *Frame
 	bestRank := -1
@@ -241,7 +254,7 @@ func Culprit(frames []Frame) string {
 			continue
 		}
 		rank := 0
-		if (f.Filename != "" || f.AbsPath != "") && f.Lineno > 0 {
+		if f.Module != "" || f.Filename != "" || f.AbsPath != "" {
 			rank++
 		}
 		if f.IsInApp() {
@@ -254,17 +267,20 @@ func Culprit(frames []Frame) string {
 	if best == nil || (best.Function == "" && best.Filename == "" && best.AbsPath == "" && best.Module == "") {
 		return "" // nothing, or an address-only native frame: unknown until symbolicated
 	}
-	name := best.Filename
-	if name == "" {
-		name = best.AbsPath
+	loc := best.Module
+	if loc == "" {
+		loc = best.Filename
 	}
-	if name == "" {
-		name = best.Module
+	if loc == "" {
+		loc = baseName(best.AbsPath)
 	}
-	if best.Lineno == 0 && best.Function != "" {
-		return baseName(name) + ":" + best.Function
+	switch {
+	case best.Function == "":
+		return loc
+	case loc == "":
+		return best.Function
 	}
-	return fmt.Sprintf("%s:%d", baseName(name), best.Lineno)
+	return loc + " in " + best.Function
 }
 
 // NeedsSymbolication reports whether frames carry raw addresses or look

@@ -83,13 +83,15 @@ unpivot and a window function. Tag filters are containment
 `CREATE TYPE … AS ENUM`; sqlc generates the Go constants, so the allowed
 values have one definition and a bad value is rejected by the database.
 
-**Issues are the one stateful table.** Status lifecycle (unresolved → triaged
-→ resolved → regression / ignored), first/last release, exact `event_count`
-(counts sampled-out events) and `stored_count`. `releases` is every
-release the issue was seen on (kept on the row: sampled-out and expired
-events count too); resolving copies it to `resolved_releases`, and a later
-event on a release outside that set is a regression — old builds still
-crashing are inside the set, the release that carries the fix is not.
+**Issues are the one stateful table.** Sentry's statuses (unresolved →
+resolved → regression / ignored; no substatuses, no "triaged"), the
+latest event's level, first/last release, exact `event_count` (counts
+sampled-out events) and `stored_count`. `releases` is every release the
+issue was seen on (kept on the row: sampled-out and expired events count
+too); resolving copies it to `resolved_releases`, and a later event on a
+release outside that set is a regression — Sentry's "resolve in next
+release": old builds still crashing are inside the set, the release that
+carries the fix is not.
 Only ingest may flip that status (`UpsertIssue` with `regress`);
 symbolication moving an old event between issues is not new evidence.
 An issue outlives its events: resolved / ignored ones are deleted once

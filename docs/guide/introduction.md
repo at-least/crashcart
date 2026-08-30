@@ -13,7 +13,7 @@ the Sentry product.
 - **Self-hosted in a minute.** One Docker Compose file: CrashCart and a
   Postgres database. Nothing else to run.
 - **Issues, not logs.** Crashes with the same stack trace are grouped into
-  one issue with a status (unresolved → triaged → resolved), an exact count,
+  one issue with a status (unresolved → resolved → regression), an exact count,
   and the releases it was first and last seen on.
 - **Release health.** Crash-free rate per release, and which issues a
   release introduced.

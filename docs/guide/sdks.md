@@ -133,15 +133,16 @@ SentrySdk.Init(o => {
 | Field | SDK source | Shown as |
 |---|---|---|
 | `level` | `event.level` | fatal / error / warning / info / debug |
-| `message` | `logentry.formatted` or exception value | Issue title |
-| `release` | `event.release` / `contexts.app.app_version` | Release, release health |
+| `message` | `logentry.formatted`, else `Type: value` of the main exception | Issue title |
+| `release` | `event.release` | Release, release health |
 | `environment` | `event.environment` | Filter |
-| `error_type` | `exception.values[0].type` | Issue title |
+| `error_type` | the main exception's type — the one thrown last; its causes are listed under it | Issue title |
 | `transaction` | `event.transaction` | Transaction (issue subtitle, filter) |
-| `culprit` | computed: innermost in-app frame | `CartFragment.java:142` |
+| `culprit` | computed: innermost in-app frame, `module-or-file in function` | `com.example.CartFragment in onCreateView` |
 | `device_model`, `os_version` | `contexts.device`, `contexts.os` | Breakdown |
 | `user.id` | `user.id` | Filter, affected users |
-| `handled` | `exception.mechanism.handled` | Unhandled / Handled badge, `handled=false` filter |
+| `handled` | `exception.mechanism.handled` | Unhandled / Handled badge (neither without a mechanism), `handled=false` filter |
+| `server_name` | `server_name` | The `server_name` tag |
 | breadcrumbs, tags, extra | as sent | Event detail |
 
 Sessions (`session` / `sessions` items) feed
