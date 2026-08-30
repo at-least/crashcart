@@ -249,3 +249,26 @@ func TestIngestHTTP(t *testing.T) {
 		t.Fatalf("corrupt gzip → %d", rec.Code)
 	}
 }
+
+// Ungrouped events (nothing to fingerprint) take sample_rate from the
+// start — with PII redaction on as well: redaction scrubs what is stored,
+// it does not decide what is stored.
+func TestIngestUngroupedSampledWithRedaction(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SampleRate = 0
+	in := &Ingester{Store: st, Cfg: config.Config{PIIRedact: true}, Log: slog.Default()}
+	now := time.Now().UTC()
+	info := fmt.Sprintf(`{"event_id":"i1","timestamp":%q,"level":"info","platform":"android","message":"user opened cart"}`, now.Add(-time.Minute).Format(time.RFC3339))
+	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(info), now), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Received != 1 || res.Stored != 0 || res.Sampled != 1 {
+		t.Fatalf("result = %+v", res)
+	}
+}

@@ -452,7 +452,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		var order []sentry.ID
 		for _, pr := range preps {
 			if pr.fingerprint == "" {
-				pr.store = in.Cfg.PIIRedact || p.SampleRate >= 1 || mrand.Float64() < p.SampleRate
+				pr.store = p.SampleRate >= 1 || mrand.Float64() < p.SampleRate
 				continue
 			}
 			if _, seen := groups[pr.fingerprint]; !seen {
