@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -87,8 +88,8 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	if f.Offset > maxOffset {
-		h.fail(w, badRequest("offset must be at most 10000 (narrow the window instead)"))
+	if f.Offset > store.MaxOffset {
+		h.fail(w, badRequest(fmt.Sprintf("offset must be at most %d (narrow the window instead)", store.MaxOffset)))
 		return
 	}
 	issues, total, err := h.Store.ListIssues(r.Context(), f)
@@ -260,9 +261,6 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 }
 
 // intParam reads a non-negative integer query parameter.
-// maxOffset bounds OFFSET (a sort-and-discard in Postgres).
-const maxOffset = 10000
-
 func intParam(q map[string][]string, key string, def int) (int, error) {
 	v := ""
 	if vs := q[key]; len(vs) > 0 {

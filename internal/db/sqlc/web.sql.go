@@ -199,46 +199,36 @@ func (q *Queries) ListIssuesPresentIn(ctx context.Context, arg ListIssuesPresent
 	return items, nil
 }
 
-const portalEventStats = `-- name: PortalEventStats :many
+const portalCrashes = `-- name: PortalCrashes :many
 
-SELECT project_id, bucket, release, platform, sum(events)::bigint AS events, sum(crashes)::bigint AS crashes
+SELECT project_id, sum(crashes)::bigint AS crashes
 FROM event_stats_hourly WHERE bucket >= $1::timestamptz AND bucket < $2::timestamptz
-GROUP BY 1, 2, 3, 4
+GROUP BY 1
 `
 
-type PortalEventStatsParams struct {
+type PortalCrashesParams struct {
 	FromAt time.Time `json:"from_at"`
 	ToAt   time.Time `json:"to_at"`
 }
 
-type PortalEventStatsRow struct {
-	ProjectID int64     `json:"project_id"`
-	Bucket    time.Time `json:"bucket"`
-	Release   string    `json:"release"`
-	Platform  string    `json:"platform"`
-	Events    int64     `json:"events"`
-	Crashes   int64     `json:"crashes"`
+type PortalCrashesRow struct {
+	ProjectID int64 `json:"project_id"`
+	Crashes   int64 `json:"crashes"`
 }
 
 // The portal: one query per statistic across every project, not four per
 // project.
-func (q *Queries) PortalEventStats(ctx context.Context, arg PortalEventStatsParams) ([]PortalEventStatsRow, error) {
-	rows, err := q.db.Query(ctx, portalEventStats, arg.FromAt, arg.ToAt)
+// Crashes per project in a window (one row per project).
+func (q *Queries) PortalCrashes(ctx context.Context, arg PortalCrashesParams) ([]PortalCrashesRow, error) {
+	rows, err := q.db.Query(ctx, portalCrashes, arg.FromAt, arg.ToAt)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []PortalEventStatsRow{}
+	items := []PortalCrashesRow{}
 	for rows.Next() {
-		var i PortalEventStatsRow
-		if err := rows.Scan(
-			&i.ProjectID,
-			&i.Bucket,
-			&i.Release,
-			&i.Platform,
-			&i.Events,
-			&i.Crashes,
-		); err != nil {
+		var i PortalCrashesRow
+		if err := rows.Scan(&i.ProjectID, &i.Crashes); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -249,26 +239,104 @@ func (q *Queries) PortalEventStats(ctx context.Context, arg PortalEventStatsPara
 	return items, nil
 }
 
-const portalIssueCounts = `-- name: PortalIssueCounts :many
-SELECT project_id, status, count(*)::bigint AS n FROM issues GROUP BY 1, 2
+const portalLatestReleases = `-- name: PortalLatestReleases :many
+SELECT DISTINCT ON (project_id) project_id, release
+FROM (SELECT project_id, release, max(bucket) AS last FROM event_stats_hourly
+      WHERE bucket >= $1::timestamptz AND bucket < $2::timestamptz AND release <> ''
+      GROUP BY 1, 2) t
+ORDER BY project_id, last DESC, release DESC
 `
 
-type PortalIssueCountsRow struct {
-	ProjectID int64       `json:"project_id"`
-	Status    IssueStatus `json:"status"`
-	N         int64       `json:"n"`
+type PortalLatestReleasesParams struct {
+	FromAt time.Time `json:"from_at"`
+	ToAt   time.Time `json:"to_at"`
 }
 
-func (q *Queries) PortalIssueCounts(ctx context.Context) ([]PortalIssueCountsRow, error) {
-	rows, err := q.db.Query(ctx, portalIssueCounts)
+type PortalLatestReleasesRow struct {
+	ProjectID int64  `json:"project_id"`
+	Release   string `json:"release"`
+}
+
+// The most recently active release per project (ties by name, like
+// LatestReleaseHealth).
+func (q *Queries) PortalLatestReleases(ctx context.Context, arg PortalLatestReleasesParams) ([]PortalLatestReleasesRow, error) {
+	rows, err := q.db.Query(ctx, portalLatestReleases, arg.FromAt, arg.ToAt)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []PortalIssueCountsRow{}
+	items := []PortalLatestReleasesRow{}
 	for rows.Next() {
-		var i PortalIssueCountsRow
-		if err := rows.Scan(&i.ProjectID, &i.Status, &i.N); err != nil {
+		var i PortalLatestReleasesRow
+		if err := rows.Scan(&i.ProjectID, &i.Release); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const portalOpenIssues = `-- name: PortalOpenIssues :many
+SELECT project_id, count(*)::bigint AS n FROM issues
+WHERE status IN ('unresolved', 'triaged', 'regression') GROUP BY 1
+`
+
+type PortalOpenIssuesRow struct {
+	ProjectID int64 `json:"project_id"`
+	N         int64 `json:"n"`
+}
+
+func (q *Queries) PortalOpenIssues(ctx context.Context) ([]PortalOpenIssuesRow, error) {
+	rows, err := q.db.Query(ctx, portalOpenIssues)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PortalOpenIssuesRow{}
+	for rows.Next() {
+		var i PortalOpenIssuesRow
+		if err := rows.Scan(&i.ProjectID, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const portalPlatforms = `-- name: PortalPlatforms :many
+SELECT project_id, platform, sum(events)::bigint AS events
+FROM event_stats_hourly WHERE bucket >= $1::timestamptz AND bucket < $2::timestamptz
+GROUP BY 1, 2 ORDER BY 1, 3 DESC, 2
+`
+
+type PortalPlatformsParams struct {
+	FromAt time.Time `json:"from_at"`
+	ToAt   time.Time `json:"to_at"`
+}
+
+type PortalPlatformsRow struct {
+	ProjectID int64  `json:"project_id"`
+	Platform  string `json:"platform"`
+	Events    int64  `json:"events"`
+}
+
+// Raw platforms per project in a window, most events first.
+func (q *Queries) PortalPlatforms(ctx context.Context, arg PortalPlatformsParams) ([]PortalPlatformsRow, error) {
+	rows, err := q.db.Query(ctx, portalPlatforms, arg.FromAt, arg.ToAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PortalPlatformsRow{}
+	for rows.Next() {
+		var i PortalPlatformsRow
+		if err := rows.Scan(&i.ProjectID, &i.Platform, &i.Events); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

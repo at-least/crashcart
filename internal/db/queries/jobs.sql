@@ -39,6 +39,13 @@ WHERE id = $1 AND locked_until IS NOT NULL AND locked_until >= now();
 -- name: CountJobs :one
 SELECT count(*) FROM jobs;
 
+-- name: MetricsGauges :one
+-- The database-backed gauges of GET /metrics, in one round trip.
+SELECT (SELECT count(*) FROM jobs WHERE locked_until IS NULL AND attempts < 8)::bigint AS jobs_pending,
+       (SELECT count(*) FROM jobs WHERE attempts >= 8)::bigint AS jobs_dead,
+       (SELECT count(*) FROM event_stats_dirty)::bigint + (SELECT count(*) FROM session_stats_dirty)::bigint AS dirty_hours,
+       (SELECT count(*) FROM issues)::bigint AS issues;
+
 -- name: ExpireJobs :execrows
 -- A job that failed 8 times is dead: never claimed again, kept with its
 -- last_error for a week so the failure can be seen, then dropped. (Only

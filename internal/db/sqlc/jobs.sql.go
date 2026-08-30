@@ -204,6 +204,33 @@ func (q *Queries) ExpireJobs(ctx context.Context) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const metricsGauges = `-- name: MetricsGauges :one
+SELECT (SELECT count(*) FROM jobs WHERE locked_until IS NULL AND attempts < 8)::bigint AS jobs_pending,
+       (SELECT count(*) FROM jobs WHERE attempts >= 8)::bigint AS jobs_dead,
+       (SELECT count(*) FROM event_stats_dirty)::bigint + (SELECT count(*) FROM session_stats_dirty)::bigint AS dirty_hours,
+       (SELECT count(*) FROM issues)::bigint AS issues
+`
+
+type MetricsGaugesRow struct {
+	JobsPending int64 `json:"jobs_pending"`
+	JobsDead    int64 `json:"jobs_dead"`
+	DirtyHours  int32 `json:"dirty_hours"`
+	Issues      int64 `json:"issues"`
+}
+
+// The database-backed gauges of GET /metrics, in one round trip.
+func (q *Queries) MetricsGauges(ctx context.Context) (MetricsGaugesRow, error) {
+	row := q.db.QueryRow(ctx, metricsGauges)
+	var i MetricsGaugesRow
+	err := row.Scan(
+		&i.JobsPending,
+		&i.JobsDead,
+		&i.DirtyHours,
+		&i.Issues,
+	)
+	return i, err
+}
+
 const releaseJob = `-- name: ReleaseJob :exec
 UPDATE jobs SET locked_until = NULL, attempts = GREATEST(0, attempts - 1)
 WHERE id = $1 AND locked_until IS NOT NULL AND locked_until >= now()

@@ -509,7 +509,7 @@ func ParseEvent(headerEventID string, fallbackTS time.Time, body []byte, now tim
 	if re.User != nil {
 		ev.UserID = scalarString(re.User.ID)
 	}
-	ev.Message = truncate(extractMessage(&re, ev.Primary), maxMessage)
+	ev.Message = Truncate(extractMessage(&re, ev.Primary), maxMessage)
 	for _, b := range lastBreadcrumbs(re.Breadcrumbs.Values) {
 		cat := b.Category
 		if cat == "" {
@@ -662,7 +662,7 @@ func parseTimestamp(raw json.RawMessage) time.Time {
 	return time.Time{}
 }
 
-func truncate(s string, n int) string {
+func Truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}

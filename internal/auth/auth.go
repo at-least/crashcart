@@ -4,12 +4,13 @@
 package auth
 
 import (
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 )
 
 // Chain applies middlewares right-to-left (the first listed runs outermost).
@@ -78,7 +79,7 @@ func RateLimit(scope string, limit int, cred Credential) func(http.Handler) http
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			c := cred(r)
 			if c == "" {
-				c = "anon:" + clientIP(r)
+				c = "anon:" + clientIP(r, false) // no credential: the peer address as it is
 			}
 			now := time.Now().Unix()
 			n, window := l.bump(c, now)
@@ -106,16 +107,17 @@ func BearerCredential(r *http.Request) string {
 	return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
 }
 
-// IPCredential keys buckets by client IP (for unauthenticated HTML routes).
-func IPCredential(r *http.Request) string { return "ip:" + clientIP(r) }
+// IPCredential keys buckets by client IP (for unauthenticated HTML
+// routes); trustProxy is TRUST_PROXY.
+func IPCredential(trustProxy bool) Credential {
+	return func(r *http.Request) string { return "ip:" + clientIP(r, trustProxy) }
+}
 
-// TrustProxy: honour X-Forwarded-For (the first address) as the client IP.
-// Off by default — a client can send the header itself and choose its own
-// rate-limit bucket. Set from TRUST_PROXY at startup.
-var TrustProxy bool
-
-func clientIP(r *http.Request) string {
-	if xf := r.Header.Get("X-Forwarded-For"); TrustProxy && xf != "" {
+// clientIP is the peer address, or — behind a trusted reverse proxy —
+// the first X-Forwarded-For address. Without a trusted proxy the header
+// is the client's to forge (its own rate-limit bucket), so it is ignored.
+func clientIP(r *http.Request, trustProxy bool) string {
+	if xf := r.Header.Get("X-Forwarded-For"); trustProxy && xf != "" {
 		if i := strings.IndexByte(xf, ','); i >= 0 {
 			xf = xf[:i]
 		}

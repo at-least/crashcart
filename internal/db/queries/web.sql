@@ -18,13 +18,30 @@ ORDER BY event_count DESC LIMIT $3;
 -- The portal: one query per statistic across every project, not four per
 -- project.
 
--- name: PortalEventStats :many
-SELECT project_id, bucket, release, platform, sum(events)::bigint AS events, sum(crashes)::bigint AS crashes
+-- name: PortalCrashes :many
+-- Crashes per project in a window (one row per project).
+SELECT project_id, sum(crashes)::bigint AS crashes
 FROM event_stats_hourly WHERE bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
-GROUP BY 1, 2, 3, 4;
+GROUP BY 1;
 
--- name: PortalIssueCounts :many
-SELECT project_id, status, count(*)::bigint AS n FROM issues GROUP BY 1, 2;
+-- name: PortalPlatforms :many
+-- Raw platforms per project in a window, most events first.
+SELECT project_id, platform, sum(events)::bigint AS events
+FROM event_stats_hourly WHERE bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
+GROUP BY 1, 2 ORDER BY 1, 3 DESC, 2;
+
+-- name: PortalLatestReleases :many
+-- The most recently active release per project (ties by name, like
+-- LatestReleaseHealth).
+SELECT DISTINCT ON (project_id) project_id, release
+FROM (SELECT project_id, release, max(bucket) AS last FROM event_stats_hourly
+      WHERE bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz AND release <> ''
+      GROUP BY 1, 2) t
+ORDER BY project_id, last DESC, release DESC;
+
+-- name: PortalOpenIssues :many
+SELECT project_id, count(*)::bigint AS n FROM issues
+WHERE status IN ('unresolved', 'triaged', 'regression') GROUP BY 1;
 
 -- name: PortalReleaseHealth :many
 -- Session totals of one release per project (the latest active one).

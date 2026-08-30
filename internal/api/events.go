@@ -107,7 +107,7 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ev.OccurredAt = ev.OccurredAt.UTC()
-	payload, err := h.Store.Payload(r.Context(), ev)
+	payload, err := store.Payload(ev)
 	if err != nil {
 		h.fail(w, err)
 		return

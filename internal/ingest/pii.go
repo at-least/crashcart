@@ -12,7 +12,6 @@ var (
 	digit   = regexp.MustCompile(`\d`)
 )
 
-// RedactText scrubs emails, card numbers and phone-like sequences.
 // ipAddressField matches the SDK's user.ip_address (and any other
 // ip_address key) in a raw payload: an IP is not caught by the text rules
 // (no separators a phone number has), and it is the datum redaction is
@@ -25,6 +24,7 @@ func RedactRaw(s string) string {
 	return ipAddressField.ReplaceAllString(RedactText(s), `"ip_address":"[redacted]"`)
 }
 
+// RedactText scrubs emails, card numbers and phone-like sequences.
 func RedactText(s string) string {
 	s = emailRe.ReplaceAllString(s, "[REDACTED]")
 	s = replaceBounded(s, cardRe)

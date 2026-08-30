@@ -11,7 +11,7 @@
 WITH s AS (
     SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, release,
            sum(events) AS events, sum(crashes) AS crashes
-    FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
+    FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz)
     GROUP BY 1, 2),
 ranked AS (
     SELECT release, row_number() OVER (ORDER BY sum(crashes) DESC, sum(events) DESC, release) AS rank
@@ -34,11 +34,11 @@ ORDER BY b, se.rank;
 SELECT COALESCE(sum(events), 0)::bigint AS events,
        COALESCE(sum(crashes), 0)::bigint AS crashes,
        COALESCE(sum(errors), 0)::bigint AS errors
-FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint);
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz);
 
 -- name: LevelTotals :many
 SELECT level, sum(events)::bigint AS events
-FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz)
 GROUP BY level;
 
 -- name: ReleaseStats :many
@@ -48,7 +48,7 @@ SELECT s.release,
        COALESCE(r.platforms, '{}'::text[])::text[] AS platforms,
        COALESCE(r.first_seen, min(s.bucket))::timestamptz AS first_seen, max(s.bucket)::timestamptz AS last_seen,
        sum(s.events)::bigint AS events, sum(s.crashes)::bigint AS crashes, sum(s.errors)::bigint AS errors
-FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS s
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz) AS s
 LEFT JOIN releases r ON r.project_id = s.project_id AND r.release = s.release
 WHERE s.release <> ''
 GROUP BY s.release, r.platforms, r.first_seen ORDER BY max(s.bucket) DESC, s.release;
@@ -56,7 +56,7 @@ GROUP BY s.release, r.platforms, r.first_seen ORDER BY max(s.bucket) DESC, s.rel
 -- name: ReleaseTimeline :many
 WITH h AS (
     SELECT crashcart_bucket(bucket, sqlc.arg(width)::bigint) AS bucket, sum(events) AS events, sum(crashes) AS crashes
-    FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
+    FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz)
     WHERE release = sqlc.arg(release)::text
     GROUP BY 1)
 SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events, COALESCE(h.crashes, 0)::bigint AS crashes
@@ -76,7 +76,7 @@ SELECT e.release,
        COALESCE((SELECT sum(h.crashed) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
                     AND h.bucket >= sqlc.arg(day_from)::timestamptz AND h.bucket < sqlc.arg(to_at)::timestamptz), 0)::bigint AS crashed
-FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(hour_from)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint) AS e
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(hour_from)::timestamptz, sqlc.arg(to_at)::timestamptz) AS e
 WHERE e.release <> ''
 GROUP BY e.project_id, e.release
 ORDER BY max(e.bucket) DESC, e.release DESC
@@ -105,7 +105,7 @@ WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0;
 -- name: PlatformTotals :many
 -- Raw SDK platforms seen in a window (for the "expected vs received" check).
 SELECT platform, sum(events)::bigint AS events
-FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz, sqlc.arg(width)::bigint)
+FROM crashcart_event_stats(sqlc.arg(project_id)::bigint, sqlc.arg(from_at)::timestamptz, sqlc.arg(to_at)::timestamptz)
 GROUP BY platform ORDER BY events DESC;
 
 -- name: MarkEventStatsDirty :exec

@@ -2,10 +2,11 @@ package web
 
 import (
 	"errors"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/a-h/templ"
 	"github.com/jackc/pgx/v5"

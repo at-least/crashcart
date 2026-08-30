@@ -11,6 +11,31 @@ import (
 	"time"
 )
 
+const claimAlertRule = `-- name: ClaimAlertRule :one
+UPDATE alert_rules a SET last_triggered = now()
+FROM alert_rules old
+WHERE old.project_id = a.project_id AND old.type = a.type
+  AND a.project_id = $1 AND a.type = $2 AND a.enabled
+  AND (a.last_triggered IS NULL OR a.last_triggered < now() - make_interval(mins => a.cooldown_minutes))
+RETURNING old.last_triggered AS previous
+`
+
+type ClaimAlertRuleParams struct {
+	ProjectID int64     `json:"project_id"`
+	Type      AlertType `json:"type"`
+}
+
+// Claims the cooldown atomically (no row: disabled, cooling down, or no
+// rule) and returns the previous last_triggered, for UnclaimAlertRule
+// when nothing could be delivered. The self-join reads the row before
+// the update.
+func (q *Queries) ClaimAlertRule(ctx context.Context, arg ClaimAlertRuleParams) (*time.Time, error) {
+	row := q.db.QueryRow(ctx, claimAlertRule, arg.ProjectID, arg.Type)
+	var previous *time.Time
+	err := row.Scan(&previous)
+	return previous, err
+}
+
 const createAlertChannel = `-- name: CreateAlertChannel :one
 INSERT INTO alert_channels (project_id, kind, config) VALUES ($1, $2, $3) RETURNING id, project_id, kind, config, created_at
 `
@@ -149,27 +174,6 @@ func (q *Queries) ListAlertRules(ctx context.Context, projectID int64) ([]AlertR
 		return nil, err
 	}
 	return items, nil
-}
-
-const touchAlertRule = `-- name: TouchAlertRule :execrows
-UPDATE alert_rules SET last_triggered = now()
-WHERE project_id = $1 AND type = $2 AND enabled
-  AND (last_triggered IS NULL OR last_triggered < now() - make_interval(mins => cooldown_minutes))
-`
-
-type TouchAlertRuleParams struct {
-	ProjectID int64     `json:"project_id"`
-	Type      AlertType `json:"type"`
-}
-
-// Claims the cooldown atomically: succeeds only if it is not still cooling
-// down (0 rows: disabled, cooling down, or no rule).
-func (q *Queries) TouchAlertRule(ctx context.Context, arg TouchAlertRuleParams) (int64, error) {
-	result, err := q.db.Exec(ctx, touchAlertRule, arg.ProjectID, arg.Type)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const unclaimAlertRule = `-- name: UnclaimAlertRule :exec

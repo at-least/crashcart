@@ -97,8 +97,7 @@ func TestPartitions(t *testing.T) {
 	if n := count("SELECT count(*) FROM events WHERE project_id = 1"); n != 0 {
 		t.Fatalf("events after expiry = %d rows", n)
 	}
-	// Reconcile and Sweep run end to end (the in-memory object store has
-	// no lifecycle to set).
+	// Reconcile and Sweep run end to end.
 	if err := Reconcile(ctx, st, cfg, log); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +131,7 @@ func TestRollup(t *testing.T) {
 	from, to := old.Add(-72*time.Hour).Truncate(24*time.Hour), cur.Add(time.Hour)
 	totals := func() sqlc.TotalsRow {
 		t.Helper()
-		r, err := st.Totals(ctx, sqlc.TotalsParams{ProjectID: 1, FromAt: from, ToAt: to, Width: 3600})
+		r, err := st.Totals(ctx, sqlc.TotalsParams{ProjectID: 1, FromAt: from, ToAt: to})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +149,7 @@ func TestRollup(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("rolled %d keys, want 1", n)
 	}
-	dirty, _ := DirtyHours(ctx, st)
+	dirty, _ := st.CountDirtyStats(ctx)
 	if dirty != 1 {
 		t.Fatalf("dirty after rollup = %d, want 1 (the current hour)", dirty)
 	}
@@ -263,7 +262,7 @@ func TestRollupKeepsExpiredHours(t *testing.T) {
 	if err := st.Pool.QueryRow(ctx, `SELECT events FROM event_stats_hourly_rolled WHERE project_id = 1 AND bucket = $1`, old).Scan(&events); err != nil || events != 1000 {
 		t.Fatalf("rolled row after late event = %d %v (want 1000, untouched)", events, err)
 	}
-	if n, _ := DirtyHours(ctx, st); n != 0 {
+	if n, _ := st.CountDirtyStats(ctx); n != 0 {
 		t.Fatalf("dirty keys left = %d", n)
 	}
 	// An hour inside the window is recomputed as usual.

@@ -9,8 +9,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"regexp"
-	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,19 +17,10 @@ import (
 //go:embed schema.sql
 var schema string
 
-// SchemaVersion is the version schema.sql declares (its
-// `INSERT INTO crashcart_schema`). Bump it in schema.sql with every
-// change to the schema; Init refuses a database at any other version.
-var SchemaVersion = mustSchemaVersion()
-
-func mustSchemaVersion() int {
-	m := regexp.MustCompile(`INSERT INTO crashcart_schema \(version\) VALUES \((\d+)\)`).FindStringSubmatch(schema)
-	if m == nil {
-		panic("schema.sql: no crashcart_schema version")
-	}
-	v, _ := strconv.Atoi(m[1])
-	return v
-}
+// SchemaVersion is the version of schema.sql this binary carries. Bump it
+// with every change to the schema; Init writes it into crashcart_schema on
+// creation and refuses a database at any other version.
+const SchemaVersion = 6
 
 // ErrSchemaVersion: the database was created by a binary with another
 // schema. It wraps the message an operator needs.
@@ -68,6 +57,9 @@ func Init(ctx context.Context, pool *pgxpool.Pool) (created bool, err error) {
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	if _, err := tx.Exec(ctx, schema); err != nil {
 		return false, fmt.Errorf("create schema: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "INSERT INTO crashcart_schema (version) VALUES ($1)", SchemaVersion); err != nil {
+		return false, err
 	}
 	return true, tx.Commit(ctx)
 }

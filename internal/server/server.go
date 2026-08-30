@@ -3,16 +3,19 @@ package server
 
 import (
 	"context"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"log/slog"
 	"math"
 	"net/http"
 	"regexp"
 	"sync"
+	"time"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/crashcartapp/crashcart/internal/api"
 	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/ingest"
 	"github.com/crashcartapp/crashcart/internal/store"
 	"github.com/crashcartapp/crashcart/internal/symbolicate"
@@ -30,7 +33,6 @@ type Deps struct {
 
 // New builds the root handler.
 func New(d Deps) http.Handler {
-	auth.TrustProxy = d.Cfg.TrustProxy
 	mux := http.NewServeMux()
 	in := &ingest.Ingester{Store: d.Store, Cfg: d.Cfg, Symbols: d.Symbols, Log: d.Log}
 	mux.Handle("POST /api/{project}/envelope/{$}", in.Handler())
@@ -56,26 +58,43 @@ func New(d Deps) http.Handler {
 	return preflight(in.Handler(), mux)
 }
 
-var gaugesOnce sync.Once
+// dbGauges are the database-backed gauges of GET /metrics: one query per
+// scrape, cached for a second so several scrapers do not multiply it.
+type dbGauges struct {
+	st *store.Store
+	mu sync.Mutex
+	at time.Time
+	v  sqlc.MetricsGaugesRow
+	ok bool
+}
 
-// registerGauges adds the database-backed gauges (once per process): the
-// job queue and the stats backlog, the same on every replica.
-func registerGauges(st *store.Store) {
-	gaugesOnce.Do(func() {
-		count := func(sql string) func(ctx context.Context) float64 {
-			return func(ctx context.Context) float64 {
-				var n float64
-				if err := st.Pool.QueryRow(ctx, sql).Scan(&n); err != nil {
-					return math.NaN()
-				}
-				return n
-			}
+func (g *dbGauges) read(ctx context.Context) (sqlc.MetricsGaugesRow, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if time.Since(g.at) < time.Second {
+		return g.v, g.ok
+	}
+	v, err := g.st.MetricsGauges(ctx)
+	g.at, g.v, g.ok = time.Now(), v, err == nil
+	return g.v, g.ok
+}
+
+func (g *dbGauges) gauge(name, help string, pick func(sqlc.MetricsGaugesRow) int64) {
+	metrics.NewGauge(name, help, func(ctx context.Context) float64 {
+		v, ok := g.read(ctx)
+		if !ok {
+			return math.NaN()
 		}
-		metrics.NewGauge("crashcart_jobs_pending", "Jobs waiting to run (not leased, attempts left).", count("SELECT count(*) FROM jobs WHERE locked_until IS NULL AND attempts < 8"))
-		metrics.NewGauge("crashcart_jobs_dead", "Jobs that failed every attempt and are kept for inspection.", count("SELECT count(*) FROM jobs WHERE attempts >= 8"))
-		metrics.NewGauge("crashcart_stats_dirty_hours", "Hours awaiting the statistics rollup (events + sessions).", count("SELECT (SELECT count(*) FROM event_stats_dirty) + (SELECT count(*) FROM session_stats_dirty)"))
-		metrics.NewGauge("crashcart_issues", "Issue rows in the database.", count("SELECT count(*) FROM issues"))
+		return float64(pick(v))
 	})
+}
+
+func registerGauges(st *store.Store) {
+	g := &dbGauges{st: st}
+	g.gauge("crashcart_jobs_pending", "Jobs waiting to run (not leased, attempts left).", func(r sqlc.MetricsGaugesRow) int64 { return r.JobsPending })
+	g.gauge("crashcart_jobs_dead", "Jobs that failed every attempt and are kept for inspection.", func(r sqlc.MetricsGaugesRow) int64 { return r.JobsDead })
+	g.gauge("crashcart_stats_dirty_hours", "Hours awaiting the statistics rollup (events + sessions).", func(r sqlc.MetricsGaugesRow) int64 { return int64(r.DirtyHours) })
+	g.gauge("crashcart_issues", "Issue rows in the database.", func(r sqlc.MetricsGaugesRow) int64 { return r.Issues })
 }
 
 // sentryEndpoint matches the SDK endpoints (/api/<id>/envelope/, /store/).

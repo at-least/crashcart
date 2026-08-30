@@ -60,14 +60,14 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	hlo := lo.Truncate(time.Hour) // include the bucket containing `from`
 	out := overviewOut{From: from, To: to, Levels: map[string]int64{}, Timeline: []timelinePoint{}}
 
-	tot, err := h.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi, Width: hourly})
+	tot, err := h.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	out.Totals = totalsOut{Events: tot.Events, Crashes: tot.Crashes, Errors: tot.Errors}
 
-	levels, err := h.Store.LevelTotals(ctx, sqlc.LevelTotalsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi, Width: hourly})
+	levels, err := h.Store.LevelTotals(ctx, sqlc.LevelTotalsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -107,7 +107,7 @@ const hourly = int64(time.Hour / time.Second)
 // crashFree reports the most recently active release's crash-free rate;
 // nil when it has no sessions in the window.
 func (h *Handler) crashFree(ctx context.Context, projectID int64, hlo, hi time.Time) (*crashFreeOut, error) {
-	lr, err := h.Store.LatestReleaseHealth(ctx, sqlc.LatestReleaseHealthParams{ProjectID: projectID, HourFrom: hlo, DayFrom: hlo.Truncate(24 * time.Hour), ToAt: hi, Width: hourly})
+	lr, err := h.Store.LatestReleaseHealth(ctx, sqlc.LatestReleaseHealthParams{ProjectID: projectID, HourFrom: hlo, DayFrom: hlo.Truncate(24 * time.Hour), ToAt: hi})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && lr.Total == 0) {
 		return nil, nil
 	}

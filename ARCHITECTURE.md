@@ -69,7 +69,7 @@ just mark what they wrote; a dirty hour older than `RETENTION_DAYS` is
 cleared without recomputing — its raw rows are gone (or a lone event
 with a clock far in the past is all there is), and the rolled row is the
 record. The chart queries read
-`crashcart_event_stats(project, from, to, width)` — an inlined SQL function
+`crashcart_event_stats(project, from, to)` — an inlined SQL function
 over the hourly view — fold into buckets of any width (`crashcart_bucket`),
 gap-fill (`crashcart_buckets`), rank the top releases and fold the rest
 into "other" — all in SQL, so the API and the viewer share one query per

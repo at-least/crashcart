@@ -40,59 +40,47 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := now()
-	// One query per statistic across all projects: 30 days of hourly stats
-	// (crashes in the last 24 h, platforms seen in 7 days, the latest
-	// active release), issue counts by status, then the session health of
-	// each project's latest release.
+	// One query per statistic, one row per project: crashes in the last
+	// 24 h, platforms seen in 7 days, the latest active release (30 days)
+	// and its session health, open issues.
 	dayFrom := n.Add(-30 * day).Truncate(day)
-	stats, err := w.Store.PortalEventStats(ctx, sqlc.PortalEventStatsParams{FromAt: dayFrom, ToAt: n})
+	crashes, err := w.Store.PortalCrashes(ctx, sqlc.PortalCrashesParams{FromAt: n.Add(-day).Truncate(time.Hour), ToAt: n})
 	if err != nil {
 		w.fail(rw, r, err)
 		return
 	}
-	type latest struct {
-		release string
-		at      time.Time
+	platforms, err := w.Store.PortalPlatforms(ctx, sqlc.PortalPlatformsParams{FromAt: n.Add(-7 * day).Truncate(time.Hour), ToAt: n})
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	latest, err := w.Store.PortalLatestReleases(ctx, sqlc.PortalLatestReleasesParams{FromAt: dayFrom, ToAt: n})
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	open, err := w.Store.PortalOpenIssues(ctx)
+	if err != nil {
+		w.fail(rw, r, err)
+		return
 	}
 	crashes24h := map[int64]int64{}
-	platforms := map[int64]map[string]int64{}
-	newest := map[int64]latest{}
-	h24, d7 := n.Add(-day).Truncate(time.Hour), n.Add(-7*day).Truncate(time.Hour)
-	for _, s := range stats {
-		if !s.Bucket.Before(h24) {
-			crashes24h[s.ProjectID] += s.Crashes
-		}
-		if !s.Bucket.Before(d7) {
-			if platforms[s.ProjectID] == nil {
-				platforms[s.ProjectID] = map[string]int64{}
-			}
-			platforms[s.ProjectID][s.Platform] += s.Events
-		}
-		if s.Release != "" {
-			cur, ok := newest[s.ProjectID]
-			if !ok || s.Bucket.After(cur.at) || (s.Bucket.Equal(cur.at) && s.Release > cur.release) {
-				newest[s.ProjectID] = latest{s.Release, s.Bucket}
-			}
-		}
+	for _, c := range crashes {
+		crashes24h[c.ProjectID] = c.Crashes
 	}
-	counts, err := w.Store.PortalIssueCounts(ctx)
-	if err != nil {
-		w.fail(rw, r, err)
-		return
+	byPlatform := map[int64][]platformCount{}
+	for _, pc := range platforms {
+		byPlatform[pc.ProjectID] = append(byPlatform[pc.ProjectID], platformCount{pc.Platform, pc.Events})
 	}
-	open := map[int64]int64{}
-	for _, c := range counts {
-		if c.Status == "unresolved" || c.Status == "triaged" || c.Status == "regression" {
-			open[c.ProjectID] += c.N
-		}
+	newest := map[int64]string{}
+	hp := sqlc.PortalReleaseHealthParams{FromAt: dayFrom, ToAt: n}
+	for _, l := range latest {
+		newest[l.ProjectID] = l.Release
+		hp.ProjectIds = append(hp.ProjectIds, l.ProjectID)
+		hp.Releases = append(hp.Releases, l.Release)
 	}
 	health := map[int64]sqlc.PortalReleaseHealthRow{}
-	if len(newest) > 0 {
-		hp := sqlc.PortalReleaseHealthParams{FromAt: dayFrom, ToAt: n}
-		for pid, l := range newest {
-			hp.ProjectIds = append(hp.ProjectIds, pid)
-			hp.Releases = append(hp.Releases, l.release)
-		}
+	if len(latest) > 0 {
 		rows, err := w.Store.PortalReleaseHealth(ctx, hp)
 		if err != nil {
 			w.fail(rw, r, err)
@@ -102,22 +90,16 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 			health[r.ProjectID] = r
 		}
 	}
+	openIssues := map[int64]int64{}
+	for _, o := range open {
+		openIssues[o.ProjectID] = o.N
+	}
 	cards := make([]PortalCard, 0, len(projects))
 	for _, p := range projects {
-		c := PortalCard{P: p, CrashFree: "n/a", Crashes24h: crashes24h[p.ID], OpenIssues: open[p.ID]}
-		var pc []platformCount
-		for plat, ev := range platforms[p.ID] {
-			pc = append(pc, platformCount{plat, ev})
-		}
-		sort.Slice(pc, func(i, j int) bool {
-			return pc[i].Events > pc[j].Events || (pc[i].Events == pc[j].Events && pc[i].Platform < pc[j].Platform)
-		})
-		c.Received, c.Mismatch = platformFamilies(p, pc)
-		if l, ok := newest[p.ID]; ok {
-			c.LatestRelease = l.release
-			if hr, ok := health[p.ID]; ok {
-				c.CrashFree = crashFree(hr.Total, hr.Crashed)
-			}
+		c := PortalCard{P: p, CrashFree: "n/a", Crashes24h: crashes24h[p.ID], OpenIssues: openIssues[p.ID], LatestRelease: newest[p.ID]}
+		c.Received, c.Mismatch = platformFamilies(p, byPlatform[p.ID])
+		if hr, ok := health[p.ID]; ok {
+			c.CrashFree = crashFree(hr.Total, hr.Crashed)
 		}
 		cards = append(cards, c)
 	}
@@ -135,7 +117,7 @@ type platformCount struct {
 // declares. The aggregate only has the raw platform, so the family is
 // derived without the SDK name — close enough for a warning.
 func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, win Window) ([]string, bool) {
-	rows, err := w.Store.PlatformTotals(ctx, sqlc.PlatformTotalsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To, Width: win.Seconds()})
+	rows, err := w.Store.PlatformTotals(ctx, sqlc.PlatformTotalsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To})
 	if err != nil {
 		return nil, false
 	}
@@ -176,7 +158,7 @@ func platformFamilies(p sqlc.Project, rows []platformCount) ([]string, bool) {
 // days and its crash-free session rate over the same span.
 func (w *Web) latestHealth(ctx context.Context, projectID int64, n time.Time, days int) (release, rate string) {
 	win := Window{From: n.Add(-time.Duration(days) * day).Truncate(day), To: n, Width: day}
-	lr, err := w.Store.LatestReleaseHealth(ctx, sqlc.LatestReleaseHealthParams{ProjectID: projectID, HourFrom: win.From, DayFrom: win.From, ToAt: n, Width: win.Seconds()})
+	lr, err := w.Store.LatestReleaseHealth(ctx, sqlc.LatestReleaseHealthParams{ProjectID: projectID, HourFrom: win.From, DayFrom: win.From, ToAt: n})
 	if err != nil {
 		return "", "n/a"
 	}
@@ -224,7 +206,7 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 		d.QuotaReached = d.Today >= int64(p.DailyQuota)
 	}
 	d.LatestRelease, d.CrashFree = w.latestHealth(ctx, p.ID, n, win.Days)
-	totals, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To, Width: win.Seconds()})
+	totals, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To})
 	if err != nil {
 		w.fail(rw, r, err)
 		return
@@ -518,13 +500,14 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 	seenFrom, seenTo := is.FirstSeen, is.LastSeen.Add(time.Second)
 	if ev, err := w.Store.LatestIssueEvent(ctx, sqlc.LatestIssueEventParams{ProjectID: p.ID, Fingerprint: &fp, FromAt: seenFrom, ToAt: seenTo}); err == nil {
 		d.Latest = &ev
-		d.Stacks = stacksOf(ev, w.payload(ctx, ev))
+		d.LatestID = string(ev.EventID)
+		d.Stacks = stacksOf(ev, parsePayload(ev, w.payload(ev)))
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		w.fail(rw, r, err)
 		return
 	}
 	if nb, err := w.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp, FromAt: seenFrom, ToAt: seenTo}); err == nil {
-		d.LatestID, d.OldestID = string(nb.Latest), string(nb.Oldest)
+		d.OldestID = string(nb.Oldest)
 	}
 	if users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []sentry.ID{fp}, OccurredAt: win.From, OccurredAt_2: win.To}); err == nil && len(users) > 0 {
 		d.Users = users[0].Users
@@ -656,7 +639,7 @@ func (w *Web) events(rw http.ResponseWriter, r *http.Request) {
 // EventData feeds the event page.
 type EventData struct {
 	E        sqlc.Event
-	Payload  json.RawMessage // the raw event from the object store; nil when it has none
+	Payload  json.RawMessage // the raw event (events.payload, decoded); nil when the row has none
 	Issue    *sqlc.Issue
 	Stacks   []Stack
 	Crumbs   []sentry.Breadcrumb
@@ -685,8 +668,9 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 		w.fail(rw, r, err)
 		return
 	}
-	payload := w.payload(ctx, e)
-	d := EventData{E: e, Payload: payload, Stacks: stacksOf(e, payload), Crumbs: crumbsOf(e, payload), Tags: tagsMap(e.Tags)}
+	payload := w.payload(e)
+	ev := parsePayload(e, payload) // once: stacks, breadcrumbs and contexts all read it
+	d := EventData{E: e, Payload: payload, Stacks: stacksOf(e, ev), Crumbs: crumbsOf(ev), Tags: tagsMap(e.Tags)}
 	d.Contexts, d.User = payloadContexts(payload)
 	if e.Fingerprint != nil {
 		if is, err := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: *e.Fingerprint}); err == nil {
@@ -701,11 +685,11 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 	w.page(rw, r, pg, func(pg Page) templ.Component { return EventPage(pg, d) })
 }
 
-// payload reads an event's raw payload from the object store; nil when it
-// has none (or the store is unreachable — the page still renders from
-// the columns).
-func (w *Web) payload(ctx context.Context, e sqlc.Event) []byte {
-	b, err := w.Store.Payload(ctx, e)
+// payload is an event's raw payload; nil when the row has none (imported
+// without one) or it does not decode — the page still renders from the
+// columns.
+func (w *Web) payload(e sqlc.Event) []byte {
+	b, err := store.Payload(e)
 	if err != nil {
 		w.Log.Error("event payload", "event", e.EventID, "err", err)
 		return nil
@@ -729,7 +713,7 @@ func (r ReleaseRow) Adoption() string  { return percent(r.Sessions, r.TotalSessi
 func (r ReleaseRow) CrashFree() string { return crashFree(r.Sessions, r.Crashed) }
 
 func (w *Web) releaseRows(ctx context.Context, p sqlc.Project, win Window) ([]ReleaseRow, error) {
-	stats, err := w.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To, Width: win.Seconds()})
+	stats, err := w.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: win.From, ToAt: win.To})
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ type Config struct {
 	TrustProxy    bool   // X-Forwarded-For names the client (behind a reverse proxy)
 
 	RetentionDays       int
+	SymbolicateCacheDir string // crashcart symbolicate: where the sidecar keeps dSYMs
+	SymbolicateCacheMB  int    // … and its bound
 	AlertInterval       time.Duration
 	Workers             int
 	SymbolicateURL      string // dSYM sidecar
@@ -40,6 +43,7 @@ func Load() (Config, error) {
 		CORSOrigin:          get("CORS_ORIGIN", "*"),
 		APICORSOrigin:       get("API_CORS_ORIGIN", ""),
 		SymbolicateURL:      strings.TrimSuffix(get("SYMBOLICATE_URL", ""), "/"),
+		SymbolicateCacheDir: get("SYMBOLICATE_CACHE_DIR", filepath.Join(os.TempDir(), "crashcart-symbols")),
 		TelegramBotToken:    get("TELEGRAM_BOT_TOKEN", ""),
 		PIIRedact:           get("PII_REDACT", "false") == "true",
 		TrustProxy:          get("TRUST_PROXY", "false") == "true",
@@ -52,6 +56,12 @@ func Load() (Config, error) {
 	}
 	if c.RetentionDays, err = intEnv("RETENTION_DAYS", 30); err != nil {
 		return c, err
+	}
+	if c.SymbolicateCacheMB, err = intEnv("SYMBOLICATE_CACHE_MAX_MB", 4096); err != nil {
+		return c, err
+	}
+	if c.SymbolicateCacheMB < 1 {
+		return c, fmt.Errorf("SYMBOLICATE_CACHE_MAX_MB must be >= 1")
 	}
 	if c.Workers, err = intEnv("WORKERS", 4); err != nil {
 		return c, err
@@ -66,6 +76,17 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("ALERT_INTERVAL must be > 0 (disable crash-spike alerts per project instead)")
 	}
 	return c, nil
+}
+
+// Retention is RETENTION_DAYS as a duration: the raw-row window, and what
+// ingest treats as the oldest plausible device clock. Load guarantees
+// RetentionDays >= 1; a zero Config (tests) means the 30-day default.
+func (c Config) Retention() time.Duration {
+	d := c.RetentionDays
+	if d < 1 {
+		d = 30
+	}
+	return time.Duration(d) * 24 * time.Hour
 }
 
 func get(k, def string) string {

@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"

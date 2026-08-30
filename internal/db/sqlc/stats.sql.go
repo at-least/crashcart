@@ -116,7 +116,7 @@ SELECT e.release,
        COALESCE((SELECT sum(h.crashed) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
                     AND h.bucket >= $1::timestamptz AND h.bucket < $2::timestamptz), 0)::bigint AS crashed
-FROM crashcart_event_stats($3::bigint, $4::timestamptz, $2::timestamptz, $5::bigint) AS e
+FROM crashcart_event_stats($3::bigint, $4::timestamptz, $2::timestamptz) AS e
 WHERE e.release <> ''
 GROUP BY e.project_id, e.release
 ORDER BY max(e.bucket) DESC, e.release DESC
@@ -128,7 +128,6 @@ type LatestReleaseHealthParams struct {
 	ToAt      time.Time `json:"to_at"`
 	ProjectID int64     `json:"project_id"`
 	HourFrom  time.Time `json:"hour_from"`
-	Width     int64     `json:"width"`
 }
 
 type LatestReleaseHealthRow struct {
@@ -147,7 +146,6 @@ func (q *Queries) LatestReleaseHealth(ctx context.Context, arg LatestReleaseHeal
 		arg.ToAt,
 		arg.ProjectID,
 		arg.HourFrom,
-		arg.Width,
 	)
 	var i LatestReleaseHealthRow
 	err := row.Scan(&i.Release, &i.Total, &i.Crashed)
@@ -156,7 +154,7 @@ func (q *Queries) LatestReleaseHealth(ctx context.Context, arg LatestReleaseHeal
 
 const levelTotals = `-- name: LevelTotals :many
 SELECT level, sum(events)::bigint AS events
-FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz, $4::bigint)
+FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz)
 GROUP BY level
 `
 
@@ -164,7 +162,6 @@ type LevelTotalsParams struct {
 	ProjectID int64     `json:"project_id"`
 	FromAt    time.Time `json:"from_at"`
 	ToAt      time.Time `json:"to_at"`
-	Width     int64     `json:"width"`
 }
 
 type LevelTotalsRow struct {
@@ -173,12 +170,7 @@ type LevelTotalsRow struct {
 }
 
 func (q *Queries) LevelTotals(ctx context.Context, arg LevelTotalsParams) ([]LevelTotalsRow, error) {
-	rows, err := q.db.Query(ctx, levelTotals,
-		arg.ProjectID,
-		arg.FromAt,
-		arg.ToAt,
-		arg.Width,
-	)
+	rows, err := q.db.Query(ctx, levelTotals, arg.ProjectID, arg.FromAt, arg.ToAt)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +227,7 @@ func (q *Queries) MarkSessionStatsDirty(ctx context.Context, arg MarkSessionStat
 
 const platformTotals = `-- name: PlatformTotals :many
 SELECT platform, sum(events)::bigint AS events
-FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz, $4::bigint)
+FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz)
 GROUP BY platform ORDER BY events DESC
 `
 
@@ -243,7 +235,6 @@ type PlatformTotalsParams struct {
 	ProjectID int64     `json:"project_id"`
 	FromAt    time.Time `json:"from_at"`
 	ToAt      time.Time `json:"to_at"`
-	Width     int64     `json:"width"`
 }
 
 type PlatformTotalsRow struct {
@@ -253,12 +244,7 @@ type PlatformTotalsRow struct {
 
 // Raw SDK platforms seen in a window (for the "expected vs received" check).
 func (q *Queries) PlatformTotals(ctx context.Context, arg PlatformTotalsParams) ([]PlatformTotalsRow, error) {
-	rows, err := q.db.Query(ctx, platformTotals,
-		arg.ProjectID,
-		arg.FromAt,
-		arg.ToAt,
-		arg.Width,
-	)
+	rows, err := q.db.Query(ctx, platformTotals, arg.ProjectID, arg.FromAt, arg.ToAt)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +284,7 @@ SELECT s.release,
        COALESCE(r.platforms, '{}'::text[])::text[] AS platforms,
        COALESCE(r.first_seen, min(s.bucket))::timestamptz AS first_seen, max(s.bucket)::timestamptz AS last_seen,
        sum(s.events)::bigint AS events, sum(s.crashes)::bigint AS crashes, sum(s.errors)::bigint AS errors
-FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz, $4::bigint) AS s
+FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz) AS s
 LEFT JOIN releases r ON r.project_id = s.project_id AND r.release = s.release
 WHERE s.release <> ''
 GROUP BY s.release, r.platforms, r.first_seen ORDER BY max(s.bucket) DESC, s.release
@@ -308,7 +294,6 @@ type ReleaseStatsParams struct {
 	ProjectID int64     `json:"project_id"`
 	FromAt    time.Time `json:"from_at"`
 	ToAt      time.Time `json:"to_at"`
-	Width     int64     `json:"width"`
 }
 
 type ReleaseStatsRow struct {
@@ -324,12 +309,7 @@ type ReleaseStatsRow struct {
 // Every release with activity in the window, most recently active first;
 // platforms and first_seen are all-time, from the releases table.
 func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]ReleaseStatsRow, error) {
-	rows, err := q.db.Query(ctx, releaseStats,
-		arg.ProjectID,
-		arg.FromAt,
-		arg.ToAt,
-		arg.Width,
-	)
+	rows, err := q.db.Query(ctx, releaseStats, arg.ProjectID, arg.FromAt, arg.ToAt)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +339,7 @@ func (q *Queries) ReleaseStats(ctx context.Context, arg ReleaseStatsParams) ([]R
 const releaseTimeline = `-- name: ReleaseTimeline :many
 WITH h AS (
     SELECT crashcart_bucket(bucket, $3::bigint) AS bucket, sum(events) AS events, sum(crashes) AS crashes
-    FROM crashcart_event_stats($4::bigint, $1::timestamptz, $2::timestamptz, $3::bigint)
+    FROM crashcart_event_stats($4::bigint, $1::timestamptz, $2::timestamptz)
     WHERE release = $5::text
     GROUP BY 1)
 SELECT b::timestamptz AS bucket, COALESCE(h.events, 0)::bigint AS events, COALESCE(h.crashes, 0)::bigint AS crashes
@@ -413,7 +393,7 @@ const timeline = `-- name: Timeline :many
 WITH s AS (
     SELECT crashcart_bucket(bucket, $3::bigint) AS bucket, release,
            sum(events) AS events, sum(crashes) AS crashes
-    FROM crashcart_event_stats($4::bigint, $1::timestamptz, $2::timestamptz, $3::bigint)
+    FROM crashcart_event_stats($4::bigint, $1::timestamptz, $2::timestamptz)
     GROUP BY 1, 2),
 ranked AS (
     SELECT release, row_number() OVER (ORDER BY sum(crashes) DESC, sum(events) DESC, release) AS rank
@@ -491,14 +471,13 @@ const totals = `-- name: Totals :one
 SELECT COALESCE(sum(events), 0)::bigint AS events,
        COALESCE(sum(crashes), 0)::bigint AS crashes,
        COALESCE(sum(errors), 0)::bigint AS errors
-FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz, $4::bigint)
+FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz)
 `
 
 type TotalsParams struct {
 	ProjectID int64     `json:"project_id"`
 	FromAt    time.Time `json:"from_at"`
 	ToAt      time.Time `json:"to_at"`
-	Width     int64     `json:"width"`
 }
 
 type TotalsRow struct {
@@ -508,12 +487,7 @@ type TotalsRow struct {
 }
 
 func (q *Queries) Totals(ctx context.Context, arg TotalsParams) (TotalsRow, error) {
-	row := q.db.QueryRow(ctx, totals,
-		arg.ProjectID,
-		arg.FromAt,
-		arg.ToAt,
-		arg.Width,
-	)
+	row := q.db.QueryRow(ctx, totals, arg.ProjectID, arg.FromAt, arg.ToAt)
 	var i TotalsRow
 	err := row.Scan(&i.Events, &i.Crashes, &i.Errors)
 	return i, err

@@ -3,13 +3,13 @@ package web
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"github.com/crashcartapp/crashcart/internal/alerts"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/crashcartapp/crashcart/internal/alerts"
 
 	"github.com/a-h/templ"
 
@@ -234,24 +234,9 @@ func (w *Web) settingsChannelAdd(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "bad form", http.StatusBadRequest)
 		return
 	}
-	var cfg []byte
-	switch kind := r.PostForm.Get("kind"); kind {
-	case "webhook":
-		u := strings.TrimSpace(r.PostForm.Get("url"))
-		if err := alerts.ValidateWebhookURL(u, w.Cfg.WebhookAllowPrivate); err != nil {
-			http.Error(rw, err.Error(), http.StatusBadRequest)
-			return
-		}
-		cfg, _ = json.Marshal(map[string]string{"url": u})
-	case "telegram":
-		id := strings.TrimSpace(r.PostForm.Get("chat_id"))
-		if id == "" {
-			http.Error(rw, "chat_id required", http.StatusBadRequest)
-			return
-		}
-		cfg, _ = json.Marshal(map[string]string{"chat_id": id})
-	default:
-		http.Error(rw, "kind must be webhook or telegram", http.StatusBadRequest)
+	cfg, err := alerts.ChannelConfig(r.PostForm.Get("kind"), r.PostForm.Get, w.Cfg.WebhookAllowPrivate)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if _, err := w.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: sqlc.ChannelKind(r.PostForm.Get("kind")), Config: cfg}); err != nil {

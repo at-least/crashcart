@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 func TestViewStateRoundTrip(t *testing.T) {
@@ -88,10 +90,10 @@ func TestFormat(t *testing.T) {
 func TestViewStateBounds(t *testing.T) {
 	q := url.Values{"offset": {"900000000"}, "q": {strings.Repeat("x", 5000)}, "release": {"1.0"}}
 	s := ParseViewState("p", q)
-	if s.Offset != MaxOffset {
-		t.Errorf("offset = %d, want clamped to %d", s.Offset, MaxOffset)
+	if s.Offset != store.MaxOffset {
+		t.Errorf("offset = %d, want clamped to %d", s.Offset, store.MaxOffset)
 	}
-	if len(s.Filters["q"]) != MaxFilterLen || s.Filters["release"] != "1.0" {
+	if len(s.Filters["q"]) != store.MaxFilterLen || s.Filters["release"] != "1.0" {
 		t.Errorf("filters = %v", s.Filters)
 	}
 }

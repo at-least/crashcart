@@ -25,7 +25,7 @@ func New(pool *pgxpool.Pool) *Store {
 
 // Payload is an event's raw payload, decoded. nil, nil when the event has
 // none (imported without one).
-func (s *Store) Payload(_ context.Context, e sqlc.Event) ([]byte, error) {
+func Payload(e sqlc.Event) ([]byte, error) {
 	if len(e.Payload) == 0 {
 		return nil, nil
 	}

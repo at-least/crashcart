@@ -13,8 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -351,22 +349,11 @@ func fatal(log *slog.Logger, err error) {
 // llvm-symbolizer with a disk cache (internal/symbolicate.Sidecar). It has
 // no database; the main process reaches it through SYMBOLICATE_URL.
 func symbolicateSidecar(cfg config.Config, log *slog.Logger) error {
-	dir := os.Getenv("SYMBOLICATE_CACHE_DIR")
-	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "crashcart-symbols")
-	}
-	var maxBytes int64
-	if v := os.Getenv("SYMBOLICATE_CACHE_MAX_MB"); v != "" {
-		mb, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || mb <= 0 {
-			return fmt.Errorf("SYMBOLICATE_CACHE_MAX_MB: %q", v)
-		}
-		maxBytes = mb << 20
-	}
+	dir := cfg.SymbolicateCacheDir
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	sc := &symbolicate.Sidecar{Dir: dir, MaxBytes: maxBytes, Log: log}
+	sc := &symbolicate.Sidecar{Dir: dir, MaxBytes: int64(cfg.SymbolicateCacheMB) << 20, Log: log}
 	if _, err := exec.LookPath("llvm-symbolizer"); err != nil {
 		log.Warn("symbolicate: llvm-symbolizer not on PATH; /health reports it and requests will fail")
 	}

@@ -71,7 +71,7 @@ func TestListenerNotifications(t *testing.T) {
 		t.Fatal(err)
 	}
 	rel := "2.0"
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now.Add(time.Second), FirstRelease: &rel, Releases: []string{rel}}); err != nil {
+	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now.Add(time.Second), FirstRelease: &rel, Releases: []string{rel}, Regress: true}); err != nil {
 		t.Fatal(err)
 	}
 	select {

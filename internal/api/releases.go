@@ -46,12 +46,12 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: from.Truncate(time.Hour), ToAt: to, Width: hourly})
+	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: from.Truncate(time.Hour), ToAt: to})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	health, err := h.Store.ReleaseHealthNN(ctx, sqlc.ReleaseHealthNNParams{ProjectID: p.ID, Bucket: from.Truncate(24 * time.Hour), Bucket_2: to})
+	health, err := h.Store.ReleaseHealth(ctx, sqlc.ReleaseHealthParams{ProjectID: p.ID, Bucket: from.Truncate(24 * time.Hour), Bucket_2: to})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -116,7 +116,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	hi := to
 	hlo, dlo := from.Truncate(time.Hour), from.Truncate(24*time.Hour)
 
-	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi, Width: hourly})
+	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -127,7 +127,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 			rel = toReleaseOut(st)
 		}
 	}
-	health, err := h.Store.ReleaseHealthDailyNN(ctx, sqlc.ReleaseHealthDailyNNParams{ProjectID: p.ID, Release: version, Bucket: dlo, Bucket_2: hi})
+	health, err := h.Store.ReleaseHealthDaily(ctx, sqlc.ReleaseHealthDailyParams{ProjectID: p.ID, Release: version, Bucket: dlo, Bucket_2: hi})
 	if err != nil {
 		h.fail(w, err)
 		return

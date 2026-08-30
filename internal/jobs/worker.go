@@ -10,10 +10,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/store"

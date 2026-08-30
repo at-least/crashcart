@@ -384,10 +384,9 @@ JOIN sessions s ON s.project_id = d.project_id AND s.started_at >= d.bucket AND 
 GROUP BY d.bucket, d.project_id, s.release;
 
 -- crashcart_event_stats is the chart queries' one source: the hourly rows
--- of a project in a window. Inlined into the caller. (width is the bucket
--- width the caller folds to; kept in the signature so the queries read
--- the same whatever the source's granularity.)
-CREATE FUNCTION crashcart_event_stats(pid BIGINT, from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT)
+-- of a project in a window. Inlined into the caller; the queries that
+-- chart fold them with crashcart_bucket.
+CREATE FUNCTION crashcart_event_stats(pid BIGINT, from_at TIMESTAMPTZ, to_at TIMESTAMPTZ)
 RETURNS SETOF event_stats_hourly
 LANGUAGE SQL STABLE AS $$
     SELECT bucket, project_id, release, platform, level, events, crashes, errors FROM event_stats_hourly
@@ -395,11 +394,10 @@ LANGUAGE SQL STABLE AS $$
 $$;
 
 -- ── schema version ─────────────────────────────────────────────────────
--- One row. db.Init compares it with db.SchemaVersion (the version this
--- binary's schema.sql is) and refuses to start on a mismatch: there are no
+-- One row, written by db.Init (db.SchemaVersion — bump it with every
+-- change to this file). Init refuses to start on a mismatch: there are no
 -- migrations, a database from another schema is moved with export / import.
 CREATE TABLE crashcart_schema (
-    version    INTEGER NOT NULL,
+    version    INTEGER NOT NULL,                     -- written by db.Init from db.SchemaVersion
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO crashcart_schema (version) VALUES (5);

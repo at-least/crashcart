@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -109,7 +110,7 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	if len(req) > maxAssembleFiles {
-		h.fail(w, badRequest("at most 64 files per assemble request"))
+		h.fail(w, badRequest(fmt.Sprintf("at most %d files per assemble request", maxAssembleFiles)))
 		return
 	}
 	out := map[string]assembleResponse{}
@@ -118,7 +119,7 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 		// The size bound before any chunk is read: the chunk list alone
 		// says when the file cannot fit.
 		if (len(f.Chunks)-1)*chunkSize > symbolicate.MaxUpload {
-			out[checksum] = assembleResponse{State: "error", MissingChunks: []string{}, Detail: "file exceeds 50 MB"}
+			out[checksum] = assembleResponse{State: "error", MissingChunks: []string{}, Detail: fmt.Sprintf("file exceeds %d MB", symbolicate.MaxUpload>>20)}
 			continue
 		}
 		chunks := make([]string, len(f.Chunks))
@@ -154,7 +155,7 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 			size += len(c.Data)
 		}
 		if size > symbolicate.MaxUpload {
-			out[checksum] = assembleResponse{State: "error", MissingChunks: []string{}, Detail: "file exceeds 50 MB"}
+			out[checksum] = assembleResponse{State: "error", MissingChunks: []string{}, Detail: fmt.Sprintf("file exceeds %d MB", symbolicate.MaxUpload>>20)}
 			continue
 		}
 		buf := bytes.NewBuffer(make([]byte, 0, size))

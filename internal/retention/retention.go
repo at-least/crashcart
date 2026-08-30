@@ -6,13 +6,13 @@ package retention
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"log/slog"
 	"regexp"
-	"strings"
+	"slices"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/jackc/pgx/v5"
 
@@ -25,10 +25,8 @@ import (
 const AggregateRetentionDays = 400
 
 // PartitionWidth is the width of one events / sessions partition (weeks,
-// Monday-aligned). Retention drops whole partitions, so rows live up to
-// one width longer than RETENTION_DAYS; the object store's lifecycle rule
-// for payloads is RETENTION_DAYS plus this, so a payload never expires
-// before its row.
+// Monday-aligned). Retention drops whole partitions, so rows — payloads
+// included — live up to one width longer than RETENTION_DAYS.
 const PartitionWidth = 7 * 24 * time.Hour
 
 // partitionsAhead is how far into the future partitions exist, so a
@@ -47,15 +45,8 @@ func Reconcile(ctx context.Context, st *store.Store, cfg config.Config, log *slo
 	if err := EnsurePartitions(ctx, st, cfg, time.Now()); err != nil {
 		return err
 	}
-	log.Info("retention: reconciled", "retention_days", days(cfg), "partition_width", PartitionWidth)
+	log.Info("retention: reconciled", "retention", cfg.Retention(), "partition_width", PartitionWidth)
 	return nil
-}
-
-func days(cfg config.Config) int {
-	if cfg.RetentionDays < 1 {
-		return 30
-	}
-	return cfg.RetentionDays
 }
 
 // ── partitions ─────────────────────────────────────────────────────────
@@ -70,14 +61,22 @@ func weekStart(t time.Time) time.Time {
 
 // EnsurePartitions creates the weekly partitions from the start of the
 // retention window (one width earlier, so a late event still has one) to
-// partitionsAhead past now. A week whose rows already sit in the DEFAULT
-// partition — written while no partition covered it — gets them moved
-// into the new partition in the same transaction.
+// partitionsAhead past now: one catalog listing per table, then only the
+// missing weeks. A week whose rows already sit in the DEFAULT partition —
+// written while no partition covered it — gets them moved into the new
+// partition in the same transaction.
 func EnsurePartitions(ctx context.Context, st *store.Store, cfg config.Config, now time.Time) error {
-	from := weekStart(now.Add(-time.Duration(days(cfg))*24*time.Hour - PartitionWidth))
+	from := weekStart(now.Add(-cfg.Retention() - PartitionWidth))
 	to := weekStart(now.Add(partitionsAhead))
-	for start := from; !start.After(to); start = start.Add(PartitionWidth) {
-		for _, t := range partitioned {
+	for _, t := range partitioned {
+		have, err := Partitions(ctx, st, t.table)
+		if err != nil {
+			return err
+		}
+		for start := from; !start.After(to); start = start.Add(PartitionWidth) {
+			if slices.ContainsFunc(have, func(p Partition) bool { return p.Start.Equal(start) }) {
+				continue
+			}
 			if err := ensurePartition(ctx, st, t.table, t.column, start); err != nil {
 				return err
 			}
@@ -89,13 +88,6 @@ func EnsurePartitions(ctx context.Context, st *store.Store, cfg config.Config, n
 func ensurePartition(ctx context.Context, st *store.Store, table, column string, start time.Time) error {
 	name := fmt.Sprintf("%s_p%s", table, start.Format("20060102"))
 	end := start.Add(PartitionWidth)
-	var exists bool
-	if err := st.Pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", name).Scan(&exists); err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
 	return pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error {
 		// Replicas start (and sweep) together: one creates the partition
 		// at a time, the others find it once they hold the lock.
@@ -105,6 +97,7 @@ func ensurePartition(ctx context.Context, st *store.Store, table, column string,
 		// A catalog scan, not to_regclass: inside a transaction the
 		// name lookup can answer from a catalog snapshot taken before
 		// the other replica's CREATE TABLE committed.
+		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 			WHERE c.relname = $1 AND n.nspname = current_schema())`, name).Scan(&exists); err != nil {
 			return err
@@ -129,31 +122,30 @@ func ensurePartition(ctx context.Context, st *store.Store, table, column string,
 		}
 		// Create standalone, move the rows, attach (attach checks the
 		// default partition, which is empty for this range by then).
-		for _, q := range []string{
-			fmt.Sprintf("CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE)", name, table),
-			fmt.Sprintf("INSERT INTO %s SELECT * FROM %s WHERE %s >= $1 AND %s < $2", name, def, column, column),
-			fmt.Sprintf("DELETE FROM %s WHERE %s >= $1 AND %s < $2", def, column, column),
-			fmt.Sprintf("ALTER TABLE %s ATTACH PARTITION %s %s", table, name, bounds),
-		} {
-			var err error
-			if strings.Contains(q, "$1") {
-				_, err = tx.Exec(ctx, q, start, end)
-			} else {
-				_, err = tx.Exec(ctx, q)
-			}
-			if err != nil {
-				return fmt.Errorf("%s: %w", strings.Fields(q)[0], err)
-			}
+		if _, err := tx.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE)", name, table)); err != nil {
+			return fmt.Errorf("create: %w", err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s WHERE %s >= $1 AND %s < $2", name, def, column, column), start, end); err != nil {
+			return fmt.Errorf("move: %w", err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE %s >= $1 AND %s < $2", def, column, column), start, end); err != nil {
+			return fmt.Errorf("delete: %w", err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ATTACH PARTITION %s %s", table, name, bounds)); err != nil {
+			return fmt.Errorf("attach: %w", err)
 		}
 		return nil
 	})
 }
 
-// Partitions lists the weekly partitions of table (name → start), oldest first.
-func Partitions(ctx context.Context, st *store.Store, table string) ([]struct {
+// Partition is one weekly partition of events / sessions.
+type Partition struct {
 	Name  string
 	Start time.Time
-}, error) {
+}
+
+// Partitions lists the weekly partitions of table, oldest first.
+func Partitions(ctx context.Context, st *store.Store, table string) ([]Partition, error) {
 	rows, err := st.Pool.Query(ctx, `SELECT c.relname FROM pg_inherits i
 		JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_class p ON p.oid = i.inhparent
 		JOIN pg_namespace n ON n.oid = p.relnamespace
@@ -162,10 +154,7 @@ func Partitions(ctx context.Context, st *store.Store, table string) ([]struct {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []struct {
-		Name  string
-		Start time.Time
-	}
+	var out []Partition
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
@@ -179,10 +168,7 @@ func Partitions(ctx context.Context, st *store.Store, table string) ([]struct {
 		if err != nil {
 			continue
 		}
-		out = append(out, struct {
-			Name  string
-			Start time.Time
-		}{name, start})
+		out = append(out, Partition{name, start})
 	}
 	return out, rows.Err()
 }
@@ -190,7 +176,7 @@ func Partitions(ctx context.Context, st *store.Store, table string) ([]struct {
 // dropExpiredPartitions drops the partitions that end before the
 // retention cutoff and deletes the default partition's rows older than it.
 func dropExpiredPartitions(ctx context.Context, st *store.Store, cfg config.Config, now time.Time, log *slog.Logger) error {
-	cutoff := now.Add(-time.Duration(days(cfg)) * 24 * time.Hour)
+	cutoff := now.Add(-cfg.Retention())
 	for _, t := range partitioned {
 		parts, err := Partitions(ctx, st, t.table)
 		if err != nil {
@@ -220,7 +206,7 @@ func dropExpiredPartitions(ctx context.Context, st *store.Store, cfg config.Conf
 // chunks, symbol files and rollup history past AggregateRetentionDays.
 func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
 	now := time.Now()
-	retention := time.Duration(days(cfg)) * 24 * time.Hour
+	retention := cfg.Retention()
 	if err := EnsurePartitions(ctx, st, cfg, now); err != nil {
 		return fmt.Errorf("partitions: %w", err)
 	}
@@ -284,7 +270,7 @@ SELECT (SELECT count(*) FROM gone), (SELECT count(*) FROM stale)`
 // event — and issues of any status last seen StaleIssueFactor retentions
 // ago. Their per-issue rollup rows go with them. Returns how many.
 func ExpireIssues(ctx context.Context, st *store.Store, cfg config.Config, now time.Time) (int64, error) {
-	retention := time.Duration(days(cfg)) * 24 * time.Hour
+	retention := cfg.Retention()
 	resolvedBefore := weekStart(now.Add(-retention)) // the oldest surviving partition starts here
 	staleBefore := now.Add(-StaleIssueFactor * retention)
 	var resolved, stale int64
@@ -325,7 +311,7 @@ const RollupBatch = 500
 // raw rows by design — is the only record of it. Such a key is just
 // cleared.
 func Rollup(ctx context.Context, st *store.Store, cfg config.Config) (int, error) {
-	cutoff := time.Now().Add(-time.Duration(days(cfg)) * 24 * time.Hour).Truncate(time.Hour)
+	cutoff := time.Now().Add(-cfg.Retention()).Truncate(time.Hour)
 	n, err := rollup(ctx, st, "event_stats_dirty", cutoff, rollupEvents)
 	if err != nil {
 		return n, err
@@ -404,68 +390,57 @@ func rollup(ctx context.Context, st *store.Store, dirtyTable string, cutoff time
 	return len(keys), nil
 }
 
+// exec runs the statements in order, each with its own arguments.
+func exec(ctx context.Context, tx pgx.Tx, stmts ...stmt) error {
+	for _, s := range stmts {
+		if _, err := tx.Exec(ctx, s.sql, s.args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type stmt struct {
+	sql  string
+	args []any
+}
+
 func rollupEvents(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time, lo, hi time.Time) error {
-	for _, q := range []string{
-		`DELETE FROM event_stats_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
-		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`,
-		`INSERT INTO event_stats_hourly_rolled (bucket, project_id, release, platform, level, events, crashes, errors)
+	keys, window := []any{pids, buckets}, []any{pids, buckets, lo, hi}
+	return exec(ctx, tx,
+		stmt{`DELETE FROM event_stats_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
+		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`, keys},
+		stmt{`INSERT INTO event_stats_hourly_rolled (bucket, project_id, release, platform, level, events, crashes, errors)
 		 SELECT k.bucket, k.project_id, COALESCE(e.release, ''), COALESCE(e.platform, ''), e.level,
 		        count(*), count(*) FILTER (WHERE crashcart_is_crash(e.level, e.handled)),
 		        count(*) FILTER (WHERE e.level = 'error' AND e.handled IS NOT false)
 		 FROM unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 JOIN events e ON e.project_id = k.project_id AND e.occurred_at >= k.bucket AND e.occurred_at < k.bucket + INTERVAL '1 hour'
 		   AND e.occurred_at >= $3 AND e.occurred_at < $4
-		 GROUP BY 1, 2, 3, 4, 5`,
-		`DELETE FROM issue_stats_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
-		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`,
-		`INSERT INTO issue_stats_hourly_rolled (bucket, project_id, fingerprint, events)
+		 GROUP BY 1, 2, 3, 4, 5`, window},
+		stmt{`DELETE FROM issue_stats_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
+		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`, keys},
+		stmt{`INSERT INTO issue_stats_hourly_rolled (bucket, project_id, fingerprint, events)
 		 SELECT k.bucket, k.project_id, e.fingerprint, count(*)
 		 FROM unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 JOIN events e ON e.project_id = k.project_id AND e.occurred_at >= k.bucket AND e.occurred_at < k.bucket + INTERVAL '1 hour'
 		   AND e.occurred_at >= $3 AND e.occurred_at < $4
 		 WHERE e.fingerprint IS NOT NULL
-		 GROUP BY 1, 2, 3`,
-	} {
-		args := []any{pids, buckets}
-		if strings.Contains(q, "$3") {
-			args = append(args, lo, hi)
-		}
-		if _, err := tx.Exec(ctx, q, args...); err != nil {
-			return err
-		}
-	}
-	return nil
+		 GROUP BY 1, 2, 3`, window},
+	)
 }
 
 func rollupSessions(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time, lo, hi time.Time) error {
-	for _, q := range []string{
-		`DELETE FROM release_health_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
-		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`,
-		`INSERT INTO release_health_hourly_rolled (bucket, project_id, release, total, crashed, errored)
+	return exec(ctx, tx,
+		stmt{`DELETE FROM release_health_hourly_rolled r USING unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
+		 WHERE r.project_id = k.project_id AND r.bucket = k.bucket`, []any{pids, buckets}},
+		stmt{`INSERT INTO release_health_hourly_rolled (bucket, project_id, release, total, crashed, errored)
 		 SELECT k.bucket, k.project_id, s.release, sum(s.count),
 		        COALESCE(sum(s.count) FILTER (WHERE s.status = 'crashed'), 0),
 		        COALESCE(sum(s.count) FILTER (WHERE s.status IN ('errored', 'abnormal')), 0)
 		 FROM unnest($1::bigint[], $2::timestamptz[]) AS k(project_id, bucket)
 		 JOIN sessions s ON s.project_id = k.project_id AND s.started_at >= k.bucket AND s.started_at < k.bucket + INTERVAL '1 hour'
 		   AND s.started_at >= $3 AND s.started_at < $4
-		 GROUP BY 1, 2, 3`,
-	} {
-		args := []any{pids, buckets}
-		if strings.Contains(q, "$3") {
-			args = append(args, lo, hi)
-		}
-		if _, err := tx.Exec(ctx, q, args...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// DirtyHours is how many hours await rollup (health / tests).
-func DirtyHours(ctx context.Context, st *store.Store) (int64, error) {
-	n, err := st.CountDirtyStats(ctx)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil
-	}
-	return int64(n), err
+		 GROUP BY 1, 2, 3`, []any{pids, buckets, lo, hi}},
+	)
 }

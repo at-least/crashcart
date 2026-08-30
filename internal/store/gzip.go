@@ -3,30 +3,34 @@ package store
 import (
 	"bytes"
 	"compress/gzip"
+	"io"
+	"sync"
 )
 
-// Payloads are stored gzipped (events.payload): compressed once at ingest,
-// decoded on the few reads (the event page, the JSON event endpoint, the
-// symbolication job, export).
+// A gzip compressor carries ~800 KB of state: Gzip runs once per stored
+// event on the ingest path, so the writers (and readers) are pooled.
+var (
+	writers = sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }}
+	readers = sync.Pool{New: func() any { return new(gzip.Reader) }}
+)
 
-// Gzip compresses one payload for storage.
+// Gzip compresses data (the raw event payload, once at ingest).
 func Gzip(data []byte) []byte {
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
+	buf := bytes.NewBuffer(make([]byte, 0, len(data)/3+64))
+	zw := writers.Get().(*gzip.Writer)
+	zw.Reset(buf)
 	zw.Write(data)
 	zw.Close()
+	writers.Put(zw)
 	return buf.Bytes()
 }
 
-// Gunzip is the inverse.
+// Gunzip decompresses what Gzip wrote.
 func Gunzip(data []byte) ([]byte, error) {
-	zr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
+	zr := readers.Get().(*gzip.Reader)
+	defer readers.Put(zr)
+	if err := zr.Reset(bytes.NewReader(data)); err != nil {
 		return nil, err
 	}
-	var out bytes.Buffer
-	if _, err := out.ReadFrom(zr); err != nil {
-		return nil, err
-	}
-	return out.Bytes(), nil
+	return io.ReadAll(zr)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,20 +47,50 @@ const insertEventSQL = `INSERT INTO events (occurred_at, project_id, event_id, l
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 	ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING`
 
-// InsertEvents writes a batch in one round trip (pipelined). Duplicate keys
-// are skipped, so re-delivery is safe.
+// InsertEvents writes a batch in one round trip (pipelined) and marks
+// the hours it touched dirty in the same batch — the one rule every
+// writer of events must follow, so it lives with the insert. Duplicate
+// keys are skipped, so re-delivery is safe.
 func InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
 	if len(rows) == 0 {
 		return nil
 	}
 	b := &pgx.Batch{}
+	hours := map[int64][]time.Time{}
 	for _, r := range rows {
 		b.Queue(insertEventSQL, r.OccurredAt, r.ProjectID, r.EventID, r.Level, r.Message, r.Platform, r.Environment, r.Release,
 			r.DeviceID, r.DeviceModel, r.OSVersion, r.Screen, r.ErrorType, r.ErrorLocation, r.Handled, r.SDKName, r.UserID,
 			r.Fingerprint, r.Symbolicated, r.Tags, r.Symbols, r.Payload)
+		hours[r.ProjectID] = addHour(hours[r.ProjectID], r.OccurredAt)
+	}
+	return runBatch(ctx, tx, b, markEventHours, hours)
+}
+
+const (
+	markEventHoursSQL   = `INSERT INTO event_stats_dirty (project_id, bucket) SELECT $1, unnest($2::timestamptz[]) ON CONFLICT (project_id, bucket) DO UPDATE SET gen = event_stats_dirty.gen + 1`
+	markSessionHoursSQL = `INSERT INTO session_stats_dirty (project_id, bucket) SELECT $1, unnest($2::timestamptz[]) ON CONFLICT (project_id, bucket) DO UPDATE SET gen = session_stats_dirty.gen + 1`
+	markEventHours      = markEventHoursSQL
+	markSessionHours    = markSessionHoursSQL
+)
+
+// addHour appends t's UTC hour to hs unless it is there (a batch spans
+// one or two hours: a slice beats a map).
+func addHour(hs []time.Time, t time.Time) []time.Time {
+	h := t.UTC().Truncate(time.Hour)
+	if slices.ContainsFunc(hs, h.Equal) {
+		return hs
+	}
+	return append(hs, h)
+}
+
+// runBatch queues one dirty mark per project after the inserts and runs
+// the batch, reading every result.
+func runBatch(ctx context.Context, tx pgx.Tx, b *pgx.Batch, markSQL string, hours map[int64][]time.Time) error {
+	for pid, hs := range hours {
+		b.Queue(markSQL, pid, hs)
 	}
 	res := tx.SendBatch(ctx, b)
-	for range rows {
+	for range b.Len() {
 		if _, err := res.Exec(); err != nil {
 			res.Close()
 			return err
@@ -86,23 +117,19 @@ const insertSessionSQL = `INSERT INTO sessions (started_at, project_id, sid, rel
 	ON CONFLICT (project_id, sid, started_at) DO UPDATE SET
 	    status = CASE WHEN sessions.status = 'ok' OR EXCLUDED.status <> 'ok' THEN EXCLUDED.status ELSE sessions.status END`
 
-// InsertSessions writes a batch in one round trip (pipelined).
+// InsertSessions writes a batch in one round trip (pipelined), marking
+// the hours it touched dirty like InsertEvents.
 func InsertSessions(ctx context.Context, tx pgx.Tx, rows []SessionInsert) error {
 	if len(rows) == 0 {
 		return nil
 	}
 	b := &pgx.Batch{}
+	hours := map[int64][]time.Time{}
 	for _, r := range rows {
 		b.Queue(insertSessionSQL, r.StartedAt, r.ProjectID, r.Sid, r.Release, r.Environment, r.Status, r.Count)
+		hours[r.ProjectID] = addHour(hours[r.ProjectID], r.StartedAt)
 	}
-	res := tx.SendBatch(ctx, b)
-	for range rows {
-		if _, err := res.Exec(); err != nil {
-			res.Close()
-			return err
-		}
-	}
-	return res.Close()
+	return runBatch(ctx, tx, b, markSessionHours, hours)
 }
 
 // EventFilter is the optional WHERE of ListEvents. Zero values are ignored.
@@ -165,8 +192,8 @@ func (f EventFilter) where() (string, []any) {
 	if f.Fingerprint != "" {
 		add("fingerprint = ?", f.Fingerprint)
 	}
-	if f.Query != "" {
-		add("message ILIKE ?", "%"+escapeLike(f.Query)+"%")
+	if q := clip(f.Query, MaxFilterLen); q != "" {
+		add("message ILIKE ?", "%"+escapeLike(q)+"%")
 	}
 	if f.Crash {
 		w = append(w, "crashcart_is_crash(level, handled)")
@@ -177,6 +204,18 @@ func (f EventFilter) where() (string, []any) {
 		add("tags @> ?::jsonb", kv)
 	}
 	return strings.Join(w, " AND "), args
+}
+
+// clip bounds a filter value (rune-safe).
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 func escapeLike(s string) string {

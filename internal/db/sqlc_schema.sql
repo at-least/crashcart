@@ -239,7 +239,7 @@ CREATE TABLE event_stats_hourly (
     errors     BIGINT NOT NULL
 );
 
-CREATE FUNCTION crashcart_event_stats(pid BIGINT, from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT)
+CREATE FUNCTION crashcart_event_stats(pid BIGINT, from_at TIMESTAMPTZ, to_at TIMESTAMPTZ)
 RETURNS SETOF event_stats_hourly
 LANGUAGE SQL STABLE AS $$ SELECT NULL $$;
 

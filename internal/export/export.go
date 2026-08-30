@@ -33,6 +33,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -279,14 +281,14 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	// Per table, per project: the order of Tables is the order of the file.
 	for _, p := range projects {
-		if err := stream(ctx, st, selectReleases, p.ID, func(r sqlc.Release) error {
+		if err := stream(ctx, st, selectReleases, func(r sqlc.Release) error {
 			return enc.Encode(releaseRow{T: "releases", Project: p.Slug, Release: r.Release, Platforms: r.Platforms, FirstSeen: at(r.FirstSeen)})
-		}); err != nil {
+		}, p.ID); err != nil {
 			return fmt.Errorf("export releases: %w", err)
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectIssues, p.ID, func(r sqlc.Issue) error {
+		if err := stream(ctx, st, selectIssues, func(r sqlc.Issue) error {
 			return enc.Encode(issueRow{
 				T: "issues", Project: p.Slug, Fingerprint: string(r.Fingerprint), Title: r.Title, Level: string(r.Level),
 				ErrorType: r.ErrorType, Screen: r.Screen, Platform: r.Platform, Status: string(r.Status), StatusBy: r.StatusBy,
@@ -294,13 +296,13 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, Releases: r.Releases, ResolvedReleases: r.ResolvedReleases,
 				CreatedAt: at(r.CreatedAt), UpdatedAt: at(r.UpdatedAt),
 			})
-		}); err != nil {
+		}, p.ID); err != nil {
 			return fmt.Errorf("export issues: %w", err)
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectEvents, p.ID, func(r sqlc.Event) error {
-			payload, err := st.Payload(ctx, r)
+		if err := stream(ctx, st, selectEvents, func(r sqlc.Event) error {
+			payload, err := store.Payload(r)
 			if err != nil {
 				return fmt.Errorf("payload %s: %w", r.EventID, err)
 			}
@@ -312,43 +314,43 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 				Fingerprint: idStr(r.Fingerprint), Symbolicated: r.Symbolicated, Tags: r.Tags,
 				Payload: json.RawMessage(payload), Symbols: r.Symbols,
 			})
-		}); err != nil {
+		}, p.ID); err != nil {
 			return fmt.Errorf("export events: %w", err)
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectSessions, p.ID, func(r sqlc.Session) error {
+		if err := stream(ctx, st, selectSessions, func(r sqlc.Session) error {
 			return enc.Encode(sessionRow{T: "sessions", Project: p.Slug, StartedAt: at(r.StartedAt), SID: r.Sid, Release: r.Release, Environment: r.Environment, Status: string(r.Status), Count: r.Count})
-		}); err != nil {
+		}, p.ID); err != nil {
 			return fmt.Errorf("export sessions: %w", err)
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectSymbolFiles, p.ID, func(r sqlc.SymbolFile) error {
+		if err := stream(ctx, st, selectSymbolFiles, func(r sqlc.SymbolFile) error {
 			return enc.Encode(symbolFileRow{
 				T: "symbol_files", Project: p.Slug, Kind: string(r.Kind), Release: strOr(r.Release), DebugID: r.DebugID,
 				Filename: r.Filename, Size: r.Size, Data: r.Data, UploadedAt: at(r.UploadedAt),
 			})
-		}); err != nil {
+		}, p.ID); err != nil {
 			return fmt.Errorf("export symbol_files: %w", err)
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectAlertRules, p.ID, func(r sqlc.AlertRule) error {
+		if err := stream(ctx, st, selectAlertRules, func(r sqlc.AlertRule) error {
 			var lt *ts
 			if r.LastTriggered != nil {
 				v := at(*r.LastTriggered)
 				lt = &v
 			}
 			return enc.Encode(alertRuleRow{T: "alert_rules", Project: p.Slug, Type: string(r.Type), Enabled: r.Enabled, CooldownMinutes: r.CooldownMinutes, LastTriggered: lt})
-		}); err != nil {
+		}, p.ID); err != nil {
 			return fmt.Errorf("export alert_rules: %w", err)
 		}
 	}
 	for _, p := range projects {
-		if err := stream(ctx, st, selectAlertChannels, p.ID, func(r sqlc.AlertChannel) error {
+		if err := stream(ctx, st, selectAlertChannels, func(r sqlc.AlertChannel) error {
 			return enc.Encode(alertChannelRow{T: "alert_channels", Project: p.Slug, Kind: string(r.Kind), Config: r.Config, CreatedAt: at(r.CreatedAt)})
-		}); err != nil {
+		}, p.ID); err != nil {
 			return fmt.Errorf("export alert_channels: %w", err)
 		}
 	}
@@ -370,61 +372,47 @@ func exportProjects(ctx context.Context, st *store.Store, opt Options) ([]sqlc.P
 	return pgx.CollectRows(r, pgx.RowToStructByPos[sqlc.Project])
 }
 
-// stream runs sql for one project and calls fn per row as it arrives.
 // exportAccounts writes the users and API keys (full exports only).
 func exportAccounts(ctx context.Context, st *store.Store, enc *json.Encoder) error {
-	rows, err := st.Pool.Query(ctx, selectUsers)
-	if err != nil {
+	type user struct {
+		Email, Name, PasswordHash string
+		CreatedAt                 time.Time
+	}
+	if err := stream(ctx, st, selectUsers, func(u user) error {
+		return enc.Encode(userRow{T: "users", Email: u.Email, Name: u.Name, PasswordHash: u.PasswordHash, CreatedAt: at(u.CreatedAt)})
+	}); err != nil {
 		return fmt.Errorf("export users: %w", err)
 	}
-	users, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (userRow, error) {
-		var u userRow
-		var created time.Time
-		err := r.Scan(&u.Email, &u.Name, &u.PasswordHash, &created)
-		u.T, u.CreatedAt = "users", at(created)
-		return u, err
-	})
-	if err != nil {
-		return fmt.Errorf("export users: %w", err)
+	type key struct {
+		Name      string
+		KeyHash   []byte
+		Prefix    string
+		CreatedBy *string
+		CreatedAt time.Time
+		LastUsed  *time.Time
+		Revoked   *time.Time
 	}
-	for _, u := range users {
-		if err := enc.Encode(u); err != nil {
-			return err
+	if err := stream(ctx, st, selectAPIKeys, func(k key) error {
+		r := apiKeyRow{T: "api_keys", Name: k.Name, KeyHash: k.KeyHash, Prefix: k.Prefix, CreatedBy: k.CreatedBy, CreatedAt: at(k.CreatedAt)}
+		if k.LastUsed != nil {
+			v := at(*k.LastUsed)
+			r.LastUsedAt = &v
 		}
-	}
-	rows, err = st.Pool.Query(ctx, selectAPIKeys)
-	if err != nil {
+		if k.Revoked != nil {
+			v := at(*k.Revoked)
+			r.RevokedAt = &v
+		}
+		return enc.Encode(r)
+	}); err != nil {
 		return fmt.Errorf("export api_keys: %w", err)
-	}
-	keys, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (apiKeyRow, error) {
-		var k apiKeyRow
-		var created time.Time
-		var lastUsed, revoked *time.Time
-		err := r.Scan(&k.Name, &k.KeyHash, &k.Prefix, &k.CreatedBy, &created, &lastUsed, &revoked)
-		k.T, k.CreatedAt = "api_keys", at(created)
-		if lastUsed != nil {
-			v := at(*lastUsed)
-			k.LastUsedAt = &v
-		}
-		if revoked != nil {
-			v := at(*revoked)
-			k.RevokedAt = &v
-		}
-		return k, err
-	})
-	if err != nil {
-		return fmt.Errorf("export api_keys: %w", err)
-	}
-	for _, k := range keys {
-		if err := enc.Encode(k); err != nil {
-			return err
-		}
 	}
 	return nil
 }
 
-func stream[T any](ctx context.Context, st *store.Store, sql string, projectID int64, fn func(T) error) error {
-	rows, err := st.Pool.Query(ctx, sql, projectID)
+// stream runs sql and hands each row (scanned by position into T) to fn,
+// one at a time: nothing is loaded whole.
+func stream[T any](ctx context.Context, st *store.Store, sql string, fn func(T) error, args ...any) error {
+	rows, err := st.Pool.Query(ctx, sql, args...)
 	if err != nil {
 		return err
 	}
@@ -499,8 +487,7 @@ type importer struct {
 	projects map[string]int64 // slug → id
 	events   []store.EventInsert
 	batch    *pgx.Batch                   // sessions / issues / alert rows
-	dirtyE   map[int64]map[time.Time]bool // project → hours of events written (stats rollup)
-	dirtyS   map[int64]map[time.Time]bool // project → hours of sessions written
+	dirtyS   map[int64]map[time.Time]bool // project → hours of sessions written (stats rollup)
 	report   Report
 }
 
@@ -518,7 +505,7 @@ var CommitEvery = 20000
 // next rollup run.
 func Import(ctx context.Context, st *store.Store, r io.Reader) (Report, error) {
 	im := &importer{ctx: ctx, st: st, projects: map[string]int64{}, batch: &pgx.Batch{},
-		dirtyE: map[int64]map[time.Time]bool{}, dirtyS: map[int64]map[time.Time]bool{}, report: Report{Rows: map[string]int64{}}}
+		dirtyS: map[int64]map[time.Time]bool{}, report: Report{Rows: map[string]int64{}}}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), maxLine)
 	line, committed := 0, 0
@@ -695,7 +682,6 @@ func (im *importer) line(b []byte) error {
 			Symbolicated: r.Symbolicated, Tags: orJSON(r.Tags, "{}"),
 			Symbols: r.Symbols, Payload: gz,
 		})
-		im.mark(im.dirtyE, pid, r.OccurredAt.Time)
 		if len(im.events) >= batchSize {
 			if err := im.flushEvents(); err != nil {
 				return err
@@ -789,17 +775,14 @@ func (im *importer) flush() error {
 	if err := im.flushBatch(); err != nil {
 		return err
 	}
-	for pid, hours := range im.dirtyE {
-		if err := im.q.MarkEventStatsDirty(im.ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: pid, Buckets: keys(hours)}); err != nil {
-			return err
-		}
-	}
+	// Sessions go through the batch, not store.InsertSessions: their
+	// hours are marked here (events are marked by InsertEvents).
 	for pid, hours := range im.dirtyS {
-		if err := im.q.MarkSessionStatsDirty(im.ctx, sqlc.MarkSessionStatsDirtyParams{ProjectID: pid, Buckets: keys(hours)}); err != nil {
+		if err := im.q.MarkSessionStatsDirty(im.ctx, sqlc.MarkSessionStatsDirtyParams{ProjectID: pid, Buckets: slices.Collect(maps.Keys(hours))}); err != nil {
 			return err
 		}
 	}
-	im.dirtyE, im.dirtyS = map[int64]map[time.Time]bool{}, map[int64]map[time.Time]bool{}
+	im.dirtyS = map[int64]map[time.Time]bool{}
 	return nil
 }
 
@@ -809,14 +792,6 @@ func (im *importer) mark(m map[int64]map[time.Time]bool, pid int64, t time.Time)
 		m[pid] = map[time.Time]bool{}
 	}
 	m[pid][t.UTC().Truncate(time.Hour)] = true
-}
-
-func keys(m map[time.Time]bool) []time.Time {
-	out := make([]time.Time, 0, len(m))
-	for t := range m {
-		out = append(out, t)
-	}
-	return out
 }
 
 func (im *importer) flushEvents() error {

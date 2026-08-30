@@ -20,12 +20,13 @@ package web
 import (
 	"context"
 	"errors"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/a-h/templ"
 	"github.com/jackc/pgx/v5"
@@ -51,7 +52,7 @@ type Web struct {
 // Register mounts the HTML routes and /static on mux.
 func (w *Web) Register(mux *http.ServeMux) {
 	w.access = &auth.Access{Store: w.Store}
-	limit := auth.RateLimit("web", w.Cfg.RateLimit, auth.IPCredential)
+	limit := auth.RateLimit("web", w.Cfg.RateLimit, auth.IPCredential(w.Cfg.TrustProxy))
 	// Signed-in pages; the sign-in pages themselves are public (rate limited).
 	page := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, w.access.Session, limit) }
 	public := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, limit) }
@@ -93,8 +94,6 @@ func (w *Web) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /favicon.ico", func(rw http.ResponseWriter, _ *http.Request) { rw.WriteHeader(http.StatusNoContent) })
 }
 
-// requireHX rejects mutations that do not come from htmx (CSRF guard:
-// browsers never add custom headers to cross-site form posts).
 // CSRFRejected counts mutations refused for missing the HX-Request header
 // or for coming from another origin.
 var CSRFRejected = metrics.NewCounter("crashcart_web_csrf_rejected_total", "HTML mutations refused as cross-site (no HX-Request header, or a foreign Origin).")
@@ -105,15 +104,13 @@ var CSRFRejected = metrics.NewCounter("crashcart_web_csrf_rejected_total", "HTML
 // Requests without either header (curl, old browsers) pass.
 func sameOrigin(next http.HandlerFunc) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
-		if site := r.Header.Get("Sec-Fetch-Site"); site == "cross-site" {
-			CSRFRejected.Inc()
-			http.Error(rw, "cross-site request refused", http.StatusForbidden)
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			refuseCrossSite(rw, "cross-site request refused")
 			return
 		}
 		if o := r.Header.Get("Origin"); o != "" && o != "null" {
 			if u, err := url.Parse(o); err != nil || !strings.EqualFold(u.Host, r.Host) {
-				CSRFRejected.Inc()
-				http.Error(rw, "cross-site request refused", http.StatusForbidden)
+				refuseCrossSite(rw, "cross-site request refused")
 				return
 			}
 		}
@@ -121,11 +118,18 @@ func sameOrigin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// refuseCrossSite is the one 403 (and the one metric) of the CSRF guards.
+func refuseCrossSite(rw http.ResponseWriter, msg string) {
+	CSRFRejected.Inc()
+	http.Error(rw, msg, http.StatusForbidden)
+}
+
+// requireHX rejects mutations that do not come from htmx (CSRF guard:
+// browsers never add custom headers to cross-site form posts).
 func requireHX(next http.HandlerFunc) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("HX-Request") != "true" {
-			CSRFRejected.Inc()
-			http.Error(rw, "htmx request required", http.StatusForbidden)
+			refuseCrossSite(rw, "htmx request required")
 			return
 		}
 		next(rw, r)

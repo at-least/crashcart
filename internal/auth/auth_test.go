@@ -7,7 +7,7 @@ import (
 )
 
 func TestRateLimitWindow(t *testing.T) {
-	h := RateLimit("test", 2, IPCredential)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+	h := RateLimit("test", 2, IPCredential(false))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
 	get := func(ip string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/", nil)
 		req.RemoteAddr = ip + ":1234"

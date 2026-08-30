@@ -217,7 +217,7 @@ func (e *Event) IssueTitle() string {
 	if t == "" {
 		if e.hasMessage() { // a message event (Go panic, captureMessage at error level)
 			first, _, _ := strings.Cut(strings.TrimSpace(e.Message), "\n")
-			return truncate(first, 100)
+			return Truncate(first, 100)
 		}
 		t = "Unknown"
 	}
@@ -226,7 +226,7 @@ func (e *Event) IssueTitle() string {
 	}
 	if len(e.Exceptions) > e.Primary {
 		if v, _, _ := strings.Cut(strings.TrimSpace(e.Exceptions[e.Primary].Value), "\n"); v != "" {
-			t += ": " + truncate(v, 80)
+			t += ": " + Truncate(v, 80)
 		}
 	}
 	return t

@@ -63,8 +63,7 @@ func frameLocation(f sentry.Frame) string {
 
 // stacksOf builds the display stacks of an event: the symbolicated frames
 // (events.symbols) replace the primary exception's frames when present.
-func stacksOf(e sqlc.Event, payload []byte) []Stack {
-	ev := parsePayload(e, payload)
+func stacksOf(e sqlc.Event, ev *sentry.Event) []Stack {
 	if ev == nil {
 		return nil
 	}
@@ -93,7 +92,7 @@ func stacksOf(e sqlc.Event, payload []byte) []Stack {
 }
 
 // parsePayload re-parses the stored Sentry event (never rewritten); nil
-// when the object store has no payload for it.
+// when the row has no payload.
 func parsePayload(e sqlc.Event, payload []byte) *sentry.Event {
 	if len(payload) == 0 {
 		return nil
@@ -174,8 +173,7 @@ func flatten(m map[string]any) []KV {
 }
 
 // crumbsOf decodes the breadcrumbs column, newest first, capped at 30.
-func crumbsOf(e sqlc.Event, payload []byte) []sentry.Breadcrumb {
-	ev := parsePayload(e, payload)
+func crumbsOf(ev *sentry.Event) []sentry.Breadcrumb {
 	if ev == nil {
 		return nil
 	}

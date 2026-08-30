@@ -2,10 +2,11 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/crashcartapp/crashcart/internal/alerts"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/crashcartapp/crashcart/internal/alerts"
 
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 )
@@ -99,25 +100,12 @@ func (h *Handler) createAlertChannel(w http.ResponseWriter, r *http.Request) {
 		}
 		return ""
 	}
-	switch in.Kind {
-	case "webhook":
-		u := str("url")
-		if err := alerts.ValidateWebhookURL(u, h.Cfg.WebhookAllowPrivate); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		in.Config, _ = json.Marshal(map[string]string{"url": u})
-	case "telegram":
-		id := str("chat_id")
-		if id == "" {
-			writeErr(w, http.StatusBadRequest, "telegram config needs a chat_id")
-			return
-		}
-		in.Config, _ = json.Marshal(map[string]string{"chat_id": id})
-	default:
-		writeErr(w, http.StatusBadRequest, "kind must be webhook or telegram")
+	config, err := alerts.ChannelConfig(in.Kind, str, h.Cfg.WebhookAllowPrivate)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	in.Config = config
 	ch, err := h.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: sqlc.ChannelKind(in.Kind), Config: in.Config})
 	if err != nil {
 		h.fail(w, err)

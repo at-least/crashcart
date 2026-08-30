@@ -14,11 +14,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -27,7 +27,7 @@ type Counter struct {
 	name, help string
 	labels     []string
 	mu         sync.Mutex
-	series     map[string]*atomic.Int64 // key: joined label values
+	series     map[string]int64 // key: joined label values
 }
 
 // Gauge is a value read at scrape time.
@@ -39,28 +39,28 @@ type Gauge struct {
 var (
 	mu       sync.Mutex
 	counters []*Counter
-	gauges   []*Gauge
+	gauges   = map[string]*Gauge{}
 	started  = time.Now()
 )
 
 // NewCounter registers a counter. labels are the label names each
 // observation carries, in order (none for a plain counter).
 func NewCounter(name, help string, labels ...string) *Counter {
-	c := &Counter{name: name, help: help, labels: labels, series: map[string]*atomic.Int64{}}
+	c := &Counter{name: name, help: help, labels: labels, series: map[string]int64{}}
 	mu.Lock()
 	counters = append(counters, c)
 	mu.Unlock()
 	return c
 }
 
-// NewGauge registers a gauge computed by read at every scrape. A read
-// that fails should return NaN; the scrape then omits the sample.
-func NewGauge(name, help string, read func(ctx context.Context) float64) *Gauge {
-	g := &Gauge{name: name, help: help, read: read}
+// NewGauge registers a gauge computed by read at every scrape; a later
+// registration under the same name replaces the earlier one (a second
+// server in one process — tests — reads its own database). A read that
+// fails should return NaN; the scrape then omits the sample.
+func NewGauge(name, help string, read func(ctx context.Context) float64) {
 	mu.Lock()
-	gauges = append(gauges, g)
+	gauges[name] = &Gauge{name: name, help: help, read: read}
 	mu.Unlock()
-	return g
 }
 
 // Add counts n for the given label values (as many as the counter has
@@ -71,13 +71,8 @@ func (c *Counter) Add(n int64, values ...string) {
 	}
 	key := strings.Join(values, "\x00")
 	c.mu.Lock()
-	s, ok := c.series[key]
-	if !ok {
-		s = &atomic.Int64{}
-		c.series[key] = s
-	}
+	c.series[key] += n
 	c.mu.Unlock()
-	s.Add(n)
 }
 
 // Inc counts one.
@@ -87,34 +82,26 @@ func (c *Counter) Inc(values ...string) { c.Add(1, values...) }
 func (c *Counter) Value(values ...string) int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if s, ok := c.series[strings.Join(values, "\x00")]; ok {
-		return s.Load()
-	}
-	return 0
+	return c.series[strings.Join(values, "\x00")]
 }
 
 // Write renders every metric in the Prometheus text format.
 func Write(ctx context.Context, w io.Writer) {
 	mu.Lock()
-	cs := append([]*Counter(nil), counters...)
-	gs := append([]*Gauge(nil), gauges...)
+	cs := slices.Clone(counters)
+	gs := slices.SortedFunc(maps.Values(gauges), func(a, b *Gauge) int { return strings.Compare(a.name, b.name) })
 	mu.Unlock()
-	sort.Slice(cs, func(i, j int) bool { return cs[i].name < cs[j].name })
-	sort.Slice(gs, func(i, j int) bool { return gs[i].name < gs[j].name })
+	slices.SortFunc(cs, func(a, b *Counter) int { return strings.Compare(a.name, b.name) })
 	fmt.Fprintf(w, "# HELP crashcart_uptime_seconds Seconds since the process started.\n# TYPE crashcart_uptime_seconds gauge\ncrashcart_uptime_seconds %d\n", int64(time.Since(started).Seconds()))
 	for _, c := range cs {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n", c.name, c.help, c.name)
 		c.mu.Lock()
-		keys := make([]string, 0, len(c.series))
-		for k := range c.series {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
+		keys := slices.Sorted(maps.Keys(c.series))
 		if len(keys) == 0 && len(c.labels) == 0 {
 			fmt.Fprintf(w, "%s 0\n", c.name)
 		}
 		for _, k := range keys {
-			v := c.series[k].Load()
+			v := c.series[k]
 			if len(c.labels) == 0 {
 				fmt.Fprintf(w, "%s %d\n", c.name, v)
 				continue

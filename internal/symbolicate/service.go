@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/jackc/pgx/v5"
 
@@ -293,7 +294,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 	if row.Symbolicated {
 		return nil
 	}
-	payload, err := s.Store.Payload(ctx, row)
+	payload, err := store.Payload(row)
 	if err != nil {
 		return err
 	}

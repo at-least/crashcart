@@ -50,7 +50,7 @@ func (f IssueFilter) where() (string, []any) {
 		n := strconv.Itoa(len(args))
 		w = append(w, "(first_release = $"+n+" OR last_release = $"+n+")")
 	}
-	if f.Query != "" {
+	if f.Query = clip(f.Query, MaxFilterLen); f.Query != "" {
 		args = append(args, "%"+escapeLike(f.Query)+"%")
 		n := strconv.Itoa(len(args))
 		w = append(w, "(title ILIKE $"+n+" OR error_type ILIKE $"+n+")")
@@ -67,8 +67,16 @@ func (f IssueFilter) where() (string, []any) {
 const issueColumns = `project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count,
 	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at`
 
+// Bounds on a filter: an OFFSET is a sort-and-discard in Postgres, and a
+// filter value becomes an ILIKE pattern or an index key. Both are
+// enforced here, whichever door (viewer, API) the values came through.
+const (
+	MaxOffset    = 10000
+	MaxFilterLen = 200
+)
+
 // ListIssues returns one page of issues matching f plus the total count.
-// Limit defaults to 50 and caps at 500.
+// Limit defaults to 50 and caps at 500, Offset at MaxOffset.
 func (s *Store) ListIssues(ctx context.Context, f IssueFilter) (issues []sqlc.Issue, total int64, err error) {
 	order, ok := issueSorts[f.Sort]
 	if !ok {
@@ -81,7 +89,7 @@ func (s *Store) ListIssues(ctx context.Context, f IssueFilter) (issues []sqlc.Is
 	if limit > 500 {
 		limit = 500
 	}
-	offset := max(f.Offset, 0)
+	offset := min(max(f.Offset, 0), MaxOffset)
 	where, args := f.where()
 	// The page and the total in one round trip: count(*) OVER () is the
 	// unpaged match count on every row. An empty page (offset past the

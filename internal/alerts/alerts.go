@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"io"
 	"log/slog"
 	"net"
@@ -19,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/jackc/pgx/v5"
 
@@ -115,30 +116,20 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 	if err != nil {
 		return err
 	}
-	previous, claimed, err := n.claim(ctx, projectID, sqlc.AlertType(typ))
-	if err != nil || !claimed {
-		if err == nil {
-			AlertsSuppressed.Inc(typ)
+	return n.deliver(ctx, projectID, sqlc.AlertType(typ), func(previous *time.Time) Payload {
+		payload := Payload{
+			Type: typ, Project: p.Name, ProjectSlug: p.Slug, Title: issue.Title, Fingerprint: string(issue.Fingerprint),
+			Level: string(issue.Level), EventCount: issue.EventCount, FirstRelease: issue.FirstRelease, LastRelease: issue.LastRelease,
+			URL: n.link(p.Slug, "/issues/"+url.PathEscape(fingerprint)),
 		}
-		return err // disabled, cooling down, or no rule row
-	}
-	payload := Payload{
-		Type: typ, Project: p.Name, ProjectSlug: p.Slug, Title: issue.Title, Fingerprint: string(issue.Fingerprint),
-		Level: string(issue.Level), EventCount: issue.EventCount, FirstRelease: issue.FirstRelease, LastRelease: issue.LastRelease,
-		URL: n.link(p.Slug, "/issues/"+url.PathEscape(fingerprint)),
-	}
-	if typ == TypeNewIssue && previous != nil {
-		if more, err := n.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: projectID, FirstSeen: *previous}); err == nil && more > 1 {
-			m := more - 1 // this one
-			payload.MoreSinceLast = &m
+		if typ == TypeNewIssue && previous != nil {
+			if more, err := n.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: projectID, FirstSeen: *previous}); err == nil && more > 1 {
+				m := more - 1 // this one
+				payload.MoreSinceLast = &m
+			}
 		}
-	}
-	if n.notify(ctx, projectID, payload) == 0 {
-		if err := n.Store.UnclaimAlertRule(ctx, sqlc.UnclaimAlertRuleParams{ProjectID: projectID, Type: sqlc.AlertType(typ), Previous: previous}); err != nil {
-			return err
-		}
-	}
-	return nil
+		return payload
+	})
 }
 
 // CheckSpikes evaluates the crash_spike rule of every project (scheduler).
@@ -173,28 +164,19 @@ func (n *Notifier) spike(ctx context.Context, projectID, recent, baseline int64)
 	if err := EnsureRules(ctx, n.Store, projectID); err != nil {
 		return err
 	}
-	previous, claimed, err := n.claim(ctx, projectID, TypeCrashSpike)
-	if err != nil || !claimed {
-		if err == nil {
-			AlertsSuppressed.Inc(TypeCrashSpike)
-		}
-		return err
-	}
 	p, err := n.Store.GetProjectByID(ctx, projectID)
 	if err != nil {
 		return err
 	}
-	sent := n.notify(ctx, p.ID, Payload{
-		Type: TypeCrashSpike, Project: p.Name, ProjectSlug: p.Slug,
-		Title:  fmt.Sprintf("Crash spike: %d crashes in the last hour (baseline %.1f/h)", recent, float64(baseline)/24),
-		Level:  "fatal",
-		Recent: &recent, Baseline: &baseline,
-		URL: n.link(p.Slug, "?crash=1&range=1h"),
+	return n.deliver(ctx, projectID, TypeCrashSpike, func(*time.Time) Payload {
+		return Payload{
+			Type: TypeCrashSpike, Project: p.Name, ProjectSlug: p.Slug,
+			Title:  fmt.Sprintf("Crash spike: %d crashes in the last hour (baseline %.1f/h)", recent, float64(baseline)/24),
+			Level:  "fatal",
+			Recent: &recent, Baseline: &baseline,
+			URL: n.link(p.Slug, "?crash=1&range=1h"),
+		}
 	})
-	if sent == 0 {
-		return n.Store.UnclaimAlertRule(ctx, sqlc.UnclaimAlertRuleParams{ProjectID: projectID, Type: TypeCrashSpike, Previous: previous})
-	}
-	return nil
 }
 
 // IsSpike is the crash-spike rule: recent crashes in the last hour versus
@@ -210,21 +192,24 @@ func (n *Notifier) link(slug, path string) string {
 	return n.Cfg.PublicURL + "/p/" + url.PathEscape(slug) + path
 }
 
-// claim takes the rule's cooldown; previous is last_triggered before the
-// claim, for UnclaimAlertRule when nothing could be delivered.
-func (n *Notifier) claim(ctx context.Context, projectID int64, typ sqlc.AlertType) (previous *time.Time, claimed bool, err error) {
-	rule, err := n.Store.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: projectID, Type: typ})
+// deliver claims the rule's cooldown (atomically: replicas cannot both
+// send), builds the payload — previous is last_triggered before the
+// claim, for "N more since the last alert" — and sends it; when no
+// channel took it, the claim is given back so one outage does not also
+// eat the next alert of the hour.
+func (n *Notifier) deliver(ctx context.Context, projectID int64, typ sqlc.AlertType, build func(previous *time.Time) Payload) error {
+	previous, err := n.Store.ClaimAlertRule(ctx, sqlc.ClaimAlertRuleParams{ProjectID: projectID, Type: typ})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, nil
+		AlertsSuppressed.Inc(string(typ))
+		return nil // disabled, cooling down, or no rule row
 	}
 	if err != nil {
-		return nil, false, err
+		return err
 	}
-	rows, err := n.Store.TouchAlertRule(ctx, sqlc.TouchAlertRuleParams{ProjectID: projectID, Type: typ})
-	if err != nil {
-		return nil, false, err
+	if n.notify(ctx, projectID, build(previous)) == 0 {
+		return n.Store.UnclaimAlertRule(ctx, sqlc.UnclaimAlertRuleParams{ProjectID: projectID, Type: typ, Previous: previous})
 	}
-	return rule.LastTriggered, rows > 0, nil
+	return nil
 }
 
 // notify sends payload to every channel of the project; failures are
@@ -334,6 +319,27 @@ func (n *Notifier) post(ctx context.Context, target string, body []byte) error {
 		return fmt.Errorf("%s", resp.Status)
 	}
 	return nil
+}
+
+// ChannelConfig validates a channel as entered (kind, and its one
+// setting read through get) and returns the config to store. The error
+// is the user-facing message.
+func ChannelConfig(kind string, get func(string) string, allowPrivate bool) (json.RawMessage, error) {
+	switch kind {
+	case "webhook":
+		u := strings.TrimSpace(get("url"))
+		if err := ValidateWebhookURL(u, allowPrivate); err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]string{"url": u})
+	case "telegram":
+		id := strings.TrimSpace(get("chat_id"))
+		if id == "" {
+			return nil, errors.New("telegram needs a chat_id")
+		}
+		return json.Marshal(map[string]string{"chat_id": id})
+	}
+	return nil, errors.New("kind must be webhook or telegram")
 }
 
 // ErrBlockedURL: a webhook target this server will not connect to.

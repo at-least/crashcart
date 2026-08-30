@@ -13,8 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,15 +41,15 @@ type Sidecar struct {
 	Symbolizer string        // llvm-symbolizer binary (default: "llvm-symbolizer" on PATH)
 	Timeout    time.Duration // per llvm-symbolizer run (default 30 s)
 	Log        *slog.Logger
+
+	resolve sync.Once
+	bin     string
+	binErr  error
 }
 
 // SidecarDefaultMaxBytes is the cache bound when MaxBytes is 0: room for
 // a few dozen large app dSYMs.
 const SidecarDefaultMaxBytes = 4 << 30
-
-// maxSymbolFile caps one PUT (the upload endpoint caps uploads at
-// MaxUpload, this is the same bound with headroom).
-const maxSymbolFile = 2 << 30
 
 var symbolKey = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
@@ -58,7 +59,7 @@ func (s *Sidecar) Handler() http.Handler {
 	mux.HandleFunc("POST /symbolicate", s.serveSymbolicate)
 	mux.HandleFunc("PUT /symbols/{key}", s.servePut)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		if _, err := exec.LookPath(s.symbolizer()); err != nil {
+		if _, err := s.symbolizerPath(); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "llvm-symbolizer not found"})
 			return
 		}
@@ -67,11 +68,17 @@ func (s *Sidecar) Handler() http.Handler {
 	return mux
 }
 
-func (s *Sidecar) symbolizer() string {
-	if s.Symbolizer != "" {
-		return s.Symbolizer
-	}
-	return "llvm-symbolizer"
+// symbolizerPath resolves the llvm-symbolizer binary once (PATH does not
+// change while the sidecar runs; /health is polled every few seconds).
+func (s *Sidecar) symbolizerPath() (string, error) {
+	s.resolve.Do(func() {
+		bin := s.Symbolizer
+		if bin == "" {
+			bin = "llvm-symbolizer"
+		}
+		s.bin, s.binErr = exec.LookPath(bin)
+	})
+	return s.bin, s.binErr
 }
 
 func (s *Sidecar) log() *slog.Logger {
@@ -145,8 +152,12 @@ func (s *Sidecar) serveSymbolicate(w http.ResponseWriter, r *http.Request) {
 // (--output-style=JSON: one object per address, inlined frames innermost
 // first). An address it cannot resolve comes back with an empty Function.
 func (s *Sidecar) run(ctx context.Context, file string, addrs []string) ([]DSYMResult, error) {
+	bin, err := s.symbolizerPath()
+	if err != nil {
+		return nil, err
+	}
 	args := append([]string{"--output-style=JSON", "--obj=" + file}, addrs...)
-	cmd := exec.CommandContext(ctx, s.symbolizer(), args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -224,7 +235,7 @@ func (s *Sidecar) servePut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	n, err := io.Copy(tmp, http.MaxBytesReader(w, r.Body, maxSymbolFile))
+	n, err := io.Copy(tmp, http.MaxBytesReader(w, r.Body, MaxUpload+1<<20)) // the upload endpoint's bound
 	tmp.Close()
 	if err != nil || n == 0 {
 		os.Remove(tmp.Name())
@@ -269,7 +280,7 @@ func (s *Sidecar) evict(keep string) {
 		files = append(files, file{e.Name(), info.Size(), info.ModTime()})
 		total += info.Size()
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mtime.Before(files[j].mtime) })
+	slices.SortFunc(files, func(a, b file) int { return a.mtime.Compare(b.mtime) })
 	for _, f := range files {
 		if total <= max {
 			return

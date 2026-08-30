@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"io"
 	"log/slog"
 	mrand "math/rand/v2"
@@ -28,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/crashcartapp/crashcart/internal/metrics"
 
 	"github.com/jackc/pgx/v5"
 
@@ -111,14 +112,16 @@ func (in *Ingester) quotaExhausted(p sqlc.Project, now time.Time) bool {
 // ride along with events, so a rejected envelope loses its sessions too —
 // acceptable for a project that is being flooded.
 func (in *Ingester) checkQuota(ctx context.Context, q *sqlc.Queries, p sqlc.Project, n int, now time.Time) error {
-	if p.DailyQuota <= 0 || n == 0 {
+	if n == 0 {
 		return nil
 	}
+	// Always counted (the overview shows events received today); only
+	// enforced when the project set a quota.
 	total, err := q.AddProjectUsage(ctx, sqlc.AddProjectUsageParams{ProjectID: p.ID, Day: now.UTC().Truncate(24 * time.Hour), Events: int64(n)})
 	if err != nil {
 		return fmt.Errorf("quota: %w", err)
 	}
-	if total <= int64(p.DailyQuota) {
+	if p.DailyQuota <= 0 || total <= int64(p.DailyQuota) {
 		return nil
 	}
 	in.mu.Lock()
@@ -389,7 +392,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	seenEvent := map[sentry.ID]bool{}
 	symCtx, cancelSym := context.WithTimeout(ctx, SymbolicateBudget)
 	defer cancelSym()
-	past := now.Add(-in.retention())
+	past := now.Add(-in.Cfg.Retention())
 	for i := range env.Sessions {
 		env.Sessions[i].StartedAt = clampPast(env.Sessions[i].StartedAt, past, now)
 	}
@@ -621,20 +624,6 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			return fmt.Errorf("insert events: %w", err)
 		}
 		res.Stored = len(rows)
-		if len(rows) > 0 {
-			hours := map[time.Time]bool{}
-			var buckets []time.Time
-			for _, r := range rows {
-				h := r.OccurredAt.Truncate(time.Hour)
-				if !hours[h] {
-					hours[h] = true
-					buckets = append(buckets, h)
-				}
-			}
-			if err := q.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: p.ID, Buckets: buckets}); err != nil {
-				return fmt.Errorf("mark stats: %w", err)
-			}
-		}
 
 		sessions := make([]store.SessionInsert, 0, len(env.Sessions))
 		for _, s := range env.Sessions {
@@ -647,20 +636,6 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			return fmt.Errorf("insert sessions: %w", err)
 		}
 		res.Sessions = len(sessions)
-		if len(sessions) > 0 {
-			hours := map[time.Time]bool{}
-			var buckets []time.Time
-			for _, s := range sessions {
-				h := s.StartedAt.Truncate(time.Hour)
-				if !hours[h] {
-					hours[h] = true
-					buckets = append(buckets, h)
-				}
-			}
-			if err := q.MarkSessionStatsDirty(ctx, sqlc.MarkSessionStatsDirtyParams{ProjectID: p.ID, Buckets: buckets}); err != nil {
-				return fmt.Errorf("mark stats: %w", err)
-			}
-		}
 		if len(jobs) > 0 {
 			jp := sqlc.EnqueueJobsParams{}
 			for _, j := range jobs {
@@ -732,16 +707,6 @@ func redact(ev *sentry.Event) {
 	// The raw payload is stored verbatim otherwise; with redaction on we
 	// scrub the whole document textually so nothing leaks via detail views.
 	ev.Raw = []byte(RedactRaw(string(ev.Raw)))
-}
-
-// retention is RETENTION_DAYS as a duration (30 days when unset, like
-// internal/retention).
-func (in *Ingester) retention() time.Duration {
-	d := in.Cfg.RetentionDays
-	if d < 1 {
-		d = 30
-	}
-	return time.Duration(d) * 24 * time.Hour
 }
 
 // clampPast treats a time before the retention window as a wrong device
