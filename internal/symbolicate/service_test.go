@@ -452,3 +452,36 @@ func TestResolveAtIngestColdSidecar(t *testing.T) {
 		t.Fatalf("after job: %+v", row)
 	}
 }
+
+// TestEventMoveDoesNotRegress: symbolication moving an event into a
+// resolved issue is not new evidence of a regression (the resymbolicate
+// fan-out reaches back through the whole retention window).
+func TestEventMoveDoesNotRegress(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st)
+	svc := &Service{Store: st}
+	uuid := "11111111-2222-3333-4444-555555555555"
+	upload(t, st, p, KindProGuard, "1.0", uuid, "mapping.txt", []byte(mappingTxt))
+	ts := time.Now().Unix()
+	// First event: symbolicated, lands in the new (symbolicated) issue.
+	id1, _, at1 := storeEvent(t, st, p, fmt.Sprintf(androidEvent, ts, uuid, uuid))
+	if err := svc.Event(ctx, p.ID, id1, at1); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id1})
+	newFP := *row.Fingerprint
+	// Resolve it on a release set that does not include "1.0".
+	if _, err := st.Pool.Exec(ctx, "UPDATE issues SET status = 'resolved', resolved_releases = '{9.9}' WHERE project_id = $1 AND fingerprint = $2", p.ID, newFP); err != nil {
+		t.Fatal(err)
+	}
+	// Second (older-style, unsymbolicated) event moves into it on release 1.0.
+	id2, _, at2 := storeEvent(t, st, p, strings.Replace(fmt.Sprintf(androidEvent, ts+1, uuid, uuid), `"event_id":"a1"`, `"event_id":"a2"`, 1))
+	if err := svc.Event(ctx, p.ID, id2, at2); err != nil {
+		t.Fatal(err)
+	}
+	is, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: newFP})
+	if err != nil || is.Status != "resolved" || is.EventCount != 2 {
+		t.Fatalf("after move: status=%s count=%d err=%v (want resolved, 2)", is.Status, is.EventCount, err)
+	}
+}

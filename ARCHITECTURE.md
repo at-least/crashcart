@@ -90,6 +90,13 @@ release the issue was seen on (kept on the row: sampled-out and expired
 events count too); resolving copies it to `resolved_releases`, and a later
 event on a release outside that set is a regression — old builds still
 crashing are inside the set, the release that carries the fix is not.
+Only ingest may flip that status (`UpsertIssue` with `regress`);
+symbolication moving an old event between issues is not new evidence.
+An issue outlives its events: resolved / ignored ones are deleted once
+the partition holding their last event is gone (the week boundary, so
+an issue is never deleted while its events still list and re-created
+as new by the next one), unresolved ones after `retention.StaleIssueFactor`
+retentions; their per-issue rollup rows go with them.
 
 **Sampling is per issue, counts stay exact — and it is what bounds the
 database.** The first `projects.sample_keep_first` events of each issue
@@ -185,6 +192,12 @@ the SSE streams are cut at once, they reconnect); only then are the
 workers and schedulers stopped, and the process waits for the job in
 hand to record its outcome. A second signal exits immediately.
 
+**Alerts never reach inward.** A webhook URL is checked as entered and
+again when the connection is made (after DNS, so a name resolving to
+169.254.169.254 is caught): loopback, link-local, unspecified and
+multicast targets are refused always, private ranges unless
+`WEBHOOK_ALLOW_PRIVATE`, and redirects are never followed.
+
 **Access is users and API keys, in Postgres.** The viewer needs a signed-in
 user: `users` (email, bcrypt hash) and `user_sessions` (the cookie token
 stored as sha256, 30-day expiry, swept by retention). The JSON API and
@@ -192,19 +205,15 @@ sentry-cli need an API key: `api_keys` holds the secret's sha256, a display
 prefix, `last_used_at` (written at most once a minute) and `revoked_at`.
 The first user is created on `/setup` (only while there are none) or by
 `crashcart user add`; users and keys are managed on `/account` or the
-**Alerts never reach inward.** A webhook URL is checked as entered and
-again when the connection is made (after DNS, so a name resolving to
-169.254.169.254 is caught): loopback, link-local, unspecified and
-multicast targets are refused always, private ranges unless
-`WEBHOOK_ALLOW_PRIVATE`, and redirects are never followed.
-
 CLI. No roles. `auth.ActorFrom` names who acts; issue status changes
 record it in `issues.status_by`.
 
 **Rate limiting is in memory, the daily quota is in Postgres.** Rate
 limits are fixed 60 s windows per credential, per process; with several
-replicas each enforces `RATE_LIMIT` on its own share. The daily quota is
-exact: the ingest transaction bumps `project_usage (project_id, day)` as
+replicas each enforces `RATE_LIMIT` on its own share (6000/min by
+default — a burst of cached crashes after an outage must fit). The daily
+quota is off by default (sampling bounds the database; a quota is a cost
+cap a project sets) and exact: the ingest transaction bumps `project_usage (project_id, day)` as
 its last statement and rolls back when the total crosses
 `projects.daily_quota`. The process then remembers that the project is
 exhausted until the next UTC day (or until its quota is changed) and
@@ -254,10 +263,12 @@ Spec: `docs/reference/export-format.md` (change it before the code).
 to projects by `project` slug (never by id), timestamps are RFC3339 UTC,
 events / sessions carry their natural keys, JSON columns are embedded,
 bytes (payloads decoded, symbol files) are base64. `crashcart import`
-upserts (events/sessions `ON CONFLICT DO NOTHING`, everything else on its
-key) inside one transaction, so importing twice or onto live data is safe
-and a failed import changes nothing. Rollups are not exported; the
-imported hours are marked dirty and recomputed.
+upserts (events/sessions `ON CONFLICT DO NOTHING`, issue counts never go
+down, everything else on its key), committing every `export.CommitEvery`
+lines — a month of events is tens of millions of rows, too many for one
+transaction — so importing twice or onto live data is safe, and a failed
+import keeps the chunks before the bad line and is re-run. Rollups are
+not exported; the imported hours are marked dirty and recomputed.
 
 ## Why plain Postgres, and only Postgres
 

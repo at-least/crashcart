@@ -446,7 +446,8 @@ func stream[T any](ctx context.Context, st *store.Store, sql string, projectID i
 // Report summarizes an import: rows read per table, plus "skipped" for
 // lines whose "t" is unknown.
 type Report struct {
-	Rows map[string]int64 `json:"rows"`
+	Committed int              `json:"committed_lines"` // lines committed (all of them on success)
+	Rows      map[string]int64 `json:"rows"`
 }
 
 const (
@@ -467,7 +468,7 @@ const (
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 	ON CONFLICT (project_id, fingerprint) DO UPDATE SET title = EXCLUDED.title, level = EXCLUDED.level, status_by = EXCLUDED.status_by,
 	    error_type = EXCLUDED.error_type, screen = EXCLUDED.screen, platform = EXCLUDED.platform, status = EXCLUDED.status,
-	    event_count = EXCLUDED.event_count, stored_count = EXCLUDED.stored_count, first_seen = EXCLUDED.first_seen,
+	    event_count = GREATEST(issues.event_count, EXCLUDED.event_count), stored_count = GREATEST(issues.stored_count, EXCLUDED.stored_count), first_seen = EXCLUDED.first_seen,
 	    last_seen = EXCLUDED.last_seen, first_release = EXCLUDED.first_release, last_release = EXCLUDED.last_release,
 	    releases = EXCLUDED.releases, resolved_releases = EXCLUDED.resolved_releases, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
 	upsertRelease = `INSERT INTO releases (project_id, release, platforms, first_seen) VALUES ($1,$2,$3,$4)
@@ -503,36 +504,61 @@ type importer struct {
 	report   Report
 }
 
-// Import loads NDJSON from r (idempotent) in one transaction: either the
-// whole file lands or nothing does (objects written to the object store
-// by a failed import expire by lifecycle). Rows referencing a project slug
-// that does not exist create it (name = slug, fresh public key). The
-// hours written are marked dirty, so the stats are exact as soon as the
-// import commits and rolled up by the next rollup run.
+// CommitEvery is how many lines an import writes per transaction: a
+// dump of a month at the target rate is tens of millions of rows, and one
+// transaction over all of them is a snapshot, WAL and dead-tuple pile the
+// database has to carry to the end. Import is idempotent, so a failed run
+// is re-run, not rolled back; the error names the first uncommitted line.
+var CommitEvery = 20000
+
+// Import loads NDJSON from r, committing every CommitEvery lines. Rows
+// referencing a project slug that does not exist create it (name = slug,
+// fresh public key). The hours written are marked dirty at each commit,
+// so the stats are exact as soon as the rows are and rolled up by the
+// next rollup run.
 func Import(ctx context.Context, st *store.Store, r io.Reader) (Report, error) {
 	im := &importer{ctx: ctx, st: st, projects: map[string]int64{}, batch: &pgx.Batch{},
 		dirtyE: map[int64]map[time.Time]bool{}, dirtyS: map[int64]map[time.Time]bool{}, report: Report{Rows: map[string]int64{}}}
-	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		im.tx, im.q = tx, q
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 1<<20), maxLine)
-		line := 0
-		for sc.Scan() {
-			line++
-			b := sc.Bytes()
-			if len(b) == 0 {
-				continue
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 1<<20), maxLine)
+	line, committed := 0, 0
+	for {
+		// One transaction per chunk of lines.
+		more := true
+		err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+			im.tx, im.q = tx, q
+			for n := 0; n < CommitEvery; {
+				if !sc.Scan() {
+					more = false
+					break
+				}
+				line++
+				b := sc.Bytes()
+				if len(b) == 0 {
+					continue
+				}
+				n++
+				if err := im.line(b); err != nil {
+					return fmt.Errorf("line %d: %w", line, err)
+				}
 			}
-			if err := im.line(b); err != nil {
-				return fmt.Errorf("line %d: %w", line, err)
+			if err := sc.Err(); err != nil {
+				return err
 			}
+			return im.flush()
+		})
+		if err != nil {
+			if committed > 0 {
+				err = fmt.Errorf("%w (lines 1-%d were committed; import is idempotent, re-run the file)", err, committed)
+			}
+			return im.report, err
 		}
-		if err := sc.Err(); err != nil {
-			return err
+		committed = line
+		im.report.Committed = committed
+		if !more {
+			return im.report, nil
 		}
-		return im.flush()
-	})
-	return im.report, err
+	}
 }
 
 func (im *importer) line(b []byte) error {
@@ -589,7 +615,7 @@ func (im *importer) line(b []byte) error {
 			r.SampleRate = 1
 		}
 		var id int64
-		quota := int32(100000)
+		quota := int32(0)
 		if r.DailyQuota != nil {
 			quota = *r.DailyQuota
 		}
@@ -773,6 +799,7 @@ func (im *importer) flush() error {
 			return err
 		}
 	}
+	im.dirtyE, im.dirtyS = map[int64]map[time.Time]bool{}, map[int64]map[time.Time]bool{}
 	return nil
 }
 

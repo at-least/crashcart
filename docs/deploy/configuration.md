@@ -49,7 +49,7 @@ data too.
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | Port to listen on |
 | `TRUST_PROXY` | `false` | Behind a reverse proxy: take the client address from `X-Forwarded-For` (rate limits per IP on the sign-in pages). Leave off when clients reach CrashCart directly — the header is then theirs to forge |
-| `RATE_LIMIT` | `600` | Requests per minute allowed per DSN key or API key, counted in memory per process (each replica enforces it on its own traffic). `0` disables |
+| `RATE_LIMIT` | `6000` | Requests per minute allowed per DSN key or API key (100/s — a burst of cached crashes after an outage fits), counted in memory per process (each replica enforces it on its own traffic). `0` disables |
 | `ALERT_INTERVAL` | `10m` | How often to check for crash spikes |
 | `WORKERS` | `4` | Parallelism for symbolication and alert delivery |
 

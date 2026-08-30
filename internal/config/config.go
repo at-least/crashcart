@@ -47,7 +47,7 @@ func Load() (Config, error) {
 		CustomTags:          SplitCSV(get("CUSTOM_TAGS", "")),
 	}
 	var err error
-	if c.RateLimit, err = intEnv("RATE_LIMIT", 600); err != nil {
+	if c.RateLimit, err = intEnv("RATE_LIMIT", 6000); err != nil {
 		return c, err
 	}
 	if c.RetentionDays, err = intEnv("RETENTION_DAYS", 30); err != nil {

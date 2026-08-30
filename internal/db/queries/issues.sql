@@ -1,10 +1,12 @@
 -- name: UpsertIssue :one
 -- Called once per (project, fingerprint) per envelope with the folded
 -- count; `releases` are the distinct releases of the folded events ('' for
--- none). Regression: a resolved issue seen again on a release outside the
--- set it had been seen on when it was resolved (old builds in the field
--- are inside that set; a fixed release is not). Returns the row after the
--- update plus whether it was created in this call.
+-- none). Regression (only with regress = true — ingest; symbolication
+-- moving an old event between issues is not new evidence): a resolved
+-- issue seen again on a release outside the set it had been seen on when
+-- it was resolved (old builds in the field are inside that set; a fixed
+-- release is not). Returns the row after the update plus whether it was
+-- created in this call.
 INSERT INTO issues (project_id, fingerprint, title, level, error_type, screen, platform,
                     event_count, stored_count, first_seen, last_seen, first_release, last_release, releases)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, COALESCE(sqlc.arg(releases)::text[], '{}'))
@@ -17,7 +19,7 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     level        = CASE WHEN EXCLUDED.level = 'fatal' THEN 'fatal' ELSE issues.level END,
     releases     = CASE WHEN issues.releases @> EXCLUDED.releases THEN issues.releases
                         ELSE (SELECT array_agg(DISTINCT r ORDER BY r) FROM unnest(issues.releases || EXCLUDED.releases) AS r) END,
-    status       = CASE WHEN issues.status = 'resolved'
+    status       = CASE WHEN sqlc.arg(regress)::bool AND issues.status = 'resolved'
                          AND NOT (COALESCE(issues.resolved_releases, '{}') @> EXCLUDED.releases)
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now()
@@ -61,9 +63,6 @@ SELECT * FROM issues WHERE project_id = $1 AND first_seen >= $2 ORDER BY first_s
 -- name: ListIssuesByRelease :many
 SELECT * FROM issues WHERE project_id = $1 AND (first_release = $2 OR last_release = $2)
 ORDER BY event_count DESC LIMIT $3;
-
--- name: ExpireIssues :execrows
-DELETE FROM issues WHERE last_seen < $1 AND status IN ('resolved', 'ignored');
 
 -- name: IssueSparklines :many
 -- Per fingerprint, the event counts of every bucket in the window as one

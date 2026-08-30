@@ -227,11 +227,10 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	if err := dropExpiredPartitions(ctx, st, cfg, now, log); err != nil {
 		return err
 	}
-	issues, err := st.ExpireIssues(ctx, now.Add(-retention))
+	issues, err := ExpireIssues(ctx, st, cfg, now)
 	if err != nil {
 		return fmt.Errorf("expire issues: %w", err)
 	}
-	IssuesExpired.Add(issues, "resolved")
 	jobs, err := st.ExpireJobs(ctx)
 	if err != nil {
 		return fmt.Errorf("expire jobs: %w", err)
@@ -256,6 +255,45 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	}
 	log.Info("retention: sweep", "issues", issues, "jobs", jobs, "symbol_files", symbols)
 	return nil
+}
+
+// ── issues ─────────────────────────────────────────────────────────────
+
+// StaleIssueFactor: an issue nobody resolved or ignored is dropped once
+// its last event is StaleIssueFactor × RETENTION_DAYS old — its events are
+// long gone, its sparkline empty, and the table it sits in is scanned by
+// every issue list.
+const StaleIssueFactor = 4
+
+const expireIssuesSQL = `WITH gone AS (
+	DELETE FROM issues WHERE last_seen < $1 AND status IN ('resolved', 'ignored')
+	RETURNING project_id, fingerprint),
+stale AS (
+	DELETE FROM issues WHERE last_seen < $2
+	RETURNING project_id, fingerprint),
+all_gone AS (SELECT * FROM gone UNION ALL SELECT * FROM stale),
+rolled AS (
+	DELETE FROM issue_stats_hourly_rolled r USING all_gone g
+	WHERE r.project_id = g.project_id AND r.fingerprint = g.fingerprint)
+SELECT (SELECT count(*) FROM gone), (SELECT count(*) FROM stale)`
+
+// ExpireIssues deletes resolved / ignored issues whose events are gone —
+// the cutoff is the partition boundary, so an issue never outlives its
+// events the other way round: a deleted issue whose events still listed
+// would be re-created (first_seen = now, a new_issue alert) by the next
+// event — and issues of any status last seen StaleIssueFactor retentions
+// ago. Their per-issue rollup rows go with them. Returns how many.
+func ExpireIssues(ctx context.Context, st *store.Store, cfg config.Config, now time.Time) (int64, error) {
+	retention := time.Duration(days(cfg)) * 24 * time.Hour
+	resolvedBefore := weekStart(now.Add(-retention)) // the oldest surviving partition starts here
+	staleBefore := now.Add(-StaleIssueFactor * retention)
+	var resolved, stale int64
+	if err := st.Pool.QueryRow(ctx, expireIssuesSQL, resolvedBefore, staleBefore).Scan(&resolved, &stale); err != nil {
+		return 0, err
+	}
+	IssuesExpired.Add(resolved, "resolved")
+	IssuesExpired.Add(stale, "stale")
+	return resolved + stale, nil
 }
 
 // ── rollup ─────────────────────────────────────────────────────────────

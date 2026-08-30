@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -187,10 +188,58 @@ func TestRoundTrip(t *testing.T) {
 	if err := dst.Pool.QueryRow(ctx, "SELECT count(*) FROM alert_channels").Scan(&n); err != nil || n != 1 {
 		t.Fatalf("alert_channels duplicated: %d %v", n, err)
 	}
-	// The issue's counts are replaced, not added.
+	// The issue's counts are not added up by a re-import…
 	var cnt int64
 	if err := dst.Pool.QueryRow(ctx, "SELECT event_count FROM issues").Scan(&cnt); err != nil || cnt != 1 {
 		t.Fatalf("issue event_count %d %v", cnt, err)
+	}
+	// …and never go down: a backup restored onto a live project keeps
+	// the live (higher) count.
+	if _, err := dst.Pool.Exec(ctx, "UPDATE issues SET event_count = 7, stored_count = 5"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(ctx, dst, bytes.NewReader(a.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	var stored int64
+	if err := dst.Pool.QueryRow(ctx, "SELECT event_count, stored_count FROM issues").Scan(&cnt, &stored); err != nil || cnt != 7 || stored != 5 {
+		t.Fatalf("counts after import onto live data = %d/%d %v (want 7/5)", cnt, stored, err)
+	}
+}
+
+// TestImportCommitsInChunks: a bad line fails the import, but the chunks
+// committed before it stay (the error says so), and a re-run of the
+// fixed file is idempotent.
+func TestImportCommitsInChunks(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	old := CommitEvery
+	CommitEvery = 2
+	t.Cleanup(func() { CommitEvery = old })
+	row := func(i int) string {
+		return fmt.Sprintf(`{"t":"events","project":"p","occurred_at":"2026-08-20T10:%02d:00Z","event_id":"%032x","level":"error","message":"m","tags":{},"payload":{}}`, i, i)
+	}
+	in := `{"t":"_meta","format":1,"exported_at":"2026-08-20T10:00:00Z","app":"crashcart"}` + "\n" +
+		row(1) + "\n" + row(2) + "\n" + row(3) + "\n" + `{"t":"events","project":"p","event_id":"bad"}` + "\n"
+	rep, err := Import(ctx, st, strings.NewReader(in))
+	if err == nil || !strings.Contains(err.Error(), "line 5") || !strings.Contains(err.Error(), "lines 1-4 were committed") {
+		t.Fatalf("err = %v, report %+v", err, rep)
+	}
+	var n int
+	if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM events").Scan(&n); err != nil || n != 3 {
+		t.Fatalf("events after failed import = %d (want the 3 committed before the bad line)", n)
+	}
+	// Two chunks (lines 1-2 and 3-4) were committed, the third was not.
+	if rep.Committed != 4 {
+		t.Fatalf("committed lines = %d, want 4", rep.Committed)
+	}
+	fixed := strings.Replace(in, `{"t":"events","project":"p","event_id":"bad"}`, row(4), 1)
+	rep, err = Import(ctx, st, strings.NewReader(fixed))
+	if err != nil || rep.Rows["events"] != 4 || rep.Committed != 5 {
+		t.Fatalf("re-run: %v %+v", err, rep)
+	}
+	if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM events").Scan(&n); err != nil || n != 4 {
+		t.Fatalf("events after re-run = %d", n)
 	}
 }
 

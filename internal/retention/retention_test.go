@@ -8,6 +8,7 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
@@ -301,5 +302,57 @@ func TestEnsurePartitionsConcurrently(t *testing.T) {
 	parts, err := Partitions(ctx, st, "events")
 	if err != nil || len(parts) != 5 {
 		t.Fatalf("partitions = %d %v", len(parts), err)
+	}
+}
+
+// TestExpireIssues: resolved / ignored issues go once their events'
+// partitions are gone (the week boundary, not the exact cutoff — an issue
+// deleted while its events still list would be re-created as new by the
+// next event); unresolved ones go after StaleIssueFactor retentions; both
+// take their rollup rows along.
+func TestExpireIssues(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	cfg := config.Config{RetentionDays: 30}
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	boundary := weekStart(now.Add(-30 * 24 * time.Hour)) // 2026-07-27
+	add := func(name, status string, lastSeen time.Time) sentry.ID {
+		fp := sentry.DerivedID([]byte(name))
+		if _, err := st.Pool.Exec(ctx, `INSERT INTO issues (project_id, fingerprint, title, level, status, first_seen, last_seen)
+			VALUES (1, $1, $2, 'error', $3, $4, $4)`, fp, name, status, lastSeen); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Pool.Exec(ctx, `INSERT INTO issue_stats_hourly_rolled (bucket, project_id, fingerprint, events) VALUES ($1, 1, $2, 3)`, lastSeen.Truncate(time.Hour), fp); err != nil {
+			t.Fatal(err)
+		}
+		return fp
+	}
+	oldResolved := add("old-resolved", "resolved", boundary.Add(-time.Hour))
+	edgeResolved := add("edge-resolved", "resolved", boundary.Add(time.Hour)) // inside a surviving partition: kept
+	staleOpen := add("stale-open", "unresolved", now.Add(-5*30*24*time.Hour))
+	oldOpen := add("old-open", "unresolved", now.Add(-2*30*24*time.Hour)) // 2 retentions: kept
+	n, err := ExpireIssues(ctx, st, cfg, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("expired %d issues, want 2", n)
+	}
+	left := map[sentry.ID]bool{}
+	rows, _ := st.Pool.Query(ctx, "SELECT fingerprint FROM issues")
+	for rows.Next() {
+		var fp sentry.ID
+		rows.Scan(&fp)
+		left[fp] = true
+	}
+	rows.Close()
+	if left[oldResolved] || left[staleOpen] || !left[edgeResolved] || !left[oldOpen] {
+		t.Fatalf("issues left = %v", left)
+	}
+	var rolled int
+	st.Pool.QueryRow(ctx, "SELECT count(*) FROM issue_stats_hourly_rolled").Scan(&rolled)
+	if rolled != 2 {
+		t.Fatalf("rollup rows of deleted issues not removed: %d left, want 2", rolled)
 	}
 }

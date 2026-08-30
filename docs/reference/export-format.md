@@ -119,7 +119,7 @@ platform?         str    one of: ios android flutter react-native web backend ot
 public_key        str    DSN public key; unique per database
 sample_keep_first int    default 100
 sample_rate       float  0 < x ≤ 1; default 1
-daily_quota?      int    default 100000
+daily_quota?      int    default 0 (unlimited)
 created_at        ts
 ```
 
@@ -163,8 +163,10 @@ created_at        ts
 updated_at        ts
 ```
 
-Import: upsert on `(project, fingerprint)`. **Counts are replaced, not
-added.** A missing timestamp → now.
+Import: upsert on `(project, fingerprint)`. **Counts never go down**:
+`event_count` / `stored_count` become the greater of the row's and the
+file's (a backup restored onto a live project does not rewind its
+counts). A missing timestamp → now.
 
 ### `events`
 
@@ -269,13 +271,14 @@ up); the rest expire or belong to the target database.
    the second time (except `alert_channels` ordering and any `created_at`
    filled with *now* on rows that omitted it). Importing onto a live
    database **replaces** the listed columns of `projects`, `issues`
-   (counts included), `symbol_files` and `alert_rules` with the file's
-   values; events and sessions are never overwritten; users and API keys
+   (except the counts, which never go down), `symbol_files` and
+   `alert_rules` with the file's values; events and sessions are never overwritten; users and API keys
    are never overwritten.
 4. Report per-table row counts on completion (`{"rows":{"events":123,…}}`).
 5. Fail fast on the first malformed line, reporting its 1-based line number.
-   `crashcart import` runs the whole file in one transaction, so a failed
-   import leaves the database as it was.
+   `crashcart import` commits every 20 000 lines; a failed import keeps
+   the chunks committed before the bad line (the error says how many) and,
+   being idempotent, is simply re-run once the file is fixed.
 
 ## Evolving the format
 

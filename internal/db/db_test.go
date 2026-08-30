@@ -82,3 +82,21 @@ func TestInitVersion(t *testing.T) {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// A new project accepts everything by default: sampling bounds the
+// database, a daily quota is an explicit cost cap.
+func TestProjectDefaults(t *testing.T) {
+	p := pool(t)
+	ctx := context.Background()
+	if _, err := Init(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	var quota int32
+	var rate float64
+	if err := p.QueryRow(ctx, "INSERT INTO projects (slug, name, public_key) VALUES ('d', 'D', 'k') RETURNING daily_quota, sample_rate").Scan(&quota, &rate); err != nil {
+		t.Fatal(err)
+	}
+	if quota != 0 || rate != 1 {
+		t.Fatalf("defaults: daily_quota=%d sample_rate=%v (want 0 = unlimited, 1)", quota, rate)
+	}
+}

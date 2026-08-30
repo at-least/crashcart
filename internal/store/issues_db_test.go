@@ -43,3 +43,33 @@ func TestListIssuesDB(t *testing.T) {
 		t.Errorf("filters: total=%d err=%v", total, err)
 	}
 }
+
+// TestUpsertIssueRegressFlag: only ingest (regress = true) may flip a
+// resolved issue to regression; symbolication moving an old event
+// between issues passes false and leaves the status alone.
+func TestUpsertIssueRegressFlag(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	fp := sentry.DerivedID([]byte("rf"))
+	now := time.Now().UTC()
+	base := sqlc.UpsertIssueParams{ProjectID: 1, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: now, LastSeen: now, Releases: []string{"1.0"}, Regress: true}
+	if _, err := st.UpsertIssue(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 1, Fingerprint: fp, Status: "resolved"}); err != nil {
+		t.Fatal(err)
+	}
+	moved := base
+	moved.Releases, moved.Regress = []string{"2.0"}, false
+	row, err := st.UpsertIssue(ctx, moved)
+	if err != nil || row.Status != "resolved" {
+		t.Fatalf("regress=false on a new release: status=%s err=%v (want resolved)", row.Status, err)
+	}
+	ingested := base
+	ingested.Releases = []string{"2.0"}
+	row, err = st.UpsertIssue(ctx, ingested)
+	if err != nil || row.Status != "regression" {
+		t.Fatalf("regress=true on a new release: status=%s err=%v (want regression)", row.Status, err)
+	}
+}

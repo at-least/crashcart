@@ -76,7 +76,7 @@ CREATE TABLE projects (
     public_key        TEXT NOT NULL UNIQUE,                   -- DSN key: https://<public_key>@host/<id>
     sample_keep_first INTEGER NOT NULL DEFAULT 100,           -- events stored per issue before sampling kicks in (fatal: ingest.FatalKeepFactor times that)
     sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,  -- kept fraction after that (1 = store everything; lower it to bound the database)
-    daily_quota       INTEGER NOT NULL DEFAULT 100000,        -- events accepted per UTC day; 0 = unlimited
+    daily_quota       INTEGER NOT NULL DEFAULT 0,             -- events accepted per UTC day; 0 = unlimited (sampling bounds the database, a quota is a cost cap)
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -402,4 +402,4 @@ CREATE TABLE crashcart_schema (
     version    INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO crashcart_schema (version) VALUES (4);
+INSERT INTO crashcart_schema (version) VALUES (5);

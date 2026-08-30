@@ -102,18 +102,6 @@ func (q *Queries) DeleteEmptyIssue(ctx context.Context, arg DeleteEmptyIssuePara
 	return err
 }
 
-const expireIssues = `-- name: ExpireIssues :execrows
-DELETE FROM issues WHERE last_seen < $1 AND status IN ('resolved', 'ignored')
-`
-
-func (q *Queries) ExpireIssues(ctx context.Context, lastSeen time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, expireIssues, lastSeen)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const getIssue = `-- name: GetIssue :one
 SELECT project_id, fingerprint, title, level, error_type, screen, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND fingerprint = $2
 `
@@ -494,7 +482,7 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     level        = CASE WHEN EXCLUDED.level = 'fatal' THEN 'fatal' ELSE issues.level END,
     releases     = CASE WHEN issues.releases @> EXCLUDED.releases THEN issues.releases
                         ELSE (SELECT array_agg(DISTINCT r ORDER BY r) FROM unnest(issues.releases || EXCLUDED.releases) AS r) END,
-    status       = CASE WHEN issues.status = 'resolved'
+    status       = CASE WHEN $14::bool AND issues.status = 'resolved'
                          AND NOT (COALESCE(issues.resolved_releases, '{}') @> EXCLUDED.releases)
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now()
@@ -515,6 +503,7 @@ type UpsertIssueParams struct {
 	LastSeen     time.Time  `json:"last_seen"`
 	FirstRelease *string    `json:"first_release"`
 	Releases     []string   `json:"releases"`
+	Regress      bool       `json:"regress"`
 }
 
 type UpsertIssueRow struct {
@@ -542,10 +531,12 @@ type UpsertIssueRow struct {
 
 // Called once per (project, fingerprint) per envelope with the folded
 // count; `releases` are the distinct releases of the folded events (” for
-// none). Regression: a resolved issue seen again on a release outside the
-// set it had been seen on when it was resolved (old builds in the field
-// are inside that set; a fixed release is not). Returns the row after the
-// update plus whether it was created in this call.
+// none). Regression (only with regress = true — ingest; symbolication
+// moving an old event between issues is not new evidence): a resolved
+// issue seen again on a release outside the set it had been seen on when
+// it was resolved (old builds in the field are inside that set; a fixed
+// release is not). Returns the row after the update plus whether it was
+// created in this call.
 func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (UpsertIssueRow, error) {
 	row := q.db.QueryRow(ctx, upsertIssue,
 		arg.ProjectID,
@@ -561,6 +552,7 @@ func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (Upser
 		arg.LastSeen,
 		arg.FirstRelease,
 		arg.Releases,
+		arg.Regress,
 	)
 	var i UpsertIssueRow
 	err := row.Scan(
