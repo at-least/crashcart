@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"github.com/crashcartapp/crashcart/internal/alerts"
 	"net/http"
 	"strconv"
 	"strings"
@@ -101,8 +102,8 @@ func (h *Handler) createAlertChannel(w http.ResponseWriter, r *http.Request) {
 	switch in.Kind {
 	case "webhook":
 		u := str("url")
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			writeErr(w, http.StatusBadRequest, "webhook config needs an http(s) url")
+		if err := alerts.ValidateWebhookURL(u, h.Cfg.WebhookAllowPrivate); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		in.Config, _ = json.Marshal(map[string]string{"url": u})

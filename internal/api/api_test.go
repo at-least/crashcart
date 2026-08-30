@@ -459,6 +459,9 @@ func TestAlerts(t *testing.T) {
 	if rec, _ := e.do("PATCH", "/api/projects/demo/alerts/regression", map[string]any{"cooldown_minutes": -1}); rec.Code != 400 {
 		t.Errorf("negative cooldown: %d", rec.Code)
 	}
+	if rec, _ := e.do("POST", "/api/projects/demo/alerts/channels", map[string]any{"kind": "webhook", "config": map[string]any{"url": "http://169.254.169.254/latest"}}); rec.Code != 400 {
+		t.Errorf("webhook to link-local accepted: %d", rec.Code)
+	}
 	rec, out = e.do("POST", "/api/projects/demo/alerts/channels", map[string]any{"kind": "webhook", "config": map[string]any{"url": "https://hooks.example.com/x"}})
 	if rec.Code != 201 || out["kind"] != "webhook" {
 		t.Fatalf("create channel: %d %v", rec.Code, out)

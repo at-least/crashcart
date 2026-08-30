@@ -192,6 +192,12 @@ sentry-cli need an API key: `api_keys` holds the secret's sha256, a display
 prefix, `last_used_at` (written at most once a minute) and `revoked_at`.
 The first user is created on `/setup` (only while there are none) or by
 `crashcart user add`; users and keys are managed on `/account` or the
+**Alerts never reach inward.** A webhook URL is checked as entered and
+again when the connection is made (after DNS, so a name resolving to
+169.254.169.254 is caught): loopback, link-local, unspecified and
+multicast targets are refused always, private ranges unless
+`WEBHOOK_ALLOW_PRIVATE`, and redirects are never followed.
+
 CLI. No roles. `auth.ActorFrom` names who acts; issue status changes
 record it in `issues.status_by`.
 

@@ -24,6 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/a-h/templ"
@@ -57,10 +58,10 @@ func (w *Web) Register(mux *http.ServeMux) {
 	mutation := func(h http.HandlerFunc) http.Handler { return page(requireHX(h)) }
 
 	mux.Handle("GET /login", public(w.loginPage))
-	mux.Handle("POST /login", public(w.login))
-	mux.Handle("POST /logout", page(w.logout))
+	mux.Handle("POST /login", public(sameOrigin(w.login)))
+	mux.Handle("POST /logout", mutation(w.logout))
 	mux.Handle("GET /setup", public(w.setupPage))
-	mux.Handle("POST /setup", public(w.setup))
+	mux.Handle("POST /setup", public(sameOrigin(w.setup)))
 	mux.Handle("GET /account", page(w.account))
 	mux.Handle("POST /account/users", mutation(w.accountUserAdd))
 	mux.Handle("DELETE /account/users/{id}", mutation(w.accountUserDelete))
@@ -97,6 +98,28 @@ func (w *Web) Register(mux *http.ServeMux) {
 // CSRFRejected counts mutations refused for missing the HX-Request header
 // or for coming from another origin.
 var CSRFRejected = metrics.NewCounter("crashcart_web_csrf_rejected_total", "HTML mutations refused as cross-site (no HX-Request header, or a foreign Origin).")
+
+// sameOrigin guards the two public form posts (sign-in, first-user
+// setup) that cannot carry the HX-Request header: a browser announces a
+// cross-site post in Sec-Fetch-Site and Origin, and those are refused.
+// Requests without either header (curl, old browsers) pass.
+func sameOrigin(next http.HandlerFunc) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		if site := r.Header.Get("Sec-Fetch-Site"); site == "cross-site" {
+			CSRFRejected.Inc()
+			http.Error(rw, "cross-site request refused", http.StatusForbidden)
+			return
+		}
+		if o := r.Header.Get("Origin"); o != "" && o != "null" {
+			if u, err := url.Parse(o); err != nil || !strings.EqualFold(u.Host, r.Host) {
+				CSRFRejected.Inc()
+				http.Error(rw, "cross-site request refused", http.StatusForbidden)
+				return
+			}
+		}
+		next(rw, r)
+	}
+}
 
 func requireHX(next http.HandlerFunc) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {

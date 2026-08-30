@@ -223,6 +223,11 @@ func TestBulkAndMutations(t *testing.T) {
 	if r := hx("POST", "/p/shop/settings/channels", "kind=webhook&url=https://hooks.example.com/x"); r.Code != 303 {
 		t.Errorf("channel = %d %s", r.Code, r.Body)
 	}
+	for _, bad := range []string{"http://127.0.0.1:9/x", "http://localhost/x", "http://169.254.169.254/latest/meta-data", "http://10.0.0.5/hook", "http://[::1]/x"} {
+		if r := hx("POST", "/p/shop/settings/channels", "kind=webhook&url="+url.QueryEscape(bad)); r.Code != 400 {
+			t.Errorf("webhook to %s accepted: %d", bad, r.Code)
+		}
+	}
 	if r := hx("POST", "/p/shop/settings/channels", "kind=webhook&url=ftp://nope"); r.Code != 400 {
 		t.Errorf("bad channel = %d", r.Code)
 	}
@@ -341,6 +346,24 @@ func TestAuthFlow(t *testing.T) {
 	if rec := do("GET", "/setup", "", nil, false); rec.Code != 200 || !strings.Contains(rec.Body.String(), "Create the first account") {
 		t.Fatalf("setup page: %d", rec.Code)
 	}
+	// A cross-site form post cannot create the first account or sign in.
+	cross := func(method, path, body, hdr, val string) int {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set(hdr, val)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := cross("POST", "/setup", "email=evil%40example.com&password=correct+horse+battery", "Sec-Fetch-Site", "cross-site"); c != 403 {
+		t.Errorf("cross-site setup: %d", c)
+	}
+	if c := cross("POST", "/setup", "email=evil%40example.com&password=correct+horse+battery", "Origin", "https://evil.example"); c != 403 {
+		t.Errorf("foreign-origin setup: %d", c)
+	}
+	if c := cross("POST", "/setup", "email=me%40example.com&password=short", "Origin", "http://example.com"); c != 400 {
+		t.Errorf("same-origin setup must reach the handler: %d", c)
+	}
 	if rec := do("POST", "/setup", "email=me%40example.com&password=short", nil, false); rec.Code != 400 {
 		t.Errorf("short password accepted: %d", rec.Code)
 	}
@@ -385,7 +408,10 @@ func TestAuthFlow(t *testing.T) {
 		t.Error("revoked key still valid")
 	}
 	// Sign out, then in again — wrong password first.
-	if rec := do("POST", "/logout", "", cookie, false); rec.Code != 303 {
+	if rec := do("POST", "/logout", "", cookie, false); rec.Code != 403 {
+		t.Errorf("logout without HX-Request must be refused (CSRF): %d", rec.Code)
+	}
+	if rec := do("POST", "/logout", "", cookie, true); rec.Code != 303 {
 		t.Errorf("logout: %d", rec.Code)
 	}
 	if rec := do("GET", "/", "", cookie, false); rec.Code != 303 {

@@ -40,6 +40,7 @@ data too.
 | `SYMBOLICATE_CACHE_DIR` | `$TMPDIR/crashcart-symbols` | `crashcart symbolicate` only: where the sidecar keeps the dSYMs it has used |
 | `SYMBOLICATE_CACHE_MAX_MB` | `4096` | `crashcart symbolicate` only: bound of that cache; least recently used dSYMs are dropped |
 | `TELEGRAM_BOT_TOKEN` | — | Bot token for Telegram alerts |
+| `WEBHOOK_ALLOW_PRIVATE` | `false` | Let webhooks target private addresses (10/8, 172.16/12, 192.168/16, fc00::/7) — a service on your LAN. Loopback, link-local (cloud metadata) and redirects are always refused |
 | `CUSTOM_TAGS` | — | Comma-separated tag keys to offer as filters in the viewer, e.g. `tenant,feature_flag` |
 
 ## Tuning

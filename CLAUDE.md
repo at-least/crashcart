@@ -92,7 +92,8 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`, in
 - API JSON is snake_case; times RFC3339 UTC; identity ids (projects, symbol
   files, channels) are integers, events are keyed by `event_id`.
 - Viewer URL state lives in `web/state.go` (`ViewState.With*` return copies);
-  HTML mutations require the `HX-Request` header (CSRF guard); `/api/*` needs an
+  HTML mutations require the `HX-Request` header (CSRF guard; the public sign-in /
+  setup posts refuse a cross-site `Sec-Fetch-Site` or foreign `Origin` instead); `/api/*` needs an
   API key (`api_keys`, hashed; `auth.Access.APIKey`; CORS on it only with
   `API_CORS_ORIGIN` — `CORS_ORIGIN` is for the SDK ingest endpoints); the viewer
   needs a signed-in user (`users` + `user_sessions` cookie; `auth.Access.Session`;

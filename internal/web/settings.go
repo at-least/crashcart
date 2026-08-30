@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/crashcartapp/crashcart/internal/alerts"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -237,8 +238,8 @@ func (w *Web) settingsChannelAdd(rw http.ResponseWriter, r *http.Request) {
 	switch kind := r.PostForm.Get("kind"); kind {
 	case "webhook":
 		u := strings.TrimSpace(r.PostForm.Get("url"))
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			http.Error(rw, "webhook url must be http(s)", http.StatusBadRequest)
+		if err := alerts.ValidateWebhookURL(u, w.Cfg.WebhookAllowPrivate); err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
 			return
 		}
 		cfg, _ = json.Marshal(map[string]string{"url": u})

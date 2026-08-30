@@ -111,7 +111,7 @@ templ Shell(pg Page) {
 					}
 					if pg.User != "" {
 						<a data-slot="button" data-variant="ghost" data-size="sm" href="/account" title={ pg.User }>Account</a>
-						<form method="post" action="/logout" class="contents">
+						<form method="post" action="/logout" hx-post="/logout" hx-swap="none" class="contents">
 							<button type="submit" data-slot="button" data-variant="ghost" data-size="sm">Sign out</button>
 						</form>
 					}

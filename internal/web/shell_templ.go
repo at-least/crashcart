@@ -450,7 +450,7 @@ func Shell(pg Page) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "\">Account</a><form method=\"post\" action=\"/logout\" class=\"contents\"><button type=\"submit\" data-slot=\"button\" data-variant=\"ghost\" data-size=\"sm\">Sign out</button></form>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "\">Account</a><form method=\"post\" action=\"/logout\" hx-post=\"/logout\" hx-swap=\"none\" class=\"contents\"><button type=\"submit\" data-slot=\"button\" data-variant=\"ghost\" data-size=\"sm\">Sign out</button></form>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

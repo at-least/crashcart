@@ -3,6 +3,7 @@ package alerts
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -299,5 +300,58 @@ func TestNewIssueAlertCountsSuppressed(t *testing.T) {
 	}
 	if !strings.Contains(TelegramText(s.payloads[0]), "+3 more new issues") {
 		t.Errorf("telegram text: %q", TelegramText(s.payloads[0]))
+	}
+}
+
+func TestValidateWebhookURL(t *testing.T) {
+	cases := map[string]bool{ // url → allowed (private off)
+		"https://hooks.example.com/x":             true,
+		"http://203.0.113.9/hook":                 true,
+		"ftp://hooks.example.com/x":               false,
+		"https:///nohost":                         false,
+		"http://localhost:8080/x":                 false,
+		"http://app.localhost/x":                  false,
+		"http://127.0.0.1/x":                      false,
+		"http://[::1]/x":                          false,
+		"http://169.254.169.254/latest/meta-data": false,
+		"http://10.1.2.3/hook":                    false,
+		"http://192.168.1.10/hook":                false,
+		"http://[fd00::1]/hook":                   false,
+		"http://0.0.0.0/x":                        false,
+	}
+	for u, ok := range cases {
+		if err := ValidateWebhookURL(u, false); (err == nil) != ok {
+			t.Errorf("%s: err=%v, want allowed=%v", u, err, ok)
+		}
+	}
+	// Private ranges only with WEBHOOK_ALLOW_PRIVATE; loopback and
+	// link-local never.
+	if err := ValidateWebhookURL("http://10.1.2.3/hook", true); err != nil {
+		t.Errorf("private with allowPrivate: %v", err)
+	}
+	if err := ValidateWebhookURL("http://169.254.169.254/x", true); !errors.Is(err, ErrBlockedURL) {
+		t.Errorf("link-local with allowPrivate must stay blocked: %v", err)
+	}
+}
+
+// TestWebhookClientBlocksLoopback: the hardened client refuses the
+// connection after resolution (a name pointing inward is caught here),
+// and does not follow redirects.
+func TestWebhookClientBlocksLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer srv.Close()
+	n := &Notifier{Cfg: config.Config{}} // HTTP nil: the real client
+	cfg, _ := json.Marshal(map[string]string{"url": srv.URL + "/hook"})
+	err := n.send(context.Background(), sqlc.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"})
+	if !errors.Is(err, ErrBlockedURL) {
+		t.Fatalf("loopback webhook: %v (want ErrBlockedURL)", err)
+	}
+	// With private targets allowed, loopback is still refused.
+	n = &Notifier{Cfg: config.Config{WebhookAllowPrivate: true}}
+	if err := n.send(context.Background(), sqlc.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"}); !errors.Is(err, ErrBlockedURL) {
+		t.Fatalf("loopback with allowPrivate: %v", err)
+	}
+	if AlertsTotal.Value("x", "webhook", "blocked") < 0 {
+		t.Fatal("metric registered")
 	}
 }

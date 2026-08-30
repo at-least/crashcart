@@ -11,9 +11,13 @@ import (
 	"github.com/crashcartapp/crashcart/internal/metrics"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -54,7 +58,10 @@ type Notifier struct {
 	Store *store.Store
 	Cfg   config.Config
 	Log   *slog.Logger
-	HTTP  *http.Client
+	HTTP  *http.Client // tests; nil = the hardened client (see client)
+
+	once sync.Once
+	http *http.Client
 }
 
 // Payload is the JSON body of a webhook call (and the source of the
@@ -231,7 +238,11 @@ func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload)
 	sent := 0
 	for _, ch := range channels {
 		if err := n.send(ctx, ch, payload); err != nil {
-			AlertsTotal.Inc(payload.Type, string(ch.Kind), "failed")
+			outcome := "failed"
+			if errors.Is(err, ErrBlockedURL) {
+				outcome = "blocked"
+			}
+			AlertsTotal.Inc(payload.Type, string(ch.Kind), outcome)
 			n.log().Error("alert: channel failed", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "err", err)
 			continue
 		}
@@ -325,11 +336,71 @@ func (n *Notifier) post(ctx context.Context, target string, body []byte) error {
 	return nil
 }
 
+// ErrBlockedURL: a webhook target this server will not connect to.
+var ErrBlockedURL = errors.New("webhook target not allowed")
+
+// ValidateWebhookURL checks a webhook URL as entered: http(s), a host,
+// and — for a literal address — not one CheckWebhookAddr refuses. A name
+// is checked again at connect time, after resolution.
+func ValidateWebhookURL(raw string, allowPrivate bool) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("webhook url must be http(s)")
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return fmt.Errorf("%w: %s", ErrBlockedURL, host)
+	}
+	if ip, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		return CheckWebhookAddr(ip, allowPrivate)
+	}
+	return nil
+}
+
+// CheckWebhookAddr refuses loopback, link-local (169.254.169.254 is the
+// cloud metadata service), unspecified and multicast addresses always,
+// and private ranges unless allowPrivate.
+func CheckWebhookAddr(ip netip.Addr, allowPrivate bool) error {
+	ip = ip.Unmap()
+	switch {
+	case ip.IsLoopback(), ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(), ip.IsUnspecified(), ip.IsMulticast(), ip.IsInterfaceLocalMulticast():
+		return fmt.Errorf("%w: %s", ErrBlockedURL, ip)
+	case ip.IsPrivate() && !allowPrivate:
+		return fmt.Errorf("%w: %s is a private address (WEBHOOK_ALLOW_PRIVATE=true to allow)", ErrBlockedURL, ip)
+	}
+	return nil
+}
+
+// client is the alert HTTP client: the dialer refuses the addresses
+// CheckWebhookAddr does — after DNS resolution, so a name that resolves
+// to the metadata service is caught too — and redirects are not followed
+// (a public URL redirecting inward would bypass the check).
 func (n *Notifier) client() *http.Client {
 	if n.HTTP != nil {
 		return n.HTTP
 	}
-	return &http.Client{Timeout: 15 * time.Second}
+	n.once.Do(func() {
+		allow := n.Cfg.WebhookAllowPrivate
+		dialer := &net.Dialer{Timeout: 10 * time.Second, Control: func(network, address string, c syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			ip, err := netip.ParseAddr(host)
+			if err != nil {
+				return err
+			}
+			return CheckWebhookAddr(ip, allow)
+		}}
+		n.http = &http.Client{
+			Timeout:   15 * time.Second,
+			Transport: &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: 10 * time.Second, Proxy: http.ProxyFromEnvironment},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return fmt.Errorf("%w: redirects are not followed", ErrBlockedURL)
+			},
+		}
+	})
+	return n.http
 }
 
 func (n *Notifier) log() *slog.Logger {

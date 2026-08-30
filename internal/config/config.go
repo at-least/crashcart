@@ -20,29 +20,31 @@ type Config struct {
 	RateLimit     int    // requests / minute / credential; 0 = off
 	TrustProxy    bool   // X-Forwarded-For names the client (behind a reverse proxy)
 
-	RetentionDays    int
-	AlertInterval    time.Duration
-	Workers          int
-	SymbolicateURL   string // dSYM sidecar
-	TelegramBotToken string
-	PIIRedact        bool
-	CustomTags       []string // tag keys the viewer shows as filters
+	RetentionDays       int
+	AlertInterval       time.Duration
+	Workers             int
+	SymbolicateURL      string // dSYM sidecar
+	TelegramBotToken    string
+	WebhookAllowPrivate bool // webhooks may target RFC 1918 / ULA addresses (a service on the LAN)
+	PIIRedact           bool
+	CustomTags          []string // tag keys the viewer shows as filters
 }
 
 // Load reads the environment. It fails only on unparseable values; missing
 // values fall back to defaults and DATABASE_URL is validated by the caller.
 func Load() (Config, error) {
 	c := Config{
-		Addr:             get("LISTEN_ADDR", ":8080"),
-		DatabaseURL:      get("DATABASE_URL", ""),
-		PublicURL:        strings.TrimSuffix(get("PUBLIC_URL", ""), "/"),
-		CORSOrigin:       get("CORS_ORIGIN", "*"),
-		APICORSOrigin:    get("API_CORS_ORIGIN", ""),
-		SymbolicateURL:   strings.TrimSuffix(get("SYMBOLICATE_URL", ""), "/"),
-		TelegramBotToken: get("TELEGRAM_BOT_TOKEN", ""),
-		PIIRedact:        get("PII_REDACT", "false") == "true",
-		TrustProxy:       get("TRUST_PROXY", "false") == "true",
-		CustomTags:       SplitCSV(get("CUSTOM_TAGS", "")),
+		Addr:                get("LISTEN_ADDR", ":8080"),
+		DatabaseURL:         get("DATABASE_URL", ""),
+		PublicURL:           strings.TrimSuffix(get("PUBLIC_URL", ""), "/"),
+		CORSOrigin:          get("CORS_ORIGIN", "*"),
+		APICORSOrigin:       get("API_CORS_ORIGIN", ""),
+		SymbolicateURL:      strings.TrimSuffix(get("SYMBOLICATE_URL", ""), "/"),
+		TelegramBotToken:    get("TELEGRAM_BOT_TOKEN", ""),
+		PIIRedact:           get("PII_REDACT", "false") == "true",
+		TrustProxy:          get("TRUST_PROXY", "false") == "true",
+		WebhookAllowPrivate: get("WEBHOOK_ALLOW_PRIVATE", "false") == "true",
+		CustomTags:          SplitCSV(get("CUSTOM_TAGS", "")),
 	}
 	var err error
 	if c.RateLimit, err = intEnv("RATE_LIMIT", 600); err != nil {
