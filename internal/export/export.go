@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -47,16 +48,17 @@ const Format = 1
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
-var Tables = []string{"projects", "releases", "issues", "events", "sessions", "symbol_files", "alert_rules", "alert_channels"}
+var Tables = []string{"users", "api_keys", "projects", "releases", "issues", "events", "sessions", "symbol_files", "alert_rules", "alert_channels"}
 
 // Options narrows an export.
 type Options struct {
 	Project string // slug; "" = all
 }
 
-// maxLine is the longest NDJSON line import accepts (payloads are ≤ 20 MB
-// envelopes, so a single event row fits comfortably).
-const maxLine = 16 << 20
+// maxLine is the longest NDJSON line import accepts: a symbol file is at
+// most symbolicate.MaxUpload (50 MB) → ~67 MB of base64 on one line; an
+// event payload is at most a 20 MB envelope.
+const maxLine = 96 << 20
 
 // batchSize is how many events / sessions / upserts go in one round trip.
 const batchSize = 500
@@ -68,6 +70,28 @@ type metaRow struct {
 	Format     int       `json:"format"`
 	ExportedAt time.Time `json:"exported_at"`
 	App        string    `json:"app"`
+}
+
+// users and api_keys are global (not per project) and are written only
+// by a full export: an instance moved with export / import keeps its
+// accounts and its keys (sentry-cli, scripts) working.
+type userRow struct {
+	T            string `json:"t"`
+	Email        string `json:"email"`
+	Name         string `json:"name"`
+	PasswordHash string `json:"password_hash"` // bcrypt
+	CreatedAt    ts     `json:"created_at"`
+}
+
+type apiKeyRow struct {
+	T          string  `json:"t"`
+	Name       string  `json:"name"`
+	KeyHash    []byte  `json:"key_hash"` // base64 of the sha256
+	Prefix     string  `json:"prefix"`
+	CreatedBy  *string `json:"created_by,omitempty"` // user email
+	CreatedAt  ts      `json:"created_at"`
+	LastUsedAt *ts     `json:"last_used_at,omitempty"`
+	RevokedAt  *ts     `json:"revoked_at,omitempty"`
 }
 
 type projectRow struct {
@@ -135,7 +159,7 @@ type eventRow struct {
 	Fingerprint   *string         `json:"fingerprint,omitempty"`
 	Symbolicated  bool            `json:"symbolicated"`
 	Tags          json.RawMessage `json:"tags"`
-	Payload       json.RawMessage `json:"payload"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
 	Symbols       json.RawMessage `json:"symbols,omitempty"`
 }
 
@@ -221,6 +245,9 @@ const (
 	FROM symbol_files WHERE project_id = $1 ORDER BY kind, release, filename`
 	selectAlertRules    = `SELECT project_id, type, enabled, cooldown_minutes, last_triggered FROM alert_rules WHERE project_id = $1 ORDER BY type`
 	selectAlertChannels = `SELECT id, project_id, kind, config, created_at FROM alert_channels WHERE project_id = $1 ORDER BY id`
+	selectUsers         = `SELECT email, name, password_hash, created_at FROM users ORDER BY email`
+	selectAPIKeys       = `SELECT k.name, k.key_hash, k.prefix, u.email, k.created_at, k.last_used_at, k.revoked_at
+	FROM api_keys k LEFT JOIN users u ON u.id = k.created_by ORDER BY k.id`
 )
 
 // Export writes NDJSON to w. Tables are streamed row by row per project
@@ -236,6 +263,11 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	if err := enc.Encode(metaRow{T: "_meta", Format: Format, ExportedAt: time.Now().UTC(), App: "crashcart"}); err != nil {
 		return err
+	}
+	if opt.Project == "" {
+		if err := exportAccounts(ctx, st, enc); err != nil {
+			return err
+		}
 	}
 	for _, p := range projects {
 		if err := enc.Encode(projectRow{
@@ -339,6 +371,58 @@ func exportProjects(ctx context.Context, st *store.Store, opt Options) ([]sqlc.P
 }
 
 // stream runs sql for one project and calls fn per row as it arrives.
+// exportAccounts writes the users and API keys (full exports only).
+func exportAccounts(ctx context.Context, st *store.Store, enc *json.Encoder) error {
+	rows, err := st.Pool.Query(ctx, selectUsers)
+	if err != nil {
+		return fmt.Errorf("export users: %w", err)
+	}
+	users, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (userRow, error) {
+		var u userRow
+		var created time.Time
+		err := r.Scan(&u.Email, &u.Name, &u.PasswordHash, &created)
+		u.T, u.CreatedAt = "users", at(created)
+		return u, err
+	})
+	if err != nil {
+		return fmt.Errorf("export users: %w", err)
+	}
+	for _, u := range users {
+		if err := enc.Encode(u); err != nil {
+			return err
+		}
+	}
+	rows, err = st.Pool.Query(ctx, selectAPIKeys)
+	if err != nil {
+		return fmt.Errorf("export api_keys: %w", err)
+	}
+	keys, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (apiKeyRow, error) {
+		var k apiKeyRow
+		var created time.Time
+		var lastUsed, revoked *time.Time
+		err := r.Scan(&k.Name, &k.KeyHash, &k.Prefix, &k.CreatedBy, &created, &lastUsed, &revoked)
+		k.T, k.CreatedAt = "api_keys", at(created)
+		if lastUsed != nil {
+			v := at(*lastUsed)
+			k.LastUsedAt = &v
+		}
+		if revoked != nil {
+			v := at(*revoked)
+			k.RevokedAt = &v
+		}
+		return k, err
+	})
+	if err != nil {
+		return fmt.Errorf("export api_keys: %w", err)
+	}
+	for _, k := range keys {
+		if err := enc.Encode(k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func stream[T any](ctx context.Context, st *store.Store, sql string, projectID int64, fn func(T) error) error {
 	rows, err := st.Pool.Query(ctx, sql, projectID)
 	if err != nil {
@@ -366,6 +450,12 @@ type Report struct {
 }
 
 const (
+	// Accounts: an existing user (by email) or key (by hash) is kept as is.
+	insertUser = `INSERT INTO users (email, name, password_hash, created_at) VALUES ($1, $2, $3, $4)
+	ON CONFLICT (email) DO NOTHING`
+	insertAPIKey = `INSERT INTO api_keys (name, key_hash, prefix, created_by, created_at, last_used_at, revoked_at)
+	VALUES ($1, $2, $3, (SELECT id FROM users WHERE email = $4), $5, $6, $7)
+	ON CONFLICT (key_hash) DO NOTHING`
 	upsertProject = `INSERT INTO projects (slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, platform = EXCLUDED.platform,
@@ -459,6 +549,31 @@ func (im *importer) line(b []byte) error {
 			return fmt.Errorf("unsupported export format %d (this build reads ≤ %d)", head.Format, Format)
 		}
 		return nil
+	case "users":
+		var r userRow
+		if err := json.Unmarshal(b, &r); err != nil {
+			return err
+		}
+		if r.Email == "" || r.PasswordHash == "" {
+			return errors.New("users row without email or password_hash")
+		}
+		im.batch.Queue(insertUser, strings.ToLower(r.Email), r.Name, r.PasswordHash, tsOrNow(r.CreatedAt))
+	case "api_keys":
+		var r apiKeyRow
+		if err := json.Unmarshal(b, &r); err != nil {
+			return err
+		}
+		if len(r.KeyHash) == 0 {
+			return errors.New("api_keys row without key_hash")
+		}
+		var lastUsed, revoked *time.Time
+		if r.LastUsedAt != nil {
+			lastUsed = &r.LastUsedAt.Time
+		}
+		if r.RevokedAt != nil {
+			revoked = &r.RevokedAt.Time
+		}
+		im.batch.Queue(insertAPIKey, r.Name, r.KeyHash, r.Prefix, r.CreatedBy, tsOrNow(r.CreatedAt), lastUsed, revoked)
 	case "projects":
 		var r projectRow
 		if err := json.Unmarshal(b, &r); err != nil {

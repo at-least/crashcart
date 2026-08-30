@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/ingest"
@@ -58,6 +59,14 @@ func fill(t *testing.T, st *store.Store) sqlc.Project {
 		t.Fatal(err)
 	}
 	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "webhook", Config: json.RawMessage(`{"url":"https://hooks.example.com/x"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	// Accounts: a user and an API key it created (full exports carry them).
+	u, err := st.CreateUser(ctx, sqlc.CreateUserParams{Email: "ops@example.com", Name: "Ops", PasswordHash: "$2a$10$hash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := (&auth.Access{Store: st}).CreateAPIKey(ctx, "ci", &u.ID); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -111,7 +120,7 @@ func TestRoundTrip(t *testing.T) {
 		if h.ProjectID != nil {
 			t.Fatalf("project_id leaked: %s", l)
 		}
-		if h.T != "projects" && h.Project != "shop" {
+		if h.T != "projects" && h.T != "users" && h.T != "api_keys" && h.Project != "shop" {
 			t.Fatalf("row without project slug: %s", l)
 		}
 		if len(seq) == 0 || seq[len(seq)-1] != h.T {
@@ -122,11 +131,14 @@ func TestRoundTrip(t *testing.T) {
 	if !slices.Equal(seq, Tables) {
 		t.Fatalf("table order %v, want %v", seq, Tables)
 	}
-	want := map[string]int{"projects": 1, "releases": 1, "issues": 1, "events": 2, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
+	want := map[string]int{"users": 1, "api_keys": 1, "projects": 1, "releases": 1, "issues": 1, "events": 2, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s: %d rows, want %d", k, got[k], v)
 		}
+	}
+	if strings.Contains(a.String(), `"created_by":1`) || !strings.Contains(a.String(), `"created_by":"ops@example.com"`) {
+		t.Error("api key created_by must be the user's email, not an id")
 	}
 	if !strings.Contains(a.String(), `"data":"YSAtPiBi"`) {
 		t.Error("bytea not base64")
@@ -143,6 +155,14 @@ func TestRoundTrip(t *testing.T) {
 		if rep.Rows[k] != int64(v) {
 			t.Errorf("import %s: %d, want %d", k, rep.Rows[k], v)
 		}
+	}
+	// The account and the key work in the new database.
+	if u, err := dst.GetUserByEmail(ctx, "ops@example.com"); err != nil || u.PasswordHash != "$2a$10$hash" {
+		t.Fatalf("imported user: %+v %v", u, err)
+	}
+	var keyOwner string
+	if err := dst.Pool.QueryRow(ctx, "SELECT u.email FROM api_keys k JOIN users u ON u.id = k.created_by WHERE k.name = 'ci'").Scan(&keyOwner); err != nil || keyOwner != "ops@example.com" {
+		t.Fatalf("imported api key owner: %q %v", keyOwner, err)
 	}
 	var b bytes.Buffer
 	if err := Export(ctx, dst, &b, Options{}); err != nil {

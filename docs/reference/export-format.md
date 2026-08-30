@@ -13,14 +13,17 @@ code.
   terminated. Blank lines are ignored.
 - Every object has a string field `"t"` naming its kind. The first line is
   `_meta`; the rest are table rows.
-- A reader must accept lines up to 16 MiB. Writers must not emit longer ones
-  (an event payload is at most a 20 MB envelope, so this fits).
+- A reader must accept lines up to 96 MiB. Writers must not emit longer
+  ones (a symbol file is at most 50 MB, ~67 MB as base64 on one line; an
+  event payload is at most a 20 MB envelope).
 - Writers must not HTML-escape JSON (`<`, `>`, `&` are written verbatim).
 
 ## Order
 
 ```
 _meta
+users*               (full exports only; sorted by email)
+api_keys*            (full exports only; by id)
 projects*            (all projects, sorted by slug)
 releases*            (per project in slug order; within a project by release)
 issues*              (per project in slug order; within a project by fingerprint)
@@ -58,6 +61,7 @@ so a dump loads into any database:
 - issues: `(project, fingerprint)`
 - projects: `slug`; symbol files: `(project, kind, release, filename)`;
   alert rules: `(project, type)`; alert channels: `(project, kind, config)`
+- users: `email`; api keys: `key_hash` (global, not per project)
 
 ## `_meta`
 
@@ -74,6 +78,37 @@ so a dump loads into any database:
 
 Required fields are those without `?`. `?` fields may be omitted (NULL).
 Types: `str`, `int`, `float`, `bool`, `json`, `b64`, `ts` (timestamp).
+
+### `users`
+
+```
+email             str    natural key, lowercased
+name              str
+password_hash     str    bcrypt
+created_at        ts
+```
+
+Import: insert; an existing user with that email is left untouched
+(password included). Written by full exports only (`crashcart export`
+without a project), so an instance moved with export / import keeps its
+accounts.
+
+### `api_keys`
+
+```
+name              str
+key_hash          b64    sha256 of the secret; natural key
+prefix            str    the secret's first characters, for display
+created_by?       str    user email
+created_at        ts
+last_used_at?     ts
+revoked_at?       ts
+```
+
+Import: insert; an existing key with that hash is left untouched.
+`created_by` resolves to the user by email (NULL when unknown). Full
+exports only. The secret itself is never in the file — only its hash — so
+existing keys keep working after a move and no new secret is created.
 
 ### `projects`
 
@@ -136,7 +171,7 @@ added.** A missing timestamp → now.
 ```
 project           str    slug
 occurred_at       ts     required
-event_id          str    required; Sentry event_id (32 hex, or a derived "ts-…" id)
+event_id          str    required; 32 hex (the SDK's event_id, or one derived from the body at ingest)
 level             str    fatal error warning info debug
 message           str
 platform?         str
@@ -218,19 +253,25 @@ exists (JSON equality, not string equality).
 
 ## Not exported
 
-Aggregates (`event_stats_hourly`, `issue_stats_hourly`,
-`release_health_daily`), the job queue and upload chunks. Aggregates are
-recomputed after import (`crashcart import` refreshes them); the rest
-expire.
+The statistics rollups (`event_stats_hourly_rolled`,
+`issue_stats_hourly_rolled`, `release_health_hourly_rolled` and their
+dirty keys), the job queue, upload chunks, viewer session cookies
+(`user_sessions`) and the schema version. The rollups are recomputed after
+import (`crashcart import` marks the imported hours dirty and rolls them
+up); the rest expire or belong to the target database.
 
 ## Reader rules
 
 1. Refuse `format` greater than what you support; otherwise proceed.
 2. A line whose `t` you do not know is counted as `skipped` and ignored —
    newer exports load on older readers.
-3. Import is idempotent: importing the same file twice, or onto a live
-   database, changes nothing the second time (except `alert_channels`
-   ordering and any `created_at` filled with *now* on rows that omitted it).
+3. Import is idempotent: importing the same file twice changes nothing
+   the second time (except `alert_channels` ordering and any `created_at`
+   filled with *now* on rows that omitted it). Importing onto a live
+   database **replaces** the listed columns of `projects`, `issues`
+   (counts included), `symbol_files` and `alert_rules` with the file's
+   values; events and sessions are never overwritten; users and API keys
+   are never overwritten.
 4. Report per-table row counts on completion (`{"rows":{"events":123,…}}`).
 5. Fail fast on the first malformed line, reporting its 1-based line number.
    `crashcart import` runs the whole file in one transaction, so a failed

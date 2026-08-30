@@ -43,7 +43,9 @@ createdb crashcart_new                 # (or any empty database)
 DATABASE_URL=… crashcart import < backup.ndjson   # with the new binary
 ```
 
-then point `DATABASE_URL` at the new database and start. A release note
+then point `DATABASE_URL` at the new database and start. A full export
+carries everything — projects, events, symbol files, alert settings, the
+viewer accounts and the API keys (hashed, so existing keys keep working). A release note
 says whether an upgrade changes the schema; most do not. Back up first
 either way if you want to be able to roll back.
 
