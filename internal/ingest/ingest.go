@@ -72,6 +72,16 @@ type Ingester struct {
 	byKey       map[string]cachedProject
 	warned      map[int64]time.Time // last platform-mismatch warning per project
 	quotaWarned map[int64]time.Time // last quota warning per project
+	exhausted   map[int64]exhaustedQuota
+}
+
+// exhaustedQuota remembers that a project's daily quota was hit, so the
+// envelopes that follow are refused before any work is done (the SDKs
+// also stop sending on the rate-limit header, but not every one does).
+// It expires at the next UTC day, or when the quota is changed.
+type exhaustedQuota struct {
+	quota int32
+	until time.Time
 }
 
 func nextUTCDay(t time.Time) time.Time {
@@ -79,12 +89,26 @@ func nextUTCDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, time.UTC)
 }
 
-// checkQuota, inside the ingest transaction, counts n events against the
-// project's UTC day and fails with ErrQuota (rolling everything back) when
-// that crosses the daily quota (0 = unlimited). The count lives in
-// project_usage, so it is exact across replicas. Sessions ride along with
-// events, so a rejected envelope loses its sessions too — acceptable for a
-// project that is being flooded.
+// quotaExhausted reports whether the project's quota is known to be used
+// up for the day (see exhaustedQuota).
+func (in *Ingester) quotaExhausted(p sqlc.Project, now time.Time) bool {
+	if p.DailyQuota <= 0 {
+		return false
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	e, ok := in.exhausted[p.ID]
+	return ok && e.quota == p.DailyQuota && now.Before(e.until)
+}
+
+// checkQuota is the last statement of the ingest transaction: it counts n
+// events against the project's UTC day and fails with ErrQuota (rolling
+// everything back) when that crosses the daily quota (0 = unlimited). The
+// count lives in project_usage, so it is exact across replicas; being
+// last, the row lock — the one row every envelope of a project touches —
+// is held only until the commit, not across the whole write. Sessions
+// ride along with events, so a rejected envelope loses its sessions too —
+// acceptable for a project that is being flooded.
 func (in *Ingester) checkQuota(ctx context.Context, q *sqlc.Queries, p sqlc.Project, n int, now time.Time) error {
 	if p.DailyQuota <= 0 || n == 0 {
 		return nil
@@ -97,6 +121,10 @@ func (in *Ingester) checkQuota(ctx context.Context, q *sqlc.Queries, p sqlc.Proj
 		return nil
 	}
 	in.mu.Lock()
+	if in.exhausted == nil {
+		in.exhausted = map[int64]exhaustedQuota{}
+	}
+	in.exhausted[p.ID] = exhaustedQuota{quota: p.DailyQuota, until: nextUTCDay(now)}
 	warn := now.Sub(in.quotaWarned[p.ID]) > time.Minute
 	if warn {
 		if in.quotaWarned == nil {
@@ -325,6 +353,9 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	}
 
 	res.Invalid = env.Invalid
+	if len(env.Events) > 0 && in.quotaExhausted(p, now) {
+		return res, ErrQuota
+	}
 	expected := ""
 	if p.Platform != nil {
 		expected = *p.Platform
@@ -366,12 +397,10 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	}
 
 	// 2. One transaction: drop resends, fold by fingerprint, upsert issues,
-	//    decide sampling, write events, sessions, jobs.
+	//    decide sampling, write events, sessions, jobs; the quota bump
+	//    last, so its per-project row lock is held only until the commit.
 	var jobs []sqlc.EnqueueJobParams
 	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		if err := in.checkQuota(ctx, q, p, len(env.Events), now); err != nil {
-			return err
-		}
 		// An envelope the SDK resends (after a timeout, or from its crash
 		// cache) carries event_ids already stored: those must not be
 		// counted twice.
@@ -621,8 +650,11 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			}
 		}
 		res.Jobs = len(jobs)
-		return nil
+		return in.checkQuota(ctx, q, p, len(env.Events), now)
 	})
+	if err != nil {
+		res = Result{Received: res.Received, Invalid: res.Invalid}
+	}
 	return res, err
 }
 

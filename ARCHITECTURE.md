@@ -37,20 +37,22 @@ resend still dedupes. Every per-project table references `projects` with
 `ON DELETE CASCADE`: deleting a project deletes its data. Events are addressed by `event_id` everywhere (URLs,
 API, jobs); list pagination is a keyset cursor `(occurred_at, event_id)`.
 
-**Ingest is one transaction, no hot rows.** Per envelope: quota bump →
-`releases` upsert (a no-op unless a new release / platform appears) → fold
-events by fingerprint → one `issues` upsert per distinct fingerprint →
-sampling decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events
-(payload gzipped) → sessions → dirty-hour marks → jobs. No aggregate row
-is written at ingest.
+**Ingest is one transaction, no hot rows.** Per envelope: `releases`
+upsert (a no-op unless a new release / platform appears) → fold events by
+fingerprint → one `issues` upsert per distinct fingerprint → sampling
+decision → pipelined `INSERT … ON CONFLICT DO NOTHING` for events (payload
+gzipped) → sessions → dirty-hour marks → jobs → quota bump. No aggregate
+row is written at ingest. The quota row (`project_usage`, one per project
+and day) is the only row every envelope of a project touches, so it is
+bumped last: its lock is held from that statement to the commit, and
+envelopes of one project overlap for the rest of the write.
 
 **Statistics are rollups with dirty keys.** `event_stats_hourly_rolled`,
 `issue_stats_hourly_rolled` and `release_health_hourly_rolled` hold one
 row per project, hour and dimension. Every write to `events` / `sessions`
 marks its `(project, hour)` in `event_stats_dirty` / `session_stats_dirty`
 in the same transaction (one small upsert per hour touched; the hot row is
-per project and hour, and ingest already serializes per project on the
-quota row). The views the queries read — `event_stats_hourly`,
+per project and hour, taken right before the quota row). The views the queries read — `event_stats_hourly`,
 `issue_stats_hourly`, `release_health_hourly` — take the rollup for clean
 hours and aggregate dirty hours live from the raw table, so they are exact
 at every instant: an event that arrives days after it occurred (a crash
@@ -166,8 +168,12 @@ record it in `issues.status_by`.
 **Rate limiting is in memory, the daily quota is in Postgres.** Rate
 limits are fixed 60 s windows per credential, per process; with several
 replicas each enforces `RATE_LIMIT` on its own share. The daily quota is
-exact: the ingest transaction bumps `project_usage (project_id, day)` and
-rolls back when the total crosses `projects.daily_quota`.
+exact: the ingest transaction bumps `project_usage (project_id, day)` as
+its last statement and rolls back when the total crosses
+`projects.daily_quota`. The process then remembers that the project is
+exhausted until the next UTC day (or until its quota is changed) and
+refuses its envelopes before doing any work; the SDKs get the
+`X-Sentry-Rate-Limits` header and stop sending on their own.
 
 **Viewer is server-rendered.** templ + htmx; all state in the URL. Issue-
 centric: overview → issues → issue (stack, breakdown, events) → event;

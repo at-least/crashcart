@@ -165,10 +165,27 @@ func TestIngestLifecycle(t *testing.T) {
 	p.Platform = nil
 
 	// Daily quota: the envelope that would cross it is rejected whole.
-	p.DailyQuota = 4 // 4 stored + sampled-out events are already counted today
+	day := now.Truncate(24 * time.Hour)
+	usedBefore, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day})
+	if usedBefore == 0 {
+		t.Fatal("no usage counted")
+	}
+	p.DailyQuota = 4 // more than that is already counted today
 	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 8)), now), now)
 	if !errors.Is(err, ErrQuota) || res.Stored != 0 {
 		t.Fatalf("quota: res=%+v err=%v", res, err)
+	}
+	// The rollback left the day's count where it was, and the next
+	// envelope is refused usedBefore any work (the count does not move).
+	usedAfter, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day})
+	if usedAfter != usedBefore {
+		t.Fatalf("usage usedAfter rejected envelope = %d, want %d", usedAfter, usedBefore)
+	}
+	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 8)), now), now); !errors.Is(err, ErrQuota) {
+		t.Fatalf("exhausted quota: %v", err)
+	}
+	if usedAfter, _ = st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); usedAfter != usedBefore {
+		t.Fatalf("usage usedAfter short-circuit = %d, want %d", usedAfter, usedBefore)
 	}
 	p.DailyQuota = 0
 	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 9)), now), now); err != nil {
