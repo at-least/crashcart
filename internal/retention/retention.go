@@ -12,8 +12,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/metrics"
-
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/config"
@@ -190,7 +188,6 @@ func dropExpiredPartitions(ctx context.Context, st *store.Store, cfg config.Conf
 			if _, err := st.Pool.Exec(ctx, "DROP TABLE IF EXISTS "+p.Name); err != nil {
 				return fmt.Errorf("drop %s: %w", p.Name, err)
 			}
-			PartitionsDropped.Inc(t.table)
 			log.Info("retention: partition dropped", "table", p.Name)
 		}
 		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("DELETE FROM %s_default WHERE %s < $1", t.table, t.column), cutoff); err != nil {
@@ -278,19 +275,10 @@ func ExpireIssues(ctx context.Context, st *store.Store, cfg config.Config, now t
 	if err := st.Pool.QueryRow(ctx, expireIssuesSQL, resolvedBefore, staleBefore).Scan(&resolved, &stale); err != nil {
 		return 0, err
 	}
-	IssuesExpired.Add(resolved, "resolved")
-	IssuesExpired.Add(stale, "stale")
 	return resolved + stale, nil
 }
 
 // ── rollup ─────────────────────────────────────────────────────────────
-
-// Metrics: what the sweeps and the rollup did.
-var (
-	PartitionsDropped = metrics.NewCounter("crashcart_retention_partitions_dropped_total", "Weekly partitions dropped by retention, by table.", "table")
-	IssuesExpired     = metrics.NewCounter("crashcart_retention_issues_expired_total", "Issues deleted by retention, by reason.", "reason")
-	RollupHours       = metrics.NewCounter("crashcart_rollup_hours_total", "Dirty hours handled by the rollup: recomputed from raw rows, or expired (older than retention, cleared as is).", "outcome")
-)
 
 // RollupBatch bounds the dirty hours one Rollup pass recomputes.
 const RollupBatch = 500
@@ -366,8 +354,6 @@ func rollup(ctx context.Context, st *store.Store, dirtyTable string, cutoff time
 			buckets = append(buckets, k.bucket)
 		}
 	}
-	RollupHours.Add(int64(len(pids)), "recomputed")
-	RollupHours.Add(int64(len(keys)-len(pids)), "expired")
 	if len(pids) > 0 {
 		// The batch's time range as constants, so the planner prunes the
 		// raw table to those partitions whatever join it picks.

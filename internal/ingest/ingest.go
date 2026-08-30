@@ -37,7 +37,6 @@ import (
 	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
@@ -320,39 +319,17 @@ func firstEventID(env sentry.Envelope) string {
 	return ""
 }
 
-// Metrics of the write path. Envelopes by result; events by what became
-// of them (stored, sampled out, resent duplicate, unparseable); sessions
-// written.
-var (
-	envelopesTotal = metrics.NewCounter("crashcart_ingest_envelopes_total", "Envelopes received, by result.", "result")
-	eventsTotal    = metrics.NewCounter("crashcart_ingest_events_total", "Events in accepted envelopes, by outcome.", "outcome")
-	sessionsTotal  = metrics.NewCounter("crashcart_ingest_sessions_total", "Session rows written.")
-	// Attachments: stored with their event, or unstored — the event was
-	// sampled out, a resend, or not in the envelope. (Over-limit ones are
-	// dropped by the parser and reported in the envelope's dropped count.)
-	attachmentsTotal = metrics.NewCounter("crashcart_ingest_attachments_total", "Attachment items, by outcome (stored, unstored).", "outcome")
-)
-
 func (in *Ingester) ok(w http.ResponseWriter, res Result, id string) {
-	envelopesTotal.Inc("ok")
-	eventsTotal.Add(int64(res.Stored), "stored")
-	eventsTotal.Add(int64(res.Sampled), "sampled")
-	eventsTotal.Add(int64(res.Duplicates), "duplicate")
-	eventsTotal.Add(int64(res.Invalid), "invalid")
-	sessionsTotal.Add(int64(res.Sessions))
-	attachmentsTotal.Add(int64(res.Attachments), "stored")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions, "attachments": res.Attachments, "invalid": res.Invalid, "mismatched": res.Mismatched})
 }
 
 func (in *Ingester) fail(w http.ResponseWriter, err error) {
 	if errors.Is(err, errUnauthorized) {
-		envelopesTotal.Inc("unauthorized")
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
 	if errors.Is(err, ErrQuota) {
-		envelopesTotal.Inc("quota")
 		// Sentry's rate-limit header: SDKs stop sending until the next UTC day.
 		secs := int(time.Until(nextUTCDay(time.Now())).Seconds()) + 1
 		w.Header().Set("X-Sentry-Rate-Limits", strconv.Itoa(secs)+":error;transaction;session:project:quota")
@@ -360,7 +337,6 @@ func (in *Ingester) fail(w http.ResponseWriter, err error) {
 		http.Error(w, `{"error":"daily quota exceeded"}`, http.StatusTooManyRequests)
 		return
 	}
-	envelopesTotal.Inc("error")
 	in.Log.Error("ingest", "err", err)
 	http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
 }
@@ -381,7 +357,6 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	var res Result
 	res.Received = len(env.Events)
 	if len(env.Events) == 0 && len(env.Sessions) == 0 {
-		attachmentsTotal.Add(int64(len(env.Attachments)), "unstored") // nothing to attach them to
 		return res, nil
 	}
 
@@ -669,9 +644,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 					break
 				}
 			}
-			if target == nil {
-				attachmentsTotal.Add(int64(len(env.Attachments)), "unstored")
-			} else {
+			if target != nil {
 				atts := make([]store.AttachmentInsert, 0, len(env.Attachments))
 				for i, a := range env.Attachments {
 					atts = append(atts, store.AttachmentInsert{

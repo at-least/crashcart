@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/jackc/pgx/v5"
@@ -45,11 +44,6 @@ const (
 	// first; the whole retention window is eligible).
 	ReleaseMax = 2000
 )
-
-// SymbolicatedEvents counts symbolicate jobs by what happened to the
-// event: resolved in place, moved to another issue (the fingerprint
-// changed), left unresolved (no mapping), or failed (retried).
-var SymbolicatedEvents = metrics.NewCounter("crashcart_symbolicate_events_total", "Symbolicate jobs by outcome (resolved, moved, unresolved, error).", "outcome")
 
 // Service resolves frames for a project: in-process ProGuard / source-map
 // mappings (cached per project+release) and dSYM through the sidecar.
@@ -406,11 +400,9 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 	}
 	frames, ok, err := s.resolve(ctx, projectID, ev, true)
 	if err != nil {
-		SymbolicatedEvents.Inc("error")
 		return fmt.Errorf("dsym: %w", err)
 	}
 	if !ok {
-		SymbolicatedEvents.Inc("unresolved")
 		return nil
 	}
 
@@ -432,10 +424,8 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 			return err
 		}
 		if newFP == oldFP || newFP == "" {
-			SymbolicatedEvents.Inc("resolved")
 			return nil
 		}
-		SymbolicatedEvents.Inc("moved")
 		// The event moved between issues: its hour's per-issue counts
 		// are recomputed.
 		if err := q.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: projectID, Buckets: []time.Time{row.OccurredAt.UTC().Truncate(time.Hour)}}); err != nil {

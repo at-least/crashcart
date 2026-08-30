@@ -147,7 +147,6 @@ func TestListenerReconnects(t *testing.T) {
 		}
 	}
 	wait("before the disconnect")
-	before := store.ListenerReconnects.Value()
 	// Kill the listening backend: its last statement was the LISTEN.
 	var killed int
 	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT pg_terminate_backend(pid) FROM pg_stat_activity
@@ -155,9 +154,6 @@ func TestListenerReconnects(t *testing.T) {
 		t.Fatalf("terminate listener backend: killed=%d err=%v", killed, err)
 	}
 	wait("after the reconnect")
-	if got := store.ListenerReconnects.Value(); got != before+1 {
-		t.Errorf("reconnects = %d, want %d", got, before+1)
-	}
 	// Drain what the retries queued so the count above stays exact.
 	for {
 		select {

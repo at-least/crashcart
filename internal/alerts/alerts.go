@@ -24,7 +24,6 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/metrics"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
@@ -46,17 +45,6 @@ const (
 	SpikeFactor       = 3
 	defaultCooldown   = 60
 )
-
-// IssuesUnignored counts ignored issues put back to unresolved by
-// CheckIgnored, by the condition that was met.
-var IssuesUnignored = metrics.NewCounter("crashcart_issues_unignored_total", "Ignored issues put back to unresolved, by reason (time, count, escalating).", "reason")
-
-// AlertsTotal counts deliveries by alert type, channel kind and outcome.
-var AlertsTotal = metrics.NewCounter("crashcart_alerts_total", "Alert deliveries by type, channel kind and outcome (sent, failed).", "type", "kind", "outcome")
-
-// AlertsSuppressed counts alerts not sent because the rule was cooling
-// down or disabled.
-var AlertsSuppressed = metrics.NewCounter("crashcart_alerts_suppressed_total", "Alerts not sent: the rule was disabled or cooling down.", "type")
 
 // TelegramAPI is the Telegram Bot API base; tests override it.
 var TelegramAPI = "https://api.telegram.org"
@@ -208,7 +196,6 @@ func (n *Notifier) CheckIgnored(ctx context.Context) error {
 	}
 	for _, d := range due {
 		n.log().Info("issue unignored", "project", d.ProjectID, "fingerprint", d.Fingerprint, "reason", d.Reason)
-		IssuesUnignored.Inc(d.Reason)
 	}
 	rows, err := n.Store.EscalationInputs(ctx, time.Now().UTC().Add(-time.Hour))
 	if err != nil {
@@ -228,7 +215,6 @@ func (n *Notifier) CheckIgnored(ctx context.Context) error {
 			continue
 		}
 		n.log().Info("issue escalating", "project", issue.ProjectID, "fingerprint", issue.Fingerprint, "recent", in.Recent, "baseline", in.Baseline)
-		IssuesUnignored.Inc("escalating")
 		if err := n.escalate(ctx, issue, in.Recent, in.Baseline); err != nil {
 			errs = append(errs, fmt.Errorf("issue %s: %w", issue.Fingerprint, err))
 		}
@@ -269,7 +255,6 @@ func (n *Notifier) link(slug, path string) string {
 func (n *Notifier) deliver(ctx context.Context, projectID int64, typ sqlc.AlertType, build func(previous *time.Time) Payload) error {
 	previous, err := n.Store.ClaimAlertRule(ctx, sqlc.ClaimAlertRuleParams{ProjectID: projectID, Type: typ})
 	if errors.Is(err, pgx.ErrNoRows) {
-		AlertsSuppressed.Inc(string(typ))
 		return nil // disabled, cooling down, or no rule row
 	}
 	if err != nil {
@@ -292,16 +277,10 @@ func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload)
 	sent := 0
 	for _, ch := range channels {
 		if err := n.send(ctx, ch, payload); err != nil {
-			outcome := "failed"
-			if errors.Is(err, ErrBlockedURL) {
-				outcome = "blocked"
-			}
 			n.log().Error("alert: channel failed", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "err", err)
-			AlertsTotal.Inc(payload.Type, string(ch.Kind), outcome)
 			continue
 		}
 		sent++
-		AlertsTotal.Inc(payload.Type, string(ch.Kind), "sent")
 		n.log().Info("alert: sent", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "fingerprint", payload.Fingerprint)
 	}
 	return sent

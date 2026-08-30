@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/metrics"
-
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
@@ -33,10 +31,6 @@ type Worker struct {
 	Batch    int32         // jobs per claim (default 25)
 	Lease    time.Duration // how long a claimed job stays ours; the handler's ctx deadline (default 10 min)
 }
-
-// JobsTotal counts finished handler runs by kind and outcome (ok, retry,
-// dead = the last allowed attempt failed).
-var JobsTotal = metrics.NewCounter("crashcart_jobs_total", "Job runs by kind and outcome.", "kind", "outcome")
 
 // maxAttempts mirrors the jobs_pending / ClaimJobs bound (attempts < 8).
 const maxAttempts = 8

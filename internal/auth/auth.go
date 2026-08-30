@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/crashcartapp/crashcart/internal/metrics"
 )
 
 // Chain applies middlewares right-to-left (the first listed runs outermost).
@@ -66,12 +64,9 @@ func (l *limiter) bump(key string, now int64) (n int, window int64) {
 	return l.counts[key], window
 }
 
-// RateLimited counts 429s by scope (ingest, api, web).
-var RateLimited = metrics.NewCounter("crashcart_rate_limited_total", "Requests refused with 429 by the in-memory rate limiter, by scope.", "scope")
-
 // RateLimit enforces limit requests per fixed 60 s window per credential
 // (in memory, per process); limit <= 0 disables. scope names the limiter
-// in metrics.
+// in log lines.
 func RateLimit(scope string, limit int, cred Credential) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if limit <= 0 {
@@ -94,7 +89,6 @@ func RateLimit(scope string, limit int, cred Credential) func(http.Handler) http
 			h.Set("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
 			h.Set("X-RateLimit-Reset", strconv.FormatInt(window+60, 10))
 			if int(n) > limit {
-				RateLimited.Inc(scope)
 				h.Set("Retry-After", strconv.FormatInt(window+60-now, 10))
 				http.Error(w, `{"error":"rate limited"}`, http.StatusTooManyRequests)
 				return

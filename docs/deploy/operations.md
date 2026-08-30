@@ -65,30 +65,6 @@ crashcart alerts        check for unhandled-error spikes  (every 10 minutes)
 `GET /health` returns `200` when CrashCart and its database are up, `503`
 otherwise. Use it for container and load-balancer health checks.
 
-## Metrics
-
-`GET /metrics` serves Prometheus text; it takes an API key like the JSON
-API (`Authorization: Bearer <key>` — in Prometheus, `authorization:
-credentials`) and counts against `RATE_LIMIT`. Counters are per process
-(sum them across replicas); the gauges read the database and are the same
-everywhere.
-
-| Metric | What to watch |
-|---|---|
-| `crashcart_ingest_envelopes_total{result}` | `quota` climbing: a project hit its daily quota; `unauthorized`: a wrong DSN; `error`: look at the log |
-| `crashcart_ingest_events_total{outcome}` | `stored` vs `sampled` is the sampling ratio in effect; `duplicate` are resends |
-| `crashcart_ingest_sessions_total` | release-health input volume |
-| `crashcart_rate_limited_total{scope}` | 429s by `ingest`, `api`, `web`; steady growth on `ingest` means `RATE_LIMIT` is too low for a project |
-| `crashcart_jobs_total{kind,outcome}`, `crashcart_jobs_pending`, `crashcart_jobs_dead` | `retry` / `dead` rising: the sidecar or a webhook is failing; a growing `pending` gauge means the workers do not keep up |
-| `crashcart_symbolicate_events_total{outcome}` | `moved` is events regrouped after symbolication; `unresolved` means dSYMs are missing |
-| `crashcart_alerts_total{type,kind,outcome}`, `crashcart_alerts_suppressed_total{type}` | `failed`: a channel is down; `suppressed`: alerts folded by the cooldown |
-| `crashcart_stats_dirty_hours` | the rollup backlog; stays near the number of projects normally, grows after an import and drains at 500 hours/minute |
-| `crashcart_rollup_hours_total{outcome}` | `expired` are dirty hours older than retention, cleared without recomputing |
-| `crashcart_retention_partitions_dropped_total{table}`, `crashcart_retention_issues_expired_total{reason}` | what the hourly sweep removed |
-| `crashcart_issues` | issue rows; the sampling story assumes this grows slowly |
-| `crashcart_listener_reconnects_total` | LISTEN connection losses; steady growth points at a proxy or NAT dropping idle sockets |
-| `crashcart_web_login_failures_total`, `crashcart_web_csrf_rejected_total` | password guessing; cross-site form posts |
-
 ## Rate limiting
 
 Each DSN key and each API key may make `RATE_LIMIT` requests per minute

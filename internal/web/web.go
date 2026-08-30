@@ -27,8 +27,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/crashcartapp/crashcart/internal/metrics"
-
 	"github.com/a-h/templ"
 	"github.com/jackc/pgx/v5"
 
@@ -104,10 +102,6 @@ func (w *Web) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /favicon.ico", func(rw http.ResponseWriter, _ *http.Request) { rw.WriteHeader(http.StatusNoContent) })
 }
 
-// CSRFRejected counts mutations refused for missing the HX-Request header
-// or for coming from another origin.
-var CSRFRejected = metrics.NewCounter("crashcart_web_csrf_rejected_total", "HTML mutations refused as cross-site (no HX-Request header, or a foreign Origin).")
-
 // sameOrigin guards the two public form posts (sign-in, first-user
 // setup) that cannot carry the HX-Request header: a browser announces a
 // cross-site post in Sec-Fetch-Site and Origin, and those are refused.
@@ -130,7 +124,6 @@ func sameOrigin(next http.HandlerFunc) http.HandlerFunc {
 
 // refuseCrossSite is the one 403 (and the one metric) of the CSRF guards.
 func refuseCrossSite(rw http.ResponseWriter, msg string) {
-	CSRFRejected.Inc()
 	http.Error(rw, msg, http.StatusForbidden)
 }
 

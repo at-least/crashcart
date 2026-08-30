@@ -351,9 +351,6 @@ func TestWebhookClientBlocksLoopback(t *testing.T) {
 	if err := n.send(context.Background(), sqlc.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"}); !errors.Is(err, ErrBlockedURL) {
 		t.Fatalf("loopback with allowPrivate: %v", err)
 	}
-	if AlertsTotal.Value("x", "webhook", "blocked") < 0 {
-		t.Fatal("metric registered")
-	}
 }
 
 // TestCheckIgnored: an ignored issue comes back when its time passes, its
@@ -459,13 +456,8 @@ func TestCheckIgnored(t *testing.T) {
 	if txt := TelegramText(got); !strings.Contains(txt, "Escalating in Shop") || !strings.Contains(txt, "12 in the last hour") {
 		t.Errorf("telegram text = %q", txt)
 	}
-	// Nothing left to do; the counters saw each reason.
+	// Nothing left to do.
 	if err := n.CheckIgnored(ctx); err != nil || s.count() != 1 {
 		t.Fatalf("second run: err=%v alerts=%d", err, s.count())
-	}
-	for _, reason := range []string{"time", "count", "escalating"} {
-		if IssuesUnignored.Value(reason) < 1 {
-			t.Errorf("metric %s = %d", reason, IssuesUnignored.Value(reason))
-		}
 	}
 }

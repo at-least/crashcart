@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/metrics"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -82,7 +80,6 @@ func (l *Listener) Run(ctx context.Context) {
 		if time.Since(started) > time.Minute {
 			backoff = time.Second // it was healthy for a while: not a reconnect storm
 		}
-		ListenerReconnects.Inc()
 		l.log().Warn("notify: listener disconnected, reconnecting", "err", err, "in", backoff)
 		select {
 		case <-ctx.Done():
@@ -125,10 +122,6 @@ func (l *Listener) listen(ctx context.Context) error {
 		l.deliver(n.Channel, n.Payload)
 	}
 }
-
-// ListenerReconnects counts LISTEN connection losses (a rising count
-// means something between the process and Postgres drops idle sockets).
-var ListenerReconnects = metrics.NewCounter("crashcart_listener_reconnects_total", "LISTEN connection losses followed by a reconnect.")
 
 // ListenKeepalive is how long WaitForNotification blocks before the
 // connection is pinged.

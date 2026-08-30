@@ -326,11 +326,6 @@ POST     /api/0/projects/{org}/{project}/files/proguard-artifact-releases   Grad
 auth with an API key (`SENTRY_AUTH_TOKEN`). The chunk-upload URL returned
 in the options response is built from `PUBLIC_URL`.
 
-## Metrics
-
-`GET /metrics` — Prometheus text format, API key required. Metric names
-and what they mean: [Operations → Metrics](/deploy/operations#metrics).
-
 ## Health
 
 ```

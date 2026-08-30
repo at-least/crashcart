@@ -184,18 +184,4 @@ func TestEndToEnd(t *testing.T) {
 	if res, _ := do("GET", "/health", nil, nil); res.StatusCode != 200 {
 		t.Errorf("health → %d", res.StatusCode)
 	}
-	// Metrics: behind the API key, Prometheus text, with the counters the
-	// requests above moved.
-	if res, _ := do("GET", "/metrics", nil, nil); res.StatusCode != 401 {
-		t.Errorf("metrics without key → %d", res.StatusCode)
-	}
-	res, body = do("GET", "/metrics", nil, auth)
-	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/plain") {
-		t.Fatalf("metrics → %d %s", res.StatusCode, res.Header.Get("Content-Type"))
-	}
-	for _, want := range []string{`crashcart_ingest_envelopes_total{result="ok"} `, `crashcart_ingest_events_total{outcome="stored"} `, "crashcart_jobs_pending ", "crashcart_stats_dirty_hours ", "crashcart_issues "} {
-		if !strings.Contains(body, want) {
-			t.Errorf("metrics missing %q", want)
-		}
-	}
 }
