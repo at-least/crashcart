@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/crashcartapp/crashcart/internal/metrics"
 	"io"
 	"log/slog"
 	"net/http"
@@ -37,6 +38,13 @@ const (
 	SpikeFactor     = 3
 	defaultCooldown = 60
 )
+
+// AlertsTotal counts deliveries by alert type, channel kind and outcome.
+var AlertsTotal = metrics.NewCounter("crashcart_alerts_total", "Alert deliveries by type, channel kind and outcome (sent, failed).", "type", "kind", "outcome")
+
+// AlertsSuppressed counts alerts not sent because the rule was cooling
+// down or disabled.
+var AlertsSuppressed = metrics.NewCounter("crashcart_alerts_suppressed_total", "Alerts not sent: the rule was disabled or cooling down.", "type")
 
 // TelegramAPI is the Telegram Bot API base; tests override it.
 var TelegramAPI = "https://api.telegram.org"
@@ -102,6 +110,9 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 	}
 	previous, claimed, err := n.claim(ctx, projectID, sqlc.AlertType(typ))
 	if err != nil || !claimed {
+		if err == nil {
+			AlertsSuppressed.Inc(typ)
+		}
 		return err // disabled, cooling down, or no rule row
 	}
 	payload := Payload{
@@ -157,6 +168,9 @@ func (n *Notifier) spike(ctx context.Context, projectID, recent, baseline int64)
 	}
 	previous, claimed, err := n.claim(ctx, projectID, TypeCrashSpike)
 	if err != nil || !claimed {
+		if err == nil {
+			AlertsSuppressed.Inc(TypeCrashSpike)
+		}
 		return err
 	}
 	p, err := n.Store.GetProjectByID(ctx, projectID)
@@ -217,9 +231,11 @@ func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload)
 	sent := 0
 	for _, ch := range channels {
 		if err := n.send(ctx, ch, payload); err != nil {
+			AlertsTotal.Inc(payload.Type, string(ch.Kind), "failed")
 			n.log().Error("alert: channel failed", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "err", err)
 			continue
 		}
+		AlertsTotal.Inc(payload.Type, string(ch.Kind), "sent")
 		sent++
 		n.log().Info("alert: sent", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "fingerprint", payload.Fingerprint)
 	}

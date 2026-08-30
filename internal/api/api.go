@@ -40,7 +40,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	access := &auth.Access{Store: h.Store}
 	// Rate limit before the key check: a flood of bad keys must not cost a
 	// database lookup per request.
-	mws := []func(http.Handler) http.Handler{auth.RateLimit(h.Cfg.RateLimit, auth.BearerCredential), access.APIKey}
+	mws := []func(http.Handler) http.Handler{auth.RateLimit("api", h.Cfg.RateLimit, auth.BearerCredential), access.APIKey}
 	if h.Cfg.APICORSOrigin != "" {
 		mws = append([]func(http.Handler) http.Handler{auth.CORS(h.Cfg.APICORSOrigin)}, mws...)
 	}

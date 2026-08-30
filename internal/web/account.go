@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"github.com/crashcartapp/crashcart/internal/metrics"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,6 +42,7 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 	}
 	// The same failure for an unknown email and a wrong password.
 	if err != nil || !auth.CheckPassword(u.PasswordHash, r.PostForm.Get("password")) {
+		LoginFailures.Inc()
 		rw.WriteHeader(http.StatusUnauthorized)
 		w.render(rw, r, withChildren(Layout("Sign in · CrashCart"), Login(next, "Wrong email or password.")))
 		return
@@ -53,6 +55,10 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 	http.SetCookie(rw, c)
 	redirect(rw, r, next)
 }
+
+// LoginFailures counts wrong email / password attempts (brute force shows
+// here before it shows anywhere else).
+var LoginFailures = metrics.NewCounter("crashcart_web_login_failures_total", "Sign-in attempts refused (unknown email or wrong password).")
 
 func (w *Web) logout(rw http.ResponseWriter, r *http.Request) {
 	http.SetCookie(rw, w.access.Logout(r.Context(), r))

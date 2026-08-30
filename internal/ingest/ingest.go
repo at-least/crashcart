@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/crashcartapp/crashcart/internal/metrics"
 	"io"
 	"log/slog"
 	mrand "math/rand/v2"
@@ -166,7 +167,7 @@ func (in *Ingester) Handler() http.Handler {
 	mux.HandleFunc("POST /api/{project}/envelope", in.serveEnvelope)
 	mux.HandleFunc("POST /api/{project}/store/", in.serveStore)
 	mux.HandleFunc("POST /api/{project}/store", in.serveStore)
-	rl := auth.RateLimit(in.Cfg.RateLimit, auth.SentryKey)
+	rl := auth.RateLimit("ingest", in.Cfg.RateLimit, auth.SentryKey)
 	return auth.Chain(mux, auth.CORS(in.Cfg.CORSOrigin), rl)
 }
 
@@ -311,17 +312,34 @@ func firstEventID(env sentry.Envelope) string {
 	return ""
 }
 
+// Metrics of the write path. Envelopes by result; events by what became
+// of them (stored, sampled out, resent duplicate, unparseable); sessions
+// written.
+var (
+	envelopesTotal = metrics.NewCounter("crashcart_ingest_envelopes_total", "Envelopes received, by result.", "result")
+	eventsTotal    = metrics.NewCounter("crashcart_ingest_events_total", "Events in accepted envelopes, by outcome.", "outcome")
+	sessionsTotal  = metrics.NewCounter("crashcart_ingest_sessions_total", "Session rows written.")
+)
+
 func (in *Ingester) ok(w http.ResponseWriter, res Result, id string) {
+	envelopesTotal.Inc("ok")
+	eventsTotal.Add(int64(res.Stored), "stored")
+	eventsTotal.Add(int64(res.Sampled), "sampled")
+	eventsTotal.Add(int64(res.Duplicates), "duplicate")
+	eventsTotal.Add(int64(res.Invalid), "invalid")
+	sessionsTotal.Add(int64(res.Sessions))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions, "invalid": res.Invalid, "mismatched": res.Mismatched})
 }
 
 func (in *Ingester) fail(w http.ResponseWriter, err error) {
 	if errors.Is(err, errUnauthorized) {
+		envelopesTotal.Inc("unauthorized")
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
 	if errors.Is(err, ErrQuota) {
+		envelopesTotal.Inc("quota")
 		// Sentry's rate-limit header: SDKs stop sending until the next UTC day.
 		secs := int(time.Until(nextUTCDay(time.Now())).Seconds()) + 1
 		w.Header().Set("X-Sentry-Rate-Limits", strconv.Itoa(secs)+":error;transaction;session:project:quota")
@@ -329,6 +347,7 @@ func (in *Ingester) fail(w http.ResponseWriter, err error) {
 		http.Error(w, `{"error":"daily quota exceeded"}`, http.StatusTooManyRequests)
 		return
 	}
+	envelopesTotal.Inc("error")
 	in.Log.Error("ingest", "err", err)
 	http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
 }

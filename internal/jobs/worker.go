@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/crashcartapp/crashcart/internal/metrics"
 	"log/slog"
 	"strings"
 	"time"
@@ -31,6 +32,13 @@ type Worker struct {
 	Batch    int32         // jobs per claim (default 25)
 	Lease    time.Duration // how long a claimed job stays ours; the handler's ctx deadline (default 10 min)
 }
+
+// JobsTotal counts finished handler runs by kind and outcome (ok, retry,
+// dead = the last allowed attempt failed).
+var JobsTotal = metrics.NewCounter("crashcart_jobs_total", "Job runs by kind and outcome.", "kind", "outcome")
+
+// maxAttempts mirrors the jobs_pending / ClaimJobs bound (attempts < 8).
+const maxAttempts = 8
 
 const (
 	defaultPoll     = 2 * time.Second
@@ -149,6 +157,7 @@ func (w *Worker) dispatch(ctx context.Context, j sqlc.Job) error {
 	err := w.run(hctx, h, j)
 	cancel()
 	if err == nil {
+		JobsTotal.Inc(string(j.Kind), "ok")
 		return w.Store.DeleteJob(bg, j.ID)
 	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
@@ -156,6 +165,11 @@ func (w *Worker) dispatch(ctx context.Context, j sqlc.Job) error {
 	}
 	msg := truncate(err.Error(), maxErrorChars)
 	delay := Backoff(j.Attempts - 1)
+	if j.Attempts >= maxAttempts {
+		JobsTotal.Inc(string(j.Kind), "dead")
+	} else {
+		JobsTotal.Inc(string(j.Kind), "retry")
+	}
 	w.log().Warn("jobs: failed", "id", j.ID, "kind", j.Kind, "project", j.ProjectID, "attempt", j.Attempts, "retry_in", delay, "err", msg)
 	return w.Store.RetryJob(bg, sqlc.RetryJobParams{ID: j.ID, LastError: &msg, RunAfter: time.Now().Add(delay)})
 }

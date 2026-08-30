@@ -20,6 +20,7 @@ package web
 import (
 	"context"
 	"errors"
+	"github.com/crashcartapp/crashcart/internal/metrics"
 	"io"
 	"log/slog"
 	"net/http"
@@ -49,7 +50,7 @@ type Web struct {
 // Register mounts the HTML routes and /static on mux.
 func (w *Web) Register(mux *http.ServeMux) {
 	w.access = &auth.Access{Store: w.Store}
-	limit := auth.RateLimit(w.Cfg.RateLimit, auth.IPCredential)
+	limit := auth.RateLimit("web", w.Cfg.RateLimit, auth.IPCredential)
 	// Signed-in pages; the sign-in pages themselves are public (rate limited).
 	page := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, w.access.Session, limit) }
 	public := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, limit) }
@@ -93,9 +94,14 @@ func (w *Web) Register(mux *http.ServeMux) {
 
 // requireHX rejects mutations that do not come from htmx (CSRF guard:
 // browsers never add custom headers to cross-site form posts).
+// CSRFRejected counts mutations refused for missing the HX-Request header
+// or for coming from another origin.
+var CSRFRejected = metrics.NewCounter("crashcart_web_csrf_rejected_total", "HTML mutations refused as cross-site (no HX-Request header, or a foreign Origin).")
+
 func requireHX(next http.HandlerFunc) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("HX-Request") != "true" {
+			CSRFRejected.Inc()
 			http.Error(rw, "htmx request required", http.StatusForbidden)
 			return
 		}
