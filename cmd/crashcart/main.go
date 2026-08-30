@@ -116,7 +116,7 @@ func main() {
 		if err := retention.Sweep(ctx, st, cfg, log); err != nil {
 			fatal(log, err)
 		}
-		if err := retention.RollupAll(ctx, st); err != nil {
+		if err := retention.RollupAll(ctx, st, cfg); err != nil {
 			fatal(log, err)
 		}
 	case "alerts":
@@ -134,7 +134,7 @@ func main() {
 		if err := seed.Run(ctx, in, slug); err != nil {
 			fatal(log, err)
 		}
-		if err := retention.RollupAll(ctx, st); err != nil {
+		if err := retention.RollupAll(ctx, st, cfg); err != nil {
 			fatal(log, err)
 		}
 	case "export":
@@ -153,7 +153,7 @@ func main() {
 		if err != nil {
 			fatal(log, err)
 		}
-		if err := retention.RollupAll(ctx, st); err != nil {
+		if err := retention.RollupAll(ctx, st, cfg); err != nil {
 			fatal(log, err)
 		}
 		json.NewEncoder(os.Stderr).Encode(rep)
@@ -250,7 +250,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	// Scheduled work runs on one replica at a time: each tick takes a
 	// Postgres advisory lock and skips when another process holds it.
 	go every(ctx, time.Minute, leader(st, log, store.LeaderRollup, func() {
-		if _, err := retention.Rollup(ctx, st); err != nil {
+		if _, err := retention.Rollup(ctx, st, cfg); err != nil {
 			log.Error("stats rollup", "err", err)
 		}
 	}))

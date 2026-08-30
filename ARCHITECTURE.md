@@ -65,7 +65,10 @@ and deletes each key only if its `gen` is unchanged — a mark that landed
 meanwhile keeps it; no ingest transaction ever waits on the rollup. The
 current hour stays dirty by construction and is always computed live.
 The rollups keep 400 days, longer than the raw rows, and import / seed
-just mark what they wrote. The chart queries read
+just mark what they wrote; a dirty hour older than `RETENTION_DAYS` is
+cleared without recomputing — its raw rows are gone (or a lone event
+with a clock far in the past is all there is), and the rolled row is the
+record. The chart queries read
 `crashcart_event_stats(project, from, to, width)` — an inlined SQL function
 over the hourly view — fold into buckets of any width (`crashcart_bucket`),
 gap-fill (`crashcart_buckets`), rank the top releases and fold the rest

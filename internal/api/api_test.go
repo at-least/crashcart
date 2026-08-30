@@ -143,7 +143,7 @@ func (e *env) seed(p sqlc.Project) {
 	}
 	// Roll the past hours up, so the stats are read from the rollup tables
 	// (the views would compute them live otherwise — same numbers).
-	if err := retention.RollupAll(context.Background(), e.in.Store); err != nil {
+	if err := retention.RollupAll(context.Background(), e.in.Store, config.Config{}); err != nil {
 		e.t.Fatal(err)
 	}
 }

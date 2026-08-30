@@ -255,20 +255,27 @@ const RollupBatch = 500
 // keys with their gen (no lock), recompute in one transaction (locks only
 // rollup rows), then delete each key only if its gen is still what was
 // read — a mark that landed meanwhile keeps the key for the next pass.
-func Rollup(ctx context.Context, st *store.Store) (int, error) {
-	n, err := rollup(ctx, st, "event_stats_dirty", rollupEvents)
+//
+// An hour older than RETENTION_DAYS is never recomputed: its raw rows are
+// gone (or an event that arrived with a clock far in the past is the only
+// one, and is about to be swept), and the rolled row — which outlives the
+// raw rows by design — is the only record of it. Such a key is just
+// cleared.
+func Rollup(ctx context.Context, st *store.Store, cfg config.Config) (int, error) {
+	cutoff := time.Now().Add(-time.Duration(days(cfg)) * 24 * time.Hour).Truncate(time.Hour)
+	n, err := rollup(ctx, st, "event_stats_dirty", cutoff, rollupEvents)
 	if err != nil {
 		return n, err
 	}
-	m, err := rollup(ctx, st, "session_stats_dirty", rollupSessions)
+	m, err := rollup(ctx, st, "session_stats_dirty", cutoff, rollupSessions)
 	return n + m, err
 }
 
 // RollupAll runs Rollup until nothing but the current hour is dirty
 // (after an import or seed).
-func RollupAll(ctx context.Context, st *store.Store) error {
+func RollupAll(ctx context.Context, st *store.Store, cfg config.Config) error {
 	for {
-		n, err := Rollup(ctx, st)
+		n, err := Rollup(ctx, st, cfg)
 		if err != nil || n == 0 {
 			return err
 		}
@@ -281,7 +288,7 @@ type dirtyKey struct {
 	gen     int64
 }
 
-func rollup(ctx context.Context, st *store.Store, dirtyTable string, recompute func(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time) error) (int, error) {
+func rollup(ctx context.Context, st *store.Store, dirtyTable string, cutoff time.Time, recompute func(ctx context.Context, tx pgx.Tx, pids []int64, buckets []time.Time) error) (int, error) {
 	rows, err := st.Pool.Query(ctx, fmt.Sprintf(`SELECT project_id, bucket, gen FROM %s
 		WHERE bucket < date_trunc('hour', now()) ORDER BY bucket LIMIT $1`, dirtyTable), RollupBatch)
 	if err != nil {
@@ -295,17 +302,25 @@ func rollup(ctx context.Context, st *store.Store, dirtyTable string, recompute f
 	if err != nil || len(keys) == 0 {
 		return 0, err
 	}
-	pids := make([]int64, len(keys))
-	buckets := make([]time.Time, len(keys))
-	gens := make([]int64, len(keys))
+	var pids []int64
+	var buckets []time.Time
+	allP := make([]int64, len(keys))
+	allB := make([]time.Time, len(keys))
+	allG := make([]int64, len(keys))
 	for i, k := range keys {
-		pids[i], buckets[i], gens[i] = k.project, k.bucket, k.gen
+		allP[i], allB[i], allG[i] = k.project, k.bucket, k.gen
+		if !k.bucket.Before(cutoff) {
+			pids = append(pids, k.project)
+			buckets = append(buckets, k.bucket)
+		}
 	}
-	if err := pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error { return recompute(ctx, tx, pids, buckets) }); err != nil {
-		return 0, fmt.Errorf("rollup %s: %w", dirtyTable, err)
+	if len(pids) > 0 {
+		if err := pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error { return recompute(ctx, tx, pids, buckets) }); err != nil {
+			return 0, fmt.Errorf("rollup %s: %w", dirtyTable, err)
+		}
 	}
 	if _, err := st.Pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s d USING unnest($1::bigint[], $2::timestamptz[], $3::bigint[]) AS k(project_id, bucket, gen)
-		WHERE d.project_id = k.project_id AND d.bucket = k.bucket AND d.gen = k.gen`, dirtyTable), pids, buckets, gens); err != nil {
+		WHERE d.project_id = k.project_id AND d.bucket = k.bucket AND d.gen = k.gen`, dirtyTable), allP, allB, allG); err != nil {
 		return 0, err
 	}
 	return len(keys), nil

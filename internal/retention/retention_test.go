@@ -142,7 +142,7 @@ func TestRollup(t *testing.T) {
 		t.Fatalf("live totals = %+v", r)
 	}
 	// One pass rolls the past hour up and leaves the current hour dirty.
-	n, err := Rollup(ctx, st)
+	n, err := Rollup(ctx, st, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,14 +179,14 @@ func TestRollup(t *testing.T) {
 	if r := totals(); r.Events != 4 || r.Crashes != 3 {
 		t.Fatalf("live totals after late event = %+v", r)
 	}
-	if err := RollupAll(ctx, st); err != nil {
+	if err := RollupAll(ctx, st, config.Config{}); err != nil {
 		t.Fatal(err)
 	}
 	if r := totals(); r.Events != 4 || r.Crashes != 3 {
 		t.Fatalf("totals after second rollup = %+v", r)
 	}
 	// Nothing left but the current hour.
-	if n, _ := Rollup(ctx, st); n != 0 {
+	if n, _ := Rollup(ctx, st, config.Config{}); n != 0 {
 		t.Fatalf("third pass rolled %d keys", n)
 	}
 
@@ -199,7 +199,7 @@ func TestRollup(t *testing.T) {
 	if err := st.MarkSessionStatsDirty(ctx, sqlc.MarkSessionStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{sat.Truncate(time.Hour)}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := RollupAll(ctx, st); err != nil {
+	if err := RollupAll(ctx, st, config.Config{}); err != nil {
 		t.Fatal(err)
 	}
 	health := func() (total, crashed int64) {
@@ -225,10 +225,59 @@ func TestRollup(t *testing.T) {
 	if total, crashed := health(); total != 5 || crashed != 5 {
 		t.Fatalf("live health after update = %d/%d", crashed, total)
 	}
-	if err := RollupAll(ctx, st); err != nil {
+	if err := RollupAll(ctx, st, config.Config{}); err != nil {
 		t.Fatal(err)
 	}
 	if total, crashed := health(); total != 5 || crashed != 5 {
 		t.Fatalf("rolled health after update = %d/%d", crashed, total)
+	}
+}
+
+// TestRollupKeepsExpiredHours: an hour older than RETENTION_DAYS is never
+// recomputed from the raw rows (they are gone, or a lone event with a
+// wrong clock is all that is left); its rolled row is the record, and the
+// dirty key is just cleared.
+func TestRollupKeepsExpiredHours(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	cfg := config.Config{RetentionDays: 30}
+	old := time.Now().UTC().Add(-60 * 24 * time.Hour).Truncate(time.Hour)
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO event_stats_hourly_rolled (bucket, project_id, release, platform, level, events, crashes, errors)
+		VALUES ($1, 1, '1.0', 'android', 'fatal', 1000, 1000, 0)`, old); err != nil {
+		t.Fatal(err)
+	}
+	// A late event with a clock 60 days behind: one raw row, hour marked dirty.
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, release, platform, handled)
+		VALUES ($1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'fatal', 'late', '1.0', 'android', false)`, old.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{old}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollupAll(ctx, st, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var events int64
+	if err := st.Pool.QueryRow(ctx, `SELECT events FROM event_stats_hourly_rolled WHERE project_id = 1 AND bucket = $1`, old).Scan(&events); err != nil || events != 1000 {
+		t.Fatalf("rolled row after late event = %d %v (want 1000, untouched)", events, err)
+	}
+	if n, _ := DirtyHours(ctx, st); n != 0 {
+		t.Fatalf("dirty keys left = %d", n)
+	}
+	// An hour inside the window is recomputed as usual.
+	recent := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Hour)
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, release, platform, handled)
+		VALUES ($1, 1, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'error', 'x', '1.0', 'android', true)`, recent.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{recent}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollupAll(ctx, st, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Pool.QueryRow(ctx, `SELECT events FROM event_stats_hourly_rolled WHERE project_id = 1 AND bucket = $1`, recent).Scan(&events); err != nil || events != 1 {
+		t.Fatalf("recent hour rolled = %d %v", events, err)
 	}
 }
