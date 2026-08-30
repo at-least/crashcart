@@ -107,17 +107,23 @@ func TestEndToEnd(t *testing.T) {
 	var issues struct {
 		Issues []struct {
 			Fingerprint string `json:"fingerprint"`
-			Users       int64  `json:"users"`
 		} `json:"issues"`
 	}
 	json.Unmarshal([]byte(body), &issues)
-	if len(issues.Issues) != 1 || issues.Issues[0].Users != 3 {
+	if len(issues.Issues) != 1 {
 		t.Fatalf("issues parsed: %+v", issues)
 	}
 	fp := issues.Issues[0].Fingerprint
 	res, body = do("GET", "/api/projects/shop/issues/"+fp, nil, auth)
 	if res.StatusCode != 200 || !strings.Contains(body, "Pixel 8") {
 		t.Fatalf("issue detail: %d %s", res.StatusCode, body)
+	}
+	var detail struct {
+		Users int64 `json:"users"`
+	}
+	json.Unmarshal([]byte(body), &detail)
+	if detail.Users != 3 {
+		t.Fatalf("issue detail users = %d, want 3: %s", detail.Users, body)
 	}
 	res, body = do("GET", "/api/projects/shop/overview", nil, auth)
 	if res.StatusCode != 200 || !strings.Contains(body, `"crashes":3`) || !strings.Contains(body, `"new_issues":1`) {

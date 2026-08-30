@@ -198,3 +198,130 @@ func (q *Queries) ListIssuesPresentIn(ctx context.Context, arg ListIssuesPresent
 	}
 	return items, nil
 }
+
+const portalEventStats = `-- name: PortalEventStats :many
+
+SELECT project_id, bucket, release, platform, sum(events)::bigint AS events, sum(crashes)::bigint AS crashes
+FROM event_stats_hourly WHERE bucket >= $1::timestamptz AND bucket < $2::timestamptz
+GROUP BY 1, 2, 3, 4
+`
+
+type PortalEventStatsParams struct {
+	FromAt time.Time `json:"from_at"`
+	ToAt   time.Time `json:"to_at"`
+}
+
+type PortalEventStatsRow struct {
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Release   string    `json:"release"`
+	Platform  string    `json:"platform"`
+	Events    int64     `json:"events"`
+	Crashes   int64     `json:"crashes"`
+}
+
+// The portal: one query per statistic across every project, not four per
+// project.
+func (q *Queries) PortalEventStats(ctx context.Context, arg PortalEventStatsParams) ([]PortalEventStatsRow, error) {
+	rows, err := q.db.Query(ctx, portalEventStats, arg.FromAt, arg.ToAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PortalEventStatsRow{}
+	for rows.Next() {
+		var i PortalEventStatsRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.Bucket,
+			&i.Release,
+			&i.Platform,
+			&i.Events,
+			&i.Crashes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const portalIssueCounts = `-- name: PortalIssueCounts :many
+SELECT project_id, status, count(*)::bigint AS n FROM issues GROUP BY 1, 2
+`
+
+type PortalIssueCountsRow struct {
+	ProjectID int64       `json:"project_id"`
+	Status    IssueStatus `json:"status"`
+	N         int64       `json:"n"`
+}
+
+func (q *Queries) PortalIssueCounts(ctx context.Context) ([]PortalIssueCountsRow, error) {
+	rows, err := q.db.Query(ctx, portalIssueCounts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PortalIssueCountsRow{}
+	for rows.Next() {
+		var i PortalIssueCountsRow
+		if err := rows.Scan(&i.ProjectID, &i.Status, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const portalReleaseHealth = `-- name: PortalReleaseHealth :many
+SELECT k.project_id::bigint AS project_id, COALESCE(sum(h.total), 0)::bigint AS total, COALESCE(sum(h.crashed), 0)::bigint AS crashed
+FROM (SELECT unnest($1::bigint[]) AS project_id, unnest($2::text[]) AS release) AS k
+JOIN release_health_hourly h ON h.project_id = k.project_id AND h.release = k.release
+  AND h.bucket >= $3::timestamptz AND h.bucket < $4::timestamptz
+GROUP BY k.project_id
+`
+
+type PortalReleaseHealthParams struct {
+	ProjectIds []int64   `json:"project_ids"`
+	Releases   []string  `json:"releases"`
+	FromAt     time.Time `json:"from_at"`
+	ToAt       time.Time `json:"to_at"`
+}
+
+type PortalReleaseHealthRow struct {
+	ProjectID int64 `json:"project_id"`
+	Total     int64 `json:"total"`
+	Crashed   int64 `json:"crashed"`
+}
+
+// Session totals of one release per project (the latest active one).
+func (q *Queries) PortalReleaseHealth(ctx context.Context, arg PortalReleaseHealthParams) ([]PortalReleaseHealthRow, error) {
+	rows, err := q.db.Query(ctx, portalReleaseHealth,
+		arg.ProjectIds,
+		arg.Releases,
+		arg.FromAt,
+		arg.ToAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PortalReleaseHealthRow{}
+	for rows.Next() {
+		var i PortalReleaseHealthRow
+		if err := rows.Scan(&i.ProjectID, &i.Total, &i.Crashed); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

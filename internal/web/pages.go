@@ -40,23 +40,94 @@ func (w *Web) portal(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := now()
+	// One query per statistic across all projects: 30 days of hourly stats
+	// (crashes in the last 24 h, platforms seen in 7 days, the latest
+	// active release), issue counts by status, then the session health of
+	// each project's latest release.
+	dayFrom := n.Add(-30 * day).Truncate(day)
+	stats, err := w.Store.PortalEventStats(ctx, sqlc.PortalEventStatsParams{FromAt: dayFrom, ToAt: n})
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	type latest struct {
+		release string
+		at      time.Time
+	}
+	crashes24h := map[int64]int64{}
+	platforms := map[int64]map[string]int64{}
+	newest := map[int64]latest{}
+	h24, d7 := n.Add(-day).Truncate(time.Hour), n.Add(-7*day).Truncate(time.Hour)
+	for _, s := range stats {
+		if !s.Bucket.Before(h24) {
+			crashes24h[s.ProjectID] += s.Crashes
+		}
+		if !s.Bucket.Before(d7) {
+			if platforms[s.ProjectID] == nil {
+				platforms[s.ProjectID] = map[string]int64{}
+			}
+			platforms[s.ProjectID][s.Platform] += s.Events
+		}
+		if s.Release != "" {
+			cur, ok := newest[s.ProjectID]
+			if !ok || s.Bucket.After(cur.at) || (s.Bucket.Equal(cur.at) && s.Release > cur.release) {
+				newest[s.ProjectID] = latest{s.Release, s.Bucket}
+			}
+		}
+	}
+	counts, err := w.Store.PortalIssueCounts(ctx)
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	open := map[int64]int64{}
+	for _, c := range counts {
+		if c.Status == "unresolved" || c.Status == "triaged" || c.Status == "regression" {
+			open[c.ProjectID] += c.N
+		}
+	}
+	health := map[int64]sqlc.PortalReleaseHealthRow{}
+	if len(newest) > 0 {
+		hp := sqlc.PortalReleaseHealthParams{FromAt: dayFrom, ToAt: n}
+		for pid, l := range newest {
+			hp.ProjectIds = append(hp.ProjectIds, pid)
+			hp.Releases = append(hp.Releases, l.release)
+		}
+		rows, err := w.Store.PortalReleaseHealth(ctx, hp)
+		if err != nil {
+			w.fail(rw, r, err)
+			return
+		}
+		for _, r := range rows {
+			health[r.ProjectID] = r
+		}
+	}
 	cards := make([]PortalCard, 0, len(projects))
 	for _, p := range projects {
-		c := PortalCard{P: p, CrashFree: "n/a"}
-		if t, err := w.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, FromAt: n.Add(-day).Truncate(time.Hour), ToAt: n, Width: 3600}); err == nil {
-			c.Crashes24h = t.Crashes
+		c := PortalCard{P: p, CrashFree: "n/a", Crashes24h: crashes24h[p.ID], OpenIssues: open[p.ID]}
+		var pc []platformCount
+		for plat, ev := range platforms[p.ID] {
+			pc = append(pc, platformCount{plat, ev})
 		}
-		c.LatestRelease, c.CrashFree = w.latestHealth(ctx, p.ID, n, 30)
-		c.Received, c.Mismatch = w.receivedPlatforms(ctx, p, Window{From: n.Add(-7 * day).Truncate(time.Hour), To: n, Width: time.Hour})
-		counts, _ := w.Store.CountIssuesByStatus(ctx, p.ID)
-		for _, row := range counts {
-			if row.Status == "unresolved" || row.Status == "triaged" || row.Status == "regression" {
-				c.OpenIssues += row.N
+		sort.Slice(pc, func(i, j int) bool {
+			return pc[i].Events > pc[j].Events || (pc[i].Events == pc[j].Events && pc[i].Platform < pc[j].Platform)
+		})
+		c.Received, c.Mismatch = platformFamilies(p, pc)
+		if l, ok := newest[p.ID]; ok {
+			c.LatestRelease = l.release
+			if hr, ok := health[p.ID]; ok {
+				c.CrashFree = crashFree(hr.Total, hr.Crashed)
 			}
 		}
 		cards = append(cards, c)
 	}
 	w.page(rw, r, Page{S: ViewState{Filters: map[string]string{}}, Section: "portal"}, func(Page) templ.Component { return Portal(cards) })
+}
+
+// platformCount is a raw SDK platform with its events in a window.
+type platformCount struct {
+	Platform string
+	Events   int64
 }
 
 // receivedPlatforms lists the platform families that sent events in the
@@ -68,6 +139,16 @@ func (w *Web) receivedPlatforms(ctx context.Context, p sqlc.Project, win Window)
 	if err != nil {
 		return nil, false
 	}
+	pc := make([]platformCount, 0, len(rows))
+	for _, r := range rows {
+		pc = append(pc, platformCount{r.Platform, r.Events})
+	}
+	return platformFamilies(p, pc)
+}
+
+// platformFamilies folds raw platforms (most events first) into families
+// and reports whether any is not what the project declares.
+func platformFamilies(p sqlc.Project, rows []platformCount) ([]string, bool) {
 	expected := ""
 	if p.Platform != nil {
 		expected = *p.Platform
@@ -266,7 +347,6 @@ type IssuesData struct {
 	Issues   []sqlc.Issue
 	Total    int64
 	Counts   map[string]int64     // per status
-	Users    map[sentry.ID]int64  // per fingerprint, in window
 	Sparks   map[sentry.ID]string // per fingerprint: SVG
 	Releases []string
 }
@@ -302,7 +382,7 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 	if err != nil {
 		return IssuesData{}, err
 	}
-	d := IssuesData{Issues: issues, Total: total, Counts: map[string]int64{}, Users: map[sentry.ID]int64{}, Sparks: map[sentry.ID]string{}}
+	d := IssuesData{Issues: issues, Total: total, Counts: map[string]int64{}, Sparks: map[sentry.ID]string{}}
 	counts, err := w.Store.CountIssuesByStatus(ctx, p.ID)
 	if err != nil {
 		return d, err
@@ -315,16 +395,10 @@ func (w *Web) loadIssues(ctx context.Context, p sqlc.Project, s ViewState) (Issu
 	for _, is := range issues {
 		fps = append(fps, is.Fingerprint)
 	}
+	// No per-issue user count here: count(DISTINCT user_id) over every
+	// event of 50 issues in the window is unbounded work for the default
+	// page; the issue page computes it for one issue.
 	if len(fps) > 0 {
-		users, err := w.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: fps, OccurredAt: win.From, OccurredAt_2: win.To})
-		if err != nil {
-			return d, err
-		}
-		for _, u := range users {
-			if u.Fingerprint != nil {
-				d.Users[*u.Fingerprint] = u.Users
-			}
-		}
 		sparks, err := w.sparklines(ctx, p.ID, fps, n)
 		if err != nil {
 			return d, err

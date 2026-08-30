@@ -15,6 +15,25 @@ ORDER BY event_count DESC LIMIT $3;
 SELECT * FROM issues WHERE project_id = $1 AND last_release = $2 AND status NOT IN ('resolved', 'ignored')
 ORDER BY event_count DESC LIMIT $3;
 
+-- The portal: one query per statistic across every project, not four per
+-- project.
+
+-- name: PortalEventStats :many
+SELECT project_id, bucket, release, platform, sum(events)::bigint AS events, sum(crashes)::bigint AS crashes
+FROM event_stats_hourly WHERE bucket >= sqlc.arg(from_at)::timestamptz AND bucket < sqlc.arg(to_at)::timestamptz
+GROUP BY 1, 2, 3, 4;
+
+-- name: PortalIssueCounts :many
+SELECT project_id, status, count(*)::bigint AS n FROM issues GROUP BY 1, 2;
+
+-- name: PortalReleaseHealth :many
+-- Session totals of one release per project (the latest active one).
+SELECT k.project_id::bigint AS project_id, COALESCE(sum(h.total), 0)::bigint AS total, COALESCE(sum(h.crashed), 0)::bigint AS crashed
+FROM (SELECT unnest(sqlc.arg(project_ids)::bigint[]) AS project_id, unnest(sqlc.arg(releases)::text[]) AS release) AS k
+JOIN release_health_hourly h ON h.project_id = k.project_id AND h.release = k.release
+  AND h.bucket >= sqlc.arg(from_at)::timestamptz AND h.bucket < sqlc.arg(to_at)::timestamptz
+GROUP BY k.project_id;
+
 -- name: LatestIssueEvent :one
 -- Bounded to the issue's own [first_seen, last_seen] so only those
 -- partitions are read (the issue row is the exact range of its events).

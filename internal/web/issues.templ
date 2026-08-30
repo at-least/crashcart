@@ -108,7 +108,6 @@ templ IssuesTable(pg Page, d IssuesData) {
 							<th class="w-20">Level</th>
 							<th class="w-32">7 days</th>
 							<th class="num"><a class="sort" data-active={ boolAttr(pg.S.Sort == "events") } href={ u(sortHref(pg, "events")) }>Events</a></th>
-							<th class="num">Users</th>
 							<th><a class="sort" data-active={ boolAttr(pg.S.Sort == "first_seen") } href={ u(sortHref(pg, "first_seen")) }>First seen</a></th>
 							<th><a class="sort" data-active={ boolAttr(pg.S.Sort == "last_seen") } href={ u(sortHref(pg, "last_seen")) }>Last seen</a></th>
 							<th>Release</th>
@@ -134,7 +133,6 @@ templ IssuesTable(pg Page, d IssuesData) {
 									@templ.Raw(d.Sparks[is.Fingerprint])
 								</td>
 								<td class="num" title={ i64(is.EventCount) + " events (" + i64(is.StoredCount) + " stored)" }>{ compact(is.EventCount) }</td>
-								<td class="num">{ compact(d.Users[is.Fingerprint]) }</td>
 								<td class="cell-time" title={ formatDateTime(is.FirstSeen) }>{ ago(is.FirstSeen) }</td>
 								<td class="cell-time" title={ formatDateTime(is.LastSeen) }>{ ago(is.LastSeen) }</td>
 								<td class="mono-cell">{ releaseSpan(is) }</td>

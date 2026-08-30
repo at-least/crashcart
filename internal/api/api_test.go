@@ -280,8 +280,11 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	}
 	list := is["issues"].([]any)
 	first := list[0].(map[string]any)
-	if first["error_type"] != "NullPointerException" || first["event_count"] != float64(2) || first["users"] != float64(2) {
+	if first["error_type"] != "NullPointerException" || first["event_count"] != float64(2) {
 		t.Errorf("first issue = %v", first)
+	}
+	if _, has := first["users"]; has {
+		t.Errorf("users must not be on the list (unbounded per-issue count); it is on the single-issue response")
 	}
 	sp := first["sparkline"].([]any)
 	var spSum float64

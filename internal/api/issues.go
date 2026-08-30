@@ -37,7 +37,7 @@ type issueOut struct {
 	ResolvedReleases []string  `json:"resolved_releases"` // the releases at resolve time; a later event outside them is a regression
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
-	Users            int64     `json:"users"`
+	Users            *int64    `json:"users,omitempty"` // single-issue response only: distinct users in the window
 	Sparkline        []int64   `json:"sparkline,omitempty"`
 }
 
@@ -103,17 +103,6 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		fps = append(fps, i.Fingerprint)
 	}
 	if len(fps) > 0 {
-		users, err := h.Store.IssueUsers(r.Context(), sqlc.IssueUsersParams{ProjectID: p.ID, Column2: fps, OccurredAt: from, OccurredAt_2: to})
-		if err != nil {
-			h.fail(w, err)
-			return
-		}
-		byFP := map[sentry.ID]int64{}
-		for _, u := range users {
-			if u.Fingerprint != nil {
-				byFP[*u.Fingerprint] = u.Users
-			}
-		}
 		end := to.Truncate(time.Hour).Add(time.Hour)
 		sp, err := h.Store.IssueSparklines(r.Context(), sqlc.IssueSparklinesParams{
 			ProjectID: p.ID, Fingerprints: fps, FromAt: end.Add(-sparklineHours * time.Hour), ToAt: end, Width: hourly,
@@ -127,7 +116,6 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 			spark[s.Fingerprint] = s.Counts
 		}
 		for i := range out {
-			out[i].Users = byFP[sentry.ID(out[i].Fingerprint)]
 			if s := spark[sentry.ID(out[i].Fingerprint)]; s != nil {
 				out[i].Sparkline = s
 			} else {
@@ -178,7 +166,7 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(users) > 0 {
-		out.Users = users[0].Users
+		out.Users = &users[0].Users
 	}
 	hlo := from.Truncate(time.Hour)
 	tl, err := h.Store.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: p.ID, Fingerprint: fp, FromAt: hlo, ToAt: to, Width: hourly})

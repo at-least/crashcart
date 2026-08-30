@@ -122,7 +122,7 @@ CREATE TABLE events (
 ALTER TABLE events ALTER COLUMN payload SET STORAGE EXTERNAL;
 CREATE TABLE events_default PARTITION OF events DEFAULT;
 CREATE INDEX events_project_time ON events (project_id, occurred_at DESC, event_id DESC);
-CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, occurred_at DESC);
+CREATE INDEX events_project_fingerprint ON events (project_id, fingerprint, occurred_at DESC) INCLUDE (user_id); -- the issue's events; user_id for its distinct-users count without heap fetches
 CREATE INDEX events_project_user ON events (project_id, user_id, occurred_at DESC) WHERE user_id IS NOT NULL;
 CREATE INDEX events_project_crash ON events (project_id, occurred_at DESC) WHERE crashcart_is_crash(level, handled);
 CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filters are `tags @> {k: v}`
@@ -402,4 +402,4 @@ CREATE TABLE crashcart_schema (
     version    INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO crashcart_schema (version) VALUES (3);
+INSERT INTO crashcart_schema (version) VALUES (4);

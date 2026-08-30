@@ -113,7 +113,6 @@ Issue object:
   "status": "unresolved",
   "event_count": 1284,
   "stored_count": 212,
-  "users": 391,
   "first_seen": "2026-08-20T11:02:13Z",
   "last_seen": "2026-08-29T08:41:55Z",
   "first_release": "2.4.0",
