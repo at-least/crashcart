@@ -58,6 +58,9 @@ func Load() (Config, error) {
 	if c.RetentionDays < 1 {
 		return c, fmt.Errorf("RETENTION_DAYS must be >= 1")
 	}
+	if c.AlertInterval <= 0 {
+		return c, fmt.Errorf("ALERT_INTERVAL must be > 0 (disable crash-spike alerts per project instead)")
+	}
 	return c, nil
 }
 

@@ -32,6 +32,13 @@ func EventFilterFromQuery(projectID int64, q map[string][]string) (store.EventFi
 	if c := get("crash"); c == "1" || c == "true" {
 		f.Crash = true
 	}
+	if v := get("fingerprint"); v != "" {
+		fp, ok := sentry.ParseID(v)
+		if !ok {
+			return f, badRequest("fingerprint must be a 32-hex id")
+		}
+		f.Fingerprint = fp
+	}
 	if b := get("before"); b != "" {
 		c, ok := store.ParseCursor(b)
 		if !ok {

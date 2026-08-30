@@ -255,7 +255,13 @@ func (n *Notifier) post(ctx context.Context, target string, body []byte) error {
 	req.Header.Set("User-Agent", "crashcart-alerts")
 	resp, err := n.client().Do(req)
 	if err != nil {
-		return err
+		// Not the *url.Error itself: it carries the URL, and the Telegram
+		// URL carries the bot token.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return fmt.Errorf("%s: %w", ue.Op, ue.Err)
+		}
+		return errors.New("request failed")
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))

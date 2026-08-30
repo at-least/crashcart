@@ -701,14 +701,18 @@ func alertJob(projectID int64, typ string, fp sentry.ID) sqlc.EnqueueJobParams {
 
 func redact(ev *sentry.Event) {
 	ev.Message = RedactText(ev.Message)
+	ev.Screen = RedactText(ev.Screen) // event.transaction: often a URL path with an id or email in it
 	ev.Tags = RedactTags(ev.Tags)
 	ev.UserID = RedactUserID(ev.UserID)
+	for i := range ev.Exceptions {
+		ev.Exceptions[i].Value = RedactText(ev.Exceptions[i].Value) // becomes part of issues.title
+	}
 	for i := range ev.Breadcrumbs {
 		ev.Breadcrumbs[i].Message = RedactText(ev.Breadcrumbs[i].Message)
 	}
 	// The raw payload is stored verbatim otherwise; with redaction on we
 	// scrub the whole document textually so nothing leaks via detail views.
-	ev.Raw = []byte(RedactText(string(ev.Raw)))
+	ev.Raw = []byte(RedactRaw(string(ev.Raw)))
 }
 
 // retention is RETENTION_DAYS as a duration (30 days when unset, like

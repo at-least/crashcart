@@ -218,3 +218,20 @@ func TestCheckSpikes(t *testing.T) {
 		t.Fatalf("cooldown: err=%v count=%d", err, s.count())
 	}
 }
+
+// TestTelegramErrorHidesToken: a transport failure's error must not carry
+// the request URL (it holds the bot token) into the log.
+func TestTelegramErrorHidesToken(t *testing.T) {
+	n := &Notifier{Cfg: config.Config{TelegramBotToken: "123:SECRET"}, HTTP: &http.Client{Timeout: time.Second}}
+	old := TelegramAPI
+	TelegramAPI = "http://127.0.0.1:1" // nothing listens
+	t.Cleanup(func() { TelegramAPI = old })
+	cfg, _ := json.Marshal(map[string]string{"chat_id": "-100"})
+	err := n.send(context.Background(), sqlc.AlertChannel{Kind: "telegram", Config: cfg}, Payload{Title: "x"})
+	if err == nil {
+		t.Fatal("expected a transport error")
+	}
+	if strings.Contains(err.Error(), "SECRET") {
+		t.Fatalf("token leaked in error: %v", err)
+	}
+}

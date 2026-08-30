@@ -352,6 +352,10 @@ func TestOverviewIssuesEventsReleases(t *testing.T) {
 	if q := e.get("/api/projects/demo/events?tag.build=43", 200); len(q["events"].([]any)) != 1 {
 		t.Errorf("tag filter = %v", q)
 	}
+	if q := e.get("/api/projects/demo/events?fingerprint="+fp, 200); len(q["events"].([]any)) != 2 {
+		t.Fatalf("fingerprint filter alone: %v", q["events"])
+	}
+	e.get("/api/projects/demo/events?fingerprint=not-an-id", 400)
 	if q := e.get("/api/projects/demo/events?fingerprint="+fp+"&user_id=user-002", 200); len(q["events"].([]any)) != 1 {
 		t.Errorf("fingerprint+user filter = %v", q)
 	}

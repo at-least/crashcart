@@ -174,8 +174,11 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 
 // streamInfo builds the SSE URL (since = now) and the regression baseline.
 func (w *Web) streamInfo(ctx context.Context, projectID int64, s ViewState, n time.Time) (string, int64) {
-	reg, _ := w.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: projectID})
-	return s.Base() + "/stream?since=" + url.QueryEscape(n.UTC().Format(time.RFC3339Nano)), reg
+	win := s.Window(n)
+	reg, _ := w.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: projectID, LastSeen: win.From})
+	// The stream re-counts with the same window, so the banner's delta is
+	// against this baseline.
+	return s.Base() + "/stream?since=" + url.QueryEscape(n.UTC().Format(time.RFC3339Nano)) + "&win=" + url.QueryEscape(s.Win), reg
 }
 
 // seriesColors is the palette for stacked-by-release charts.
@@ -538,6 +541,9 @@ func eventFilter(p sqlc.Project, s ViewState, win Window) store.EventFilter {
 		ErrorType: s.Filters["error_type"], UserID: s.Filters["user_id"], DeviceID: s.Filters["device_id"], DeviceModel: s.Filters["device_model"],
 		OSVersion: s.Filters["os_version"], Screen: s.Filters["screen"], Location: s.Filters["error_location"],
 		Query: s.Filters["q"], Crash: s.Filters["crash"] == "1"}
+	if fp, ok := sentry.ParseID(s.Filters["fingerprint"]); ok {
+		f.Fingerprint = fp
+	}
 	for k, v := range s.Filters {
 		if strings.HasPrefix(k, "tag.") {
 			if f.Tags == nil {

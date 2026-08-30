@@ -37,6 +37,9 @@ func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "since must be RFC3339", http.StatusBadRequest)
 		return
 	}
+	// The regression count uses the page's window (win=), like the
+	// baseline it is compared with.
+	win := ParseViewState(p.Slug, r.URL.Query()).Window(since)
 	h := rw.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -74,7 +77,7 @@ func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		m, err := w.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: p.ID})
+		m, err := w.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: p.ID, LastSeen: win.From})
 		if err != nil {
 			return
 		}

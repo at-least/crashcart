@@ -1,6 +1,12 @@
 package ingest
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/crashcartapp/crashcart/internal/sentry"
+)
 
 func TestRedactText(t *testing.T) {
 	cases := map[string]string{
@@ -33,5 +39,26 @@ func TestRedactTags(t *testing.T) {
 	out := RedactTags(map[string]string{"email": "a@b.co", "note": "mail me at a@b.co", "build": "42"})
 	if out["email"] != "[REDACTED]" || out["note"] != "mail me at [REDACTED]" || out["build"] != "42" {
 		t.Errorf("got %v", out)
+	}
+}
+
+func TestRedactEventFields(t *testing.T) {
+	ev := &sentry.Event{
+		Message: "hi alice@example.com", Screen: "/users/bob@example.com/cart",
+		Exceptions: []sentry.Exception{{Type: "Error", Value: "charge failed for carol@example.com"}},
+		Raw:        []byte(`{"user":{"id":"u1","ip_address":"203.0.113.9","email":"dave@example.com"},"message":"x"}`),
+	}
+	redact(ev)
+	for name, got := range map[string]string{"message": ev.Message, "screen": ev.Screen, "exception": ev.Exceptions[0].Value, "raw": string(ev.Raw)} {
+		if strings.Contains(got, "@example.com") {
+			t.Errorf("%s not redacted: %s", name, got)
+		}
+	}
+	if strings.Contains(string(ev.Raw), "203.0.113.9") || !strings.Contains(string(ev.Raw), `"ip_address":"[redacted]"`) {
+		t.Errorf("ip_address not redacted: %s", ev.Raw)
+	}
+	var js map[string]any
+	if err := json.Unmarshal(ev.Raw, &js); err != nil {
+		t.Errorf("redacted raw is not JSON: %v", err)
 	}
 }
