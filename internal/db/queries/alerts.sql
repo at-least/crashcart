@@ -10,10 +10,10 @@ ON CONFLICT (project_id, type) DO UPDATE SET enabled = EXCLUDED.enabled, cooldow
 RETURNING *;
 
 -- name: EnsureAlertRules :exec
--- The three default rules (enabled, default cooldown); existing rows untouched.
+-- The four default rules (enabled, default cooldown); existing rows untouched.
 INSERT INTO alert_rules (project_id, type, enabled, cooldown_minutes)
 SELECT sqlc.arg(project_id)::bigint, t, true, sqlc.arg(cooldown_minutes)::int
-FROM unnest(ARRAY['new_issue', 'regression', 'unhandled_spike']::alert_type[]) AS t
+FROM unnest(ARRAY['new_issue', 'regression', 'unhandled_spike', 'escalating']::alert_type[]) AS t
 ON CONFLICT (project_id, type) DO NOTHING;
 
 -- name: ClaimAlertRule :one

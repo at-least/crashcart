@@ -384,3 +384,27 @@ func TestExpireIssues(t *testing.T) {
 		t.Fatalf("rollup rows of deleted issues not removed: %d left, want 2", rolled)
 	}
 }
+
+// TestAttachmentPartitions: attachments are partitioned like events and a
+// row lands in its week's partition.
+func TestAttachmentPartitions(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	if err := EnsurePartitions(ctx, st, config.Config{RetentionDays: 14}, now); err != nil {
+		t.Fatal(err)
+	}
+	parts, err := Partitions(ctx, st, "attachments")
+	if err != nil || len(parts) != 5 || parts[0].Name != "attachments_p20260810" {
+		t.Fatalf("partitions = %+v %v", parts, err)
+	}
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO attachments (occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data)
+		VALUES ($1, 1, 'e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1', 0, 'screenshot.png', 'image/png', 'event.attachment', 3, 'png')`, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var in string
+	if err := st.Pool.QueryRow(ctx, "SELECT tableoid::regclass::text FROM attachments").Scan(&in); err != nil || in != "attachments_p20260824" {
+		t.Fatalf("row in %q (%v)", in, err)
+	}
+}

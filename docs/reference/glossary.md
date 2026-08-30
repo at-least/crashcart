@@ -55,9 +55,16 @@ release health reports.
 | **unresolved** | Open |
 | **resolved** | Fixed (records the releases it had been seen on) |
 | **regression** | Was resolved, reappeared on a release it had not been seen on before (Sentry's *Regressed*, under "resolve in next release" rules) |
-| **ignored** | Known, won't fix (Sentry's *Archived*) |
+| **ignored** | Known, won't fix — for good, or until a condition: a time, a number of further events, or escalating (Sentry's *Archived* / "Archive until …") |
 
 Sentry's statuses; there is no "triaged" state. An issue's level is its latest event's.
+
+An ignored issue comes back to unresolved when its condition is met
+(checked every minute): the time has passed; `event_count` reached the
+count set when it was ignored; or it **escalates** — its stored events in
+the last hour are 3× its hourly rate of the 24 h before it was ignored,
+and at least 10 (the unhandled-spike rule, per issue), which also fires
+the `escalating` alert.
 
 ## Event fields
 

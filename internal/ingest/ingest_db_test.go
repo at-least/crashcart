@@ -548,3 +548,73 @@ func TestIngestSentrySemantics(t *testing.T) {
 		t.Fatalf("release health total=%d crashed=%d errored=%d, want 3/1/1", total, crashed, errored)
 	}
 }
+
+// TestIngestAttachments: attachments are kept with the envelope header's
+// event when it is stored, and only then.
+func TestIngestAttachments(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+	ts := now.Add(-time.Minute).Format(time.RFC3339)
+	event := func(id, typ string) string {
+		return fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":"error","platform":"android","release":"1.0","exception":{"values":[{"type":%q,"value":"v","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id, ts, typ)
+	}
+	shot := "{\"type\":\"attachment\",\"length\":4,\"filename\":\"screenshot.png\",\"content_type\":\"image/png\"}\nPNG!\n"
+	count := func() int {
+		var n int
+		if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM attachments WHERE project_id = $1", p.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	id := "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+	body := "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\"}\n" + event(id, "E") + "\n" + shot +
+		"{\"type\":\"attachment\",\"length\":2,\"filename\":\"view-hierarchy.json\",\"content_type\":\"application/json\",\"attachment_type\":\"event.view_hierarchy\"}\n{}\n"
+	res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now)
+	if err != nil || res.Stored != 1 || res.Attachments != 2 {
+		t.Fatalf("ingest: %+v %v", res, err)
+	}
+	e, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: sentry.ID(id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	atts, err := st.ListAttachments(ctx, sqlc.ListAttachmentsParams{ProjectID: p.ID, EventID: e.EventID, OccurredAt: e.OccurredAt})
+	if err != nil || len(atts) != 2 {
+		t.Fatalf("attachments = %+v %v", atts, err)
+	}
+	if atts[0].N != 0 || atts[0].Filename != "screenshot.png" || atts[0].ContentType != "image/png" || atts[0].Size != 4 || atts[1].AttachmentType != "event.view_hierarchy" {
+		t.Errorf("attachment rows = %+v", atts)
+	}
+	a, err := st.GetAttachment(ctx, sqlc.GetAttachmentParams{ProjectID: p.ID, EventID: e.EventID, OccurredAt: e.OccurredAt, N: 0})
+	if err != nil || string(a.Data) != "PNG!" {
+		t.Errorf("bytes = %q %v", a.Data, err)
+	}
+	// A resend stores nothing twice.
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Duplicates != 1 || res.Attachments != 0 || count() != 2 {
+		t.Fatalf("resend: %+v %v rows=%d", res, err, count())
+	}
+	// A sampled-out event takes its attachments with it.
+	p.SampleKeepFirst, p.SampleRate = 1, 0
+	id2 := "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2"
+	body = "{\"event_id\":\"" + id2 + "\"}\n{\"type\":\"event\"}\n" + event(id2, "E") + "\n" + shot
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Sampled != 1 || res.Attachments != 0 || count() != 2 {
+		t.Fatalf("sampled out: %+v %v rows=%d", res, err, count())
+	}
+	// No header id: a lone event is the one.
+	id3 := "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3"
+	body = "{}\n{\"type\":\"event\"}\n" + event(id3, "F") + "\n" + shot
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Stored != 1 || res.Attachments != 1 || count() != 3 {
+		t.Fatalf("lone event: %+v %v rows=%d", res, err, count())
+	}
+	// Attachments without any event: nothing to attach to.
+	body = "{\"event_id\":\"" + id3 + "\"}\n" + shot
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Attachments != 0 || count() != 3 {
+		t.Fatalf("orphan: %+v %v rows=%d", res, err, count())
+	}
+}

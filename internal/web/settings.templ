@@ -13,6 +13,7 @@ var alertLabels = map[string]alertLabel{
 	"new_issue":   {"New issue", "A fingerprint seen for the first time"},
 	"regression":  {"Regression", "A resolved issue reappears on another release"},
 	"unhandled_spike": {"Unhandled error spike", "Unhandled errors in the last hour are 3× the 24 h baseline"},
+	"escalating":      {"Escalating", "An issue ignored until escalating has 3× its old hourly rate in the last hour (and at least 10 events)"},
 }
 
 func labelFor(t string) alertLabel {

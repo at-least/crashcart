@@ -6,8 +6,8 @@
 // Format (one JSON object per line):
 //
 //	{"t":"_meta","format":1,"exported_at":"<RFC3339>","app":"crashcart"}
-//	{"t":"projects", ...}   then issues, events, sessions, symbol_files,
-//	                        alert_rules, alert_channels (see Tables)
+//	{"t":"projects", ...}   then issues, events, attachments, sessions,
+//	                        symbol_files, alert_rules, alert_channels (see Tables)
 //
 // Rows refer to their project by "project": "<slug>" — never by id, so a
 // dump loads into any database. Events and sessions carry their natural
@@ -18,7 +18,7 @@
 // columns are omitted. Aggregates, jobs and rate limits are not exported:
 // they recompute or expire.
 //
-// Import is idempotent: events and sessions are inserted with
+// Import is idempotent: events, attachments and sessions are inserted with
 // ON CONFLICT DO NOTHING, everything else is upserted on its natural key
 // (issue counts are replaced, not added), alert channels are inserted only
 // when no identical (project, kind, config) row exists.
@@ -49,7 +49,7 @@ const Format = 3 // 3: no triaged status; 2: transaction / culprit / unhandled_s
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
-var Tables = []string{"users", "api_keys", "projects", "releases", "issues", "events", "sessions", "symbol_files", "alert_rules", "alert_channels"}
+var Tables = []string{"users", "api_keys", "projects", "releases", "issues", "events", "attachments", "sessions", "symbol_files", "alert_rules", "alert_channels"}
 
 // Options narrows an export.
 type Options struct {
@@ -58,7 +58,8 @@ type Options struct {
 
 // maxLine is the longest NDJSON line import accepts: a symbol file is at
 // most symbolicate.MaxUpload (50 MB) → ~67 MB of base64 on one line; an
-// event payload is at most a 20 MB envelope.
+// event payload is at most a 20 MB envelope, an attachment
+// sentry.MaxAttachmentSize.
 const maxLine = 96 << 20
 
 // batchSize is how many events / sessions / upserts go in one round trip.
@@ -116,27 +117,31 @@ type releaseRow struct {
 }
 
 type issueRow struct {
-	T                string   `json:"t"`
-	Project          string   `json:"project"`
-	Fingerprint      string   `json:"fingerprint"`
-	Title            string   `json:"title"`
-	Level            string   `json:"level"`
-	ErrorType        *string  `json:"error_type,omitempty"`
-	Transaction      *string  `json:"transaction,omitempty"`
-	Screen           *string  `json:"screen,omitempty"` // format 1 name of transaction (read only)
-	Platform         *string  `json:"platform,omitempty"`
-	Status           string   `json:"status"`
-	StatusBy         *string  `json:"status_by,omitempty"`
-	EventCount       int64    `json:"event_count"`
-	StoredCount      int64    `json:"stored_count"`
-	FirstSeen        ts       `json:"first_seen"`
-	LastSeen         ts       `json:"last_seen"`
-	FirstRelease     *string  `json:"first_release,omitempty"`
-	LastRelease      *string  `json:"last_release,omitempty"`
-	Releases         []string `json:"releases,omitempty"`
-	ResolvedReleases []string `json:"resolved_releases,omitempty"`
-	CreatedAt        ts       `json:"created_at"`
-	UpdatedAt        ts       `json:"updated_at"`
+	T                     string   `json:"t"`
+	Project               string   `json:"project"`
+	Fingerprint           string   `json:"fingerprint"`
+	Title                 string   `json:"title"`
+	Level                 string   `json:"level"`
+	ErrorType             *string  `json:"error_type,omitempty"`
+	Transaction           *string  `json:"transaction,omitempty"`
+	Screen                *string  `json:"screen,omitempty"` // format 1 name of transaction (read only)
+	Platform              *string  `json:"platform,omitempty"`
+	Status                string   `json:"status"`
+	StatusBy              *string  `json:"status_by,omitempty"`
+	EventCount            int64    `json:"event_count"`
+	StoredCount           int64    `json:"stored_count"`
+	FirstSeen             ts       `json:"first_seen"`
+	LastSeen              ts       `json:"last_seen"`
+	FirstRelease          *string  `json:"first_release,omitempty"`
+	LastRelease           *string  `json:"last_release,omitempty"`
+	Releases              []string `json:"releases,omitempty"`
+	ResolvedReleases      []string `json:"resolved_releases,omitempty"`
+	IgnoreUntil           *ts      `json:"ignore_until,omitempty"`
+	IgnoreUntilCount      *int64   `json:"ignore_until_count,omitempty"`
+	IgnoreUntilEscalating bool     `json:"ignore_until_escalating,omitempty"`
+	IgnoreBaseline        *int64   `json:"ignore_baseline,omitempty"`
+	CreatedAt             ts       `json:"created_at"`
+	UpdatedAt             ts       `json:"updated_at"`
 }
 
 type eventRow struct {
@@ -165,6 +170,19 @@ type eventRow struct {
 	Tags          json.RawMessage `json:"tags"`
 	Payload       json.RawMessage `json:"payload,omitempty"`
 	Symbols       json.RawMessage `json:"symbols,omitempty"`
+}
+
+type attachmentRow struct {
+	T              string `json:"t"`
+	Project        string `json:"project"`
+	OccurredAt     ts     `json:"occurred_at"` // the event's
+	EventID        string `json:"event_id"`
+	N              int32  `json:"n"`
+	Filename       string `json:"filename"`
+	ContentType    string `json:"content_type"`
+	AttachmentType string `json:"attachment_type"`
+	Size           int64  `json:"size"`
+	Data           []byte `json:"data"` // base64
 }
 
 type sessionRow struct {
@@ -234,15 +252,24 @@ func (t *ts) UnmarshalJSON(b []byte) error {
 
 func at(t time.Time) ts { return ts{t.UTC()} }
 
+func tsPtr(t *time.Time) *ts {
+	if t == nil {
+		return nil
+	}
+	v := at(*t)
+	return &v
+}
+
 // ── export ─────────────────────────────────────────────────────────────
 
 const (
 	selectIssues = `SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count,
-	first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at
+	first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
 	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
 	os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
 	symbols, payload FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
+	selectAttachments = `SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data FROM attachments WHERE project_id = $1 ORDER BY occurred_at, event_id, n`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectReleases    = `SELECT project_id, release, platforms, first_seen FROM releases WHERE project_id = $1 ORDER BY release`
 	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at
@@ -305,6 +332,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 				ErrorType: r.ErrorType, Transaction: r.Transaction, Platform: r.Platform, Status: string(r.Status), StatusBy: r.StatusBy,
 				EventCount: r.EventCount, StoredCount: r.StoredCount, FirstSeen: at(r.FirstSeen), LastSeen: at(r.LastSeen),
 				FirstRelease: r.FirstRelease, LastRelease: r.LastRelease, Releases: r.Releases, ResolvedReleases: r.ResolvedReleases,
+				IgnoreUntil: tsPtr(r.IgnoreUntil), IgnoreUntilCount: r.IgnoreUntilCount, IgnoreUntilEscalating: r.IgnoreUntilEscalating, IgnoreBaseline: r.IgnoreBaseline,
 				CreatedAt: at(r.CreatedAt), UpdatedAt: at(r.UpdatedAt),
 			})
 		}, p.ID); err != nil {
@@ -327,6 +355,16 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 			})
 		}, p.ID); err != nil {
 			return fmt.Errorf("export events: %w", err)
+		}
+	}
+	for _, p := range projects {
+		if err := stream(ctx, tx, selectAttachments, func(r sqlc.Attachment) error {
+			return enc.Encode(attachmentRow{
+				T: "attachments", Project: p.Slug, OccurredAt: at(r.OccurredAt), EventID: string(r.EventID), N: r.N,
+				Filename: r.Filename, ContentType: r.ContentType, AttachmentType: r.AttachmentType, Size: r.Size, Data: r.Data,
+			})
+		}, p.ID); err != nil {
+			return fmt.Errorf("export attachments: %w", err)
 		}
 	}
 	for _, p := range projects {
@@ -468,13 +506,19 @@ const (
 	    daily_quota = EXCLUDED.daily_quota, created_at = EXCLUDED.created_at
 	RETURNING id`
 	upsertIssue = `INSERT INTO issues (project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count,
-	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases,
+	ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
 	ON CONFLICT (project_id, fingerprint) DO UPDATE SET title = EXCLUDED.title, level = EXCLUDED.level, status_by = EXCLUDED.status_by,
 	    error_type = EXCLUDED.error_type, transaction = EXCLUDED.transaction, platform = EXCLUDED.platform, status = EXCLUDED.status,
 	    event_count = GREATEST(issues.event_count, EXCLUDED.event_count), stored_count = GREATEST(issues.stored_count, EXCLUDED.stored_count), first_seen = EXCLUDED.first_seen,
 	    last_seen = EXCLUDED.last_seen, first_release = EXCLUDED.first_release, last_release = EXCLUDED.last_release,
-	    releases = EXCLUDED.releases, resolved_releases = EXCLUDED.resolved_releases, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
+	    releases = EXCLUDED.releases, resolved_releases = EXCLUDED.resolved_releases,
+	    ignore_until = EXCLUDED.ignore_until, ignore_until_count = EXCLUDED.ignore_until_count,
+	    ignore_until_escalating = EXCLUDED.ignore_until_escalating, ignore_baseline = EXCLUDED.ignore_baseline,
+	    created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
+	insertAttachment = `INSERT INTO attachments (occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (project_id, event_id, occurred_at, n) DO NOTHING`
 	upsertRelease = `INSERT INTO releases (project_id, release, platforms, first_seen) VALUES ($1,$2,$3,$4)
 	ON CONFLICT (project_id, release) DO UPDATE SET
 	    platforms = (SELECT array_agg(DISTINCT x ORDER BY x) FROM unnest(releases.platforms || EXCLUDED.platforms) AS x),
@@ -662,9 +706,14 @@ func (im *importer) line(b []byte) error {
 		if !ok {
 			return fmt.Errorf("issues row: fingerprint %q is not a 32-hex id", r.Fingerprint)
 		}
+		var ignoreUntil *time.Time
+		if r.IgnoreUntil != nil {
+			ignoreUntil = &r.IgnoreUntil.Time
+		}
 		im.batch.Queue(upsertIssue, pid, fp, r.Title, r.Level, r.ErrorType, r.Transaction, r.Platform, r.Status, r.StatusBy,
 			r.EventCount, r.StoredCount, tsOrNow(r.FirstSeen), tsOrNow(r.LastSeen), r.FirstRelease, r.LastRelease,
-			nonNilStrings(r.Releases), r.ResolvedReleases, tsOrNow(r.CreatedAt), tsOrNow(r.UpdatedAt))
+			nonNilStrings(r.Releases), r.ResolvedReleases, ignoreUntil, r.IgnoreUntilCount, r.IgnoreUntilEscalating, r.IgnoreBaseline,
+			tsOrNow(r.CreatedAt), tsOrNow(r.UpdatedAt))
 	case "events":
 		var r eventRow
 		if err := json.Unmarshal(b, &r); err != nil {
@@ -712,6 +761,30 @@ func (im *importer) line(b []byte) error {
 				return err
 			}
 		}
+	case "attachments":
+		var r attachmentRow
+		if err := json.Unmarshal(b, &r); err != nil {
+			return err
+		}
+		pid, err := im.project(r.Project)
+		if err != nil {
+			return err
+		}
+		if r.OccurredAt.IsZero() || r.EventID == "" {
+			return errors.New("attachments row needs occurred_at and event_id")
+		}
+		eid, ok := sentry.ParseID(r.EventID)
+		if !ok {
+			return fmt.Errorf("attachments row: event_id %q is not a 32-hex id", r.EventID)
+		}
+		if r.Size == 0 {
+			r.Size = int64(len(r.Data))
+		}
+		if r.Data == nil {
+			r.Data = []byte{}
+		}
+		im.batch.Queue(insertAttachment, r.OccurredAt.Time, pid, eid, r.N, orStr(r.Filename, "attachment"), orStr(r.ContentType, "application/octet-stream"),
+			orStr(r.AttachmentType, "event.attachment"), r.Size, r.Data)
 	case "sessions":
 		var r sessionRow
 		if err := json.Unmarshal(b, &r); err != nil {
@@ -873,6 +946,14 @@ func strOr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// orStr is s, or def when empty.
+func orStr(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 func nilIfEmptyStr(s string) *string {

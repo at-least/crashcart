@@ -14,10 +14,10 @@ sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   │         stats: rollup
 
 ## Decisions
 
-**Compatibility scope.** Envelope ingest (`event`, `session`, `sessions`)
-and the debug-file upload endpoint sentry-cli uses. Transactions, profiles,
-replays and client reports are accepted and dropped. The Sentry Web API and
-UI are not imitated; the viewer is our own.
+**Compatibility scope.** Envelope ingest (`event`, `session`, `sessions`,
+`attachment`) and the debug-file upload endpoint sentry-cli uses.
+Transactions, profiles, replays and client reports are accepted and
+dropped. The Sentry Web API and UI are not imitated; the viewer is our own.
 
 **Time is a TIMESTAMPTZ column, keys are natural.** `events.occurred_at` /
 `sessions.started_at` are the partition keys (`PARTITION BY RANGE`, one
@@ -94,6 +94,15 @@ release": old builds still crashing are inside the set, the release that
 carries the fix is not.
 Only ingest may flip that status (`UpsertIssue` with `regress`);
 symbolication moving an old event between issues is not new evidence.
+An ignored issue carries its condition (Sentry's "Archive until …"):
+`ignore_until`, `ignore_until_count` (= `event_count` + N when ignored)
+and `ignore_until_escalating` with `ignore_baseline` (its stored events in
+the 24 h before it was ignored). `alerts.CheckIgnored` (every minute, one
+replica) puts those back to unresolved: time and count from the row, and
+escalation by the `unhandled_spike` rule applied to the one issue — its
+stored events in the exact last hour against that baseline — with an
+`escalating` alert. All unset is ignored for good; the viewer's plain
+Ignore is "until escalating", the API's plain `ignored` is for good.
 An issue outlives its events: resolved / ignored ones are deleted once
 the partition holding their last event is gone (the week boundary, so
 an issue is never deleted while its events still list and re-created
@@ -121,6 +130,16 @@ everything filterable is a column or a `tags` key, extracted at ingest,
 so nothing ever queries inside it, and it is never rewritten. The readers
 are the event page, the JSON event endpoint, the symbolication job and
 export. Symbol files and sentry-cli's upload chunks are `BYTEA` rows too.
+So are **attachments** — the envelope's `attachment` items (a crash
+screenshot, a view hierarchy, a log): one row each in `attachments`,
+keyed by the event's `(project_id, event_id, occurred_at)` plus their
+position, partitioned by week on the event's time like `events`, so
+retention drops them with their events and a resent envelope lands on
+the same rows. They are kept only with a stored event — one sampled out
+takes its attachments with it — and bounded at ingest (8 per envelope,
+8 MB each), so what bounds payloads bounds them. The bytes are stored as
+sent (`STORAGE EXTERNAL`: a PNG is compressed already) and served with
+`nosniff`, images inline, anything else as a download.
 Everything is in the one database: one backup, one retention mechanism,
 nothing to keep consistent with anything else.
 
@@ -150,7 +169,7 @@ never waits on a few hundred MB leaving Postgres, and a dSYM crosses the
 wire once per sidecar, not once per crash.
 
 **Retention is a DROP TABLE.** `internal/retention` keeps weekly
-partitions (`events_pYYYYMMDD`, Monday-aligned) from one week before the
+partitions (`events_pYYYYMMDD`, `attachments_p…`, `sessions_p…`, Monday-aligned) from one week before the
 retention window to two weeks ahead — at startup and on the hourly sweep
 — and drops a partition once it ends before `now − RETENTION_DAYS` (rows
 live up to a week longer; the default partition is swept row by row, it
@@ -180,8 +199,9 @@ connection per process — `store.Listener`) and poll every 30 s as the
 fallback; the SSE "new issues" stream wakes the same way on
 `crashcart_issues` (new issue / regression, payload = project id).
 
-**Scheduled work runs on one replica.** The stats rollup (every minute),
-the spike check and the retention sweep (hourly) tick in every process,
+**Scheduled work runs on one replica.** The stats rollup and the
+ignored-issue check (every minute), the spike check and the retention
+sweep (hourly) tick in every process,
 but each tick takes a Postgres advisory lock (`store.RunAsLeader`) and
 skips when another replica holds it. Partition creation (at startup on
 every replica, and in the sweep) serializes on a transaction-scoped
@@ -235,9 +255,10 @@ theme, and the SSE "new issues" banner.
 | users / user_sessions / api_keys | table | id / token_hash / id | viewer accounts, session cookies (hashed), API keys (hashed) |
 | projects | table | id (identity), slug, public_key | DSN key = `public_key` |
 | events | weekly partitions + default | (project_id, event_id, occurred_at) | columns + gzipped `payload` (TOASTed, uncompressed by TOAST) |
+| attachments | weekly partitions + default | (project_id, event_id, occurred_at, n) | the event's attachment items (screenshots …), bytes as sent |
 | sessions | weekly partitions + default | (project_id, sid, started_at) | release-health inputs, `count` for aggregates |
 | releases | table | (project_id, release) | every release seen, platforms, first_seen |
-| issues | table | (project_id, fingerprint) | stateful |
+| issues | table | (project_id, fingerprint) | stateful; ignore conditions on the row |
 | symbol_files | table | (project_id, kind, release, filename) | BYTEA in Postgres |
 | upload_chunks | table | sha1 | sentry-cli chunks until assembled (a day at most) |
 | project_usage | table | (project_id, day) | events received per UTC day; daily quota |

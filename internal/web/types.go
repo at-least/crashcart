@@ -8,9 +8,10 @@ import (
 
 // Short aliases so templates stay readable.
 type (
-	sqlcIssue        = sqlc.Issue
-	sqlcEvent        = sqlc.Event
-	sqlcAlertChannel = sqlc.AlertChannel
+	sqlcIssue         = sqlc.Issue
+	sqlcEvent         = sqlc.Event
+	sqlcAlertChannel  = sqlc.AlertChannel
+	sqlcAttachmentRow = sqlc.ListAttachmentsRow
 )
 
 type sentryFrame = sentry.Frame

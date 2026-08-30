@@ -180,7 +180,7 @@ func TestProjectsAndAuth(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("bad slug: %d", rec.Code)
 	}
-	if out := e.get("/api/projects/demo/alerts", 200); len(out["rules"].([]any)) != 3 {
+	if out := e.get("/api/projects/demo/alerts", 200); len(out["rules"].([]any)) != 4 {
 		t.Errorf("default alert rules: %v", out["rules"])
 	}
 	req = httptest.NewRequest("GET", "/api/projects/demo", nil)
@@ -492,7 +492,7 @@ func TestAlerts(t *testing.T) {
 		t.Errorf("telegram numeric chat_id: %d", rec.Code)
 	}
 	al := e.get("/api/projects/demo/alerts", 200)
-	if len(al["channels"].([]any)) != 2 || len(al["rules"].([]any)) != 3 {
+	if len(al["channels"].([]any)) != 2 || len(al["rules"].([]any)) != 4 {
 		t.Errorf("alerts = %v", al)
 	}
 	if rec, _ := e.do("DELETE", fmt.Sprintf("/api/projects/demo/alerts/channels/%d", id), nil); rec.Code != 204 {
@@ -653,5 +653,62 @@ func TestPreflightWithoutCORS(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("OPTIONS %s without a key = %d", path, rec.Code)
 		}
+	}
+}
+
+// TestIgnoreAndAttachments: PATCH with ignore conditions; an event's
+// attachments in its detail and at their URL.
+func TestIgnoreAndAttachments(t *testing.T) {
+	e := newEnv(t)
+	p := e.createProject("demo")
+	e.seed(p)
+	issues := e.get("/api/projects/demo/issues", 200)
+	fp := issues["issues"].([]any)[0].(map[string]any)["fingerprint"].(string)
+	count := issues["issues"].([]any)[0].(map[string]any)["event_count"].(float64)
+
+	rec, out := e.do("PATCH", "/api/projects/demo/issues/"+fp, map[string]any{"status": "ignored", "ignore_events": 5})
+	if rec.Code != 200 || out["status"] != "ignored" || out["ignore_until_count"] != count+5 || out["ignore_until_escalating"] != false || out["ignore_until"] != nil {
+		t.Errorf("ignore_events: %d %v", rec.Code, out)
+	}
+	rec, out = e.do("PATCH", "/api/projects/demo/issues/"+fp, map[string]any{"status": "ignored", "ignore_minutes": 60, "ignore_until_escalating": true})
+	if until, _ := out["ignore_until"].(string); rec.Code != 200 || until == "" || out["ignore_until_escalating"] != true || out["ignore_until_count"] != nil {
+		t.Errorf("ignore_minutes + escalating: %d %v", rec.Code, out)
+	}
+	if rec, _ := e.do("PATCH", "/api/projects/demo/issues/"+fp, map[string]any{"status": "resolved", "ignore_events": 1}); rec.Code != 400 {
+		t.Errorf("ignore_* with resolved = %d", rec.Code)
+	}
+	if rec, _ := e.do("PATCH", "/api/projects/demo/issues/"+fp, map[string]any{"status": "ignored", "ignore_minutes": 0}); rec.Code != 400 {
+		t.Errorf("ignore_minutes 0 = %d", rec.Code)
+	}
+	if rec, _ := e.do("POST", "/api/projects/demo/issues/bulk", map[string]any{"fingerprints": []string{fp}, "status": "ignored"}); rec.Code != 200 {
+		t.Errorf("bulk ignore = %d", rec.Code)
+	}
+	if out := e.get("/api/projects/demo/issues/"+fp, 200); out["status"] != "ignored" || out["ignore_until"] != nil || out["ignore_until_count"] != nil || out["ignore_until_escalating"] != false {
+		t.Errorf("plain ignored is unconditional: %v", out)
+	}
+
+	now := time.Now().UTC()
+	id := "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+	png := "\x89PNG\r\n\x1a\nfake"
+	body := "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\"}\n" + event(id, now.Add(-time.Minute).Format(time.RFC3339), "fatal", "2.4.1", "user-001", "NullPointerException", false, 142, "") + "\n" +
+		fmt.Sprintf("{\"type\":\"attachment\",\"length\":%d,\"filename\":\"screenshot.png\",\"content_type\":\"image/png\"}\n%s\n", len(png), png)
+	if res, err := e.in.Ingest(context.Background(), p, sentry.Parse([]byte(body), now), now); err != nil || res.Stored != 1 || res.Attachments != 1 {
+		t.Fatalf("ingest: %+v %v", res, err)
+	}
+	detail := e.get("/api/projects/demo/events/"+id, 200)
+	atts, _ := detail["attachments"].([]any)
+	if len(atts) != 1 {
+		t.Fatalf("attachments = %v", detail["attachments"])
+	}
+	a := atts[0].(map[string]any)
+	if a["filename"] != "screenshot.png" || a["content_type"] != "image/png" || a["size"] != float64(len(png)) || a["url"] != "/api/projects/demo/events/"+id+"/attachments/0" {
+		t.Errorf("attachment = %v", a)
+	}
+	rec, _ = e.do("GET", a["url"].(string), nil)
+	if rec.Code != 200 || rec.Body.String() != png || rec.Header().Get("Content-Type") != "image/png" || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("bytes: %d %v", rec.Code, rec.Header())
+	}
+	if rec, _ := e.do("GET", "/api/projects/demo/events/"+id+"/attachments/3", nil); rec.Code != 404 {
+		t.Errorf("missing = %d", rec.Code)
 	}
 }

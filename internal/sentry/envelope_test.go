@@ -325,3 +325,44 @@ func TestLocationAndGroupingRefinements(t *testing.T) {
 		t.Fatal("line numbers must not split multi-frame stacks")
 	}
 }
+
+func TestParseAttachments(t *testing.T) {
+	png := "PNGPNG"
+	env := Parse(envelope(`{"type":"event"}`, crashEvent,
+		`{"type":"attachment","length":6,"filename":"/data/app/screenshot.png","content_type":"IMAGE/PNG","attachment_type":"event.attachment"}`, png,
+		`{"type":"attachment","length":2}`, "{}"), now)
+	if env.EventID != "11111111111111111111111111111111" {
+		t.Errorf("header event id = %q", env.EventID)
+	}
+	if len(env.Events) != 1 || len(env.Attachments) != 2 || env.Dropped != 0 {
+		t.Fatalf("events=%d attachments=%d dropped=%d", len(env.Events), len(env.Attachments), env.Dropped)
+	}
+	a := env.Attachments[0]
+	if a.Filename != "screenshot.png" || a.ContentType != "image/png" || a.AttachmentType != "event.attachment" || string(a.Data) != png {
+		t.Errorf("attachment 0 = %+v", a)
+	}
+	b := env.Attachments[1]
+	if b.Filename != "attachment" || b.ContentType != "application/octet-stream" || b.AttachmentType != "event.attachment" || string(b.Data) != "{}" {
+		t.Errorf("attachment 1 defaults = %+v", b)
+	}
+	// Over the count limit: the rest are dropped and counted.
+	var items []string
+	for i := 0; i <= MaxAttachments; i++ {
+		items = append(items, `{"type":"attachment","length":1}`, "x")
+	}
+	env = Parse(envelope(items...), now)
+	if len(env.Attachments) != MaxAttachments || env.Dropped != 1 {
+		t.Errorf("count limit: attachments=%d dropped=%d", len(env.Attachments), env.Dropped)
+	}
+	// Over the size limit: dropped.
+	big := strings.Repeat("x", MaxAttachmentSize+1)
+	env = Parse(envelope(fmt.Sprintf(`{"type":"attachment","length":%d}`, len(big)), big), now)
+	if len(env.Attachments) != 0 || env.Dropped != 1 {
+		t.Errorf("size limit: attachments=%d dropped=%d", len(env.Attachments), env.Dropped)
+	}
+	// A header without a usable id: no event id for the attachments.
+	env = Parse([]byte("{\"event_id\":\"h1\"}\n{\"type\":\"attachment\",\"length\":1}\nx\n"), now)
+	if env.EventID != "" || len(env.Attachments) != 1 {
+		t.Errorf("no header id: %q %d", env.EventID, len(env.Attachments))
+	}
+}

@@ -86,6 +86,20 @@ PATCH  /api/projects/{slug}/issues/{fingerprint}     {"status": "resolved"}
 POST   /api/projects/{slug}/issues/bulk              {"fingerprints": ["…"], "status": "ignored"}
 ```
 
+A status change body is `{"status": "unresolved" | "resolved" | "ignored"}`;
+with `ignored`, optional conditions say when the issue comes back to
+unresolved on its own (any combination; none = ignored for good):
+
+| Field | Meaning |
+|---|---|
+| `ignore_minutes` | back after this many minutes |
+| `ignore_events` | back after this many further events (`ignore_until_count` = the count now + this) |
+| `ignore_until_escalating` | back when the issue's events in an hour are 3× its rate of the 24 h before now, and at least 10 — with an `escalating` alert |
+
+```json
+{"status": "ignored", "ignore_minutes": 10080, "ignore_until_escalating": true}
+```
+
 List parameters (all optional):
 
 | Parameter | Meaning |
@@ -119,6 +133,9 @@ Issue object:
   "last_release": "2.4.1",
   "releases": ["2.4.0", "2.4.1"],
   "resolved_releases": null,
+  "ignore_until": null,
+  "ignore_until_count": null,
+  "ignore_until_escalating": false,
   "created_at": "…",
   "updated_at": "…",
   "sparkline": [0, 2, 5, 11, 9, 3]
@@ -148,7 +165,8 @@ The detail (`GET …/issues/{fingerprint}`, takes a window) adds:
 events of the issue (`""` when none is stored), usable with
 `GET …/events/{event_id}`.
 
-`PATCH` and `bulk` accept any of the five statuses; `bulk` returns
+`PATCH` and `bulk` accept `unresolved`, `resolved` and `ignored` (with
+the conditions above; `regression` is ingest's verdict); `bulk` returns
 `{"updated": n, "status": "…"}`.
 
 ## Events
@@ -156,7 +174,14 @@ events of the issue (`""` when none is stored), usable with
 ```
 GET /api/projects/{slug}/events
 GET /api/projects/{slug}/events/{event_id}
+GET /api/projects/{slug}/events/{event_id}/attachments/{n}
 ```
+
+The event detail carries `attachments`: one entry per file the SDK
+attached (a crash screenshot, a view hierarchy, …) with `n`, `filename`,
+`content_type`, `attachment_type`, `size` and `url`; the URL returns the
+bytes (images under their own type, anything else as an
+`application/octet-stream` download).
 
 List parameters (all optional):
 
@@ -231,7 +256,7 @@ POST   /api/projects/{slug}/alerts/channels            {"kind":"webhook","config
 DELETE /api/projects/{slug}/alerts/channels/{id}
 ```
 
-`{type}` is `new_issue`, `regression` or `unhandled_spike`. A rule:
+`{type}` is `new_issue`, `regression`, `unhandled_spike` or `escalating`. A rule:
 
 ```json
 { "project_id": 1, "type": "unhandled_spike", "enabled": true, "cooldown_minutes": 60, "last_triggered": "…" }

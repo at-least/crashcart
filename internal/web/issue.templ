@@ -54,8 +54,11 @@ templ IssuePage(pg Page, d IssueData) {
 					hx-swap="outerHTML"
 					hx-push-url="false"
 				>
-					for _, st := range []string{"unresolved", "resolved", "ignored"} {
-						<option value={ st } selected?={ st == string(d.Issue.Status) }>{ statusLabels[st] }</option>
+					for _, st := range []string{"unresolved", "resolved"} {
+						<option value={ st } selected?={ st == statusValue(d.Issue) }>{ statusLabels[st] }</option>
+					}
+					for _, o := range ignoreOptions {
+						<option value={ o.Value } selected?={ o.Value == statusValue(d.Issue) }>{ o.Label }</option>
 					}
 					if d.Issue.Status == "regression" {
 						<option value="regression" selected>Regression</option>
@@ -63,6 +66,9 @@ templ IssuePage(pg Page, d IssueData) {
 				</select>
 				@ChevronIcon()
 			</span>
+			if l := ignoreLabel(d.Issue); l != "" {
+				<p class="ignore-note" title="Comes back to unresolved when this is met (checked every minute)">{ "Ignored " + l }</p>
+			}
 			<dl class="issue-stats">
 				<div><dt>Events</dt><dd title={ i64(d.Issue.EventCount) }>{ compact(d.Issue.EventCount) }</dd></div>
 				<div><dt>Users ({ pg.S.Win })</dt><dd>{ compact(d.Users) }</dd></div>
@@ -102,6 +108,9 @@ templ IssuePage(pg Page, d IssueData) {
 						}
 						for _, st := range d.Stacks {
 							@StackTrace(st, pg.S.Persist().Href("/settings")+"#symbols")
+						}
+						if len(d.Images) > 0 {
+							@AttachmentImages(pg, string(d.Latest.EventID), d.Images)
 						}
 					}
 				</section>

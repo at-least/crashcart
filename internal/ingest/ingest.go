@@ -32,13 +32,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/metrics"
-
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/metrics"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
@@ -162,6 +161,7 @@ type Result struct {
 	Mismatched  int         // events whose platform family is not the project's
 	Invalid     int         // event items that did not parse
 	Sessions    int         // session rows written
+	Attachments int         // attachment rows written (the header event's, when it was stored)
 	NewIssues   []sentry.ID // fingerprints created by this envelope
 	Regressions []sentry.ID // fingerprints flipped to 'regression'
 	Jobs        int
@@ -327,6 +327,10 @@ var (
 	envelopesTotal = metrics.NewCounter("crashcart_ingest_envelopes_total", "Envelopes received, by result.", "result")
 	eventsTotal    = metrics.NewCounter("crashcart_ingest_events_total", "Events in accepted envelopes, by outcome.", "outcome")
 	sessionsTotal  = metrics.NewCounter("crashcart_ingest_sessions_total", "Session rows written.")
+	// Attachments: stored with their event, or unstored — the event was
+	// sampled out, a resend, or not in the envelope. (Over-limit ones are
+	// dropped by the parser and reported in the envelope's dropped count.)
+	attachmentsTotal = metrics.NewCounter("crashcart_ingest_attachments_total", "Attachment items, by outcome (stored, unstored).", "outcome")
 )
 
 func (in *Ingester) ok(w http.ResponseWriter, res Result, id string) {
@@ -336,8 +340,9 @@ func (in *Ingester) ok(w http.ResponseWriter, res Result, id string) {
 	eventsTotal.Add(int64(res.Duplicates), "duplicate")
 	eventsTotal.Add(int64(res.Invalid), "invalid")
 	sessionsTotal.Add(int64(res.Sessions))
+	attachmentsTotal.Add(int64(res.Attachments), "stored")
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions, "invalid": res.Invalid, "mismatched": res.Mismatched})
+	json.NewEncoder(w).Encode(map[string]any{"id": id, "received": res.Received, "stored": res.Stored, "sessions": res.Sessions, "attachments": res.Attachments, "invalid": res.Invalid, "mismatched": res.Mismatched})
 }
 
 func (in *Ingester) fail(w http.ResponseWriter, err error) {
@@ -376,6 +381,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	var res Result
 	res.Received = len(env.Events)
 	if len(env.Events) == 0 && len(env.Sessions) == 0 {
+		attachmentsTotal.Add(int64(len(env.Attachments)), "unstored") // nothing to attach them to
 		return res, nil
 	}
 
@@ -649,6 +655,36 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			return fmt.Errorf("insert events: %w", err)
 		}
 		res.Stored = len(rows)
+
+		// Attachments belong to the envelope header's event (the SDKs send
+		// them in the event's own envelope); without a header id, a lone
+		// event is the one. They are kept only with a stored event: one
+		// sampled out (or resent, already stored) takes its attachments
+		// with it — sampling bounds them as it bounds payloads.
+		if len(env.Attachments) > 0 {
+			var target *store.EventInsert
+			for i := range rows {
+				if string(rows[i].EventID) == env.EventID || (env.EventID == "" && len(rows) == 1) {
+					target = &rows[i]
+					break
+				}
+			}
+			if target == nil {
+				attachmentsTotal.Add(int64(len(env.Attachments)), "unstored")
+			} else {
+				atts := make([]store.AttachmentInsert, 0, len(env.Attachments))
+				for i, a := range env.Attachments {
+					atts = append(atts, store.AttachmentInsert{
+						OccurredAt: target.OccurredAt, ProjectID: p.ID, EventID: target.EventID, N: int32(i),
+						Filename: a.Filename, ContentType: a.ContentType, AttachmentType: a.AttachmentType, Data: a.Data,
+					})
+				}
+				if err := store.InsertAttachments(ctx, tx, atts); err != nil {
+					return fmt.Errorf("insert attachments: %w", err)
+				}
+				res.Attachments = len(atts)
+			}
+		}
 
 		sessions := make([]store.SessionInsert, 0, len(env.Sessions))
 		for _, s := range env.Sessions {

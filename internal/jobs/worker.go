@@ -158,7 +158,6 @@ func (w *Worker) dispatch(ctx context.Context, j sqlc.Job) error {
 	err := w.run(hctx, h, j)
 	cancel()
 	if err == nil {
-		JobsTotal.Inc(string(j.Kind), "ok")
 		return w.Store.DeleteJob(bg, j.ID)
 	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
@@ -167,9 +166,7 @@ func (w *Worker) dispatch(ctx context.Context, j sqlc.Job) error {
 	msg := truncate(err.Error(), maxErrorChars)
 	delay := Backoff(j.Attempts - 1)
 	if j.Attempts >= maxAttempts {
-		JobsTotal.Inc(string(j.Kind), "dead")
 	} else {
-		JobsTotal.Inc(string(j.Kind), "retry")
 	}
 	w.log().Warn("jobs: failed", "id", j.ID, "kind", j.Kind, "project", j.ProjectID, "attempt", j.Attempts, "retry_in", delay, "err", msg)
 	return w.Store.RetryJob(bg, sqlc.RetryJobParams{ID: j.ID, LastError: &msg, RunAfter: time.Now().Add(delay)})

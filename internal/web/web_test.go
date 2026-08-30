@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -299,7 +300,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if err != nil || len(np.PublicKey) != 32 {
 		t.Fatalf("new project: %+v %v", np, err)
 	}
-	if rules, _ := w.Store.ListAlertRules(ctx, np.ID); len(rules) != 3 {
+	if rules, _ := w.Store.ListAlertRules(ctx, np.ID); len(rules) != 4 {
 		t.Errorf("default alert rules = %d", len(rules))
 	}
 	assertPage(t, mux, "/p/ios-app/settings", np.PublicKey+"@")
@@ -571,5 +572,107 @@ func TestAccountUsers(t *testing.T) {
 	}
 	if rec := do("POST", "/login", "email=ops%40example.com&password=correct+horse+battery", nil, false); rec.Code != 401 {
 		t.Errorf("removed user can still sign in: %d", rec.Code)
+	}
+}
+
+// TestIgnoreConditionsAndAttachments: the status select's "Ignored …"
+// choices set the conditions; an event's attachments show on its page and
+// are served with safe headers.
+func TestIgnoreConditionsAndAttachments(t *testing.T) {
+	w, p, mux := setup(t)
+	ctx := context.Background()
+	issues, _, _ := w.Store.ListIssues(ctx, storeIssueFilter(p.ID))
+	fp := issues[0].Fingerprint
+	hx := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
+		req.AddCookie(sessionCookie)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	issue := func() sqlc.Issue {
+		is, err := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return is
+	}
+	if r := hx("PATCH", "/p/shop/issues/"+string(fp)+"/status", "status=ignored:7d"); r.Code != 303 {
+		t.Fatalf("ignored:7d = %d %s", r.Code, r.Body.String())
+	}
+	if is := issue(); is.Status != "ignored" || is.IgnoreUntil == nil || is.IgnoreUntilEscalating || time.Until(*is.IgnoreUntil) < 6*24*time.Hour {
+		t.Fatalf("ignored:7d → %+v", is)
+	}
+	assertPage(t, mux, "/p/shop/issues/"+string(fp), "Ignored until 20", `value="ignored:7d" selected`)
+	if r := hx("PATCH", "/p/shop/issues/"+string(fp)+"/status", "status=ignored"); r.Code != 303 {
+		t.Fatalf("ignored = %d", r.Code)
+	}
+	if is := issue(); !is.IgnoreUntilEscalating || is.IgnoreUntil != nil || is.IgnoreBaseline == nil {
+		t.Fatalf("ignored (until escalating) → %+v", is)
+	}
+	assertPage(t, mux, "/p/shop/issues?status=ignored", "until escalating")
+	// The bulk bar's select folds into the status.
+	if r := hx("POST", "/p/shop/issues/bulk", "fp="+string(fp)+"&status=ignored&ignore=100"); r.Code != 200 {
+		t.Fatalf("bulk ignore = %d %s", r.Code, r.Body.String())
+	}
+	if is := issue(); is.IgnoreUntilCount == nil || *is.IgnoreUntilCount != is.EventCount+100 || is.IgnoreUntilEscalating {
+		t.Fatalf("bulk ignore=100 → %+v", is)
+	}
+	assertPage(t, mux, "/p/shop/issues?status=ignored", "until 100 more events")
+	if r := hx("PATCH", "/p/shop/issues/"+string(fp)+"/status", "status=ignored:forever"); r.Code != 303 {
+		t.Fatalf("forever = %d", r.Code)
+	}
+	if is := issue(); is.Status != "ignored" || is.IgnoreUntil != nil || is.IgnoreUntilCount != nil || is.IgnoreUntilEscalating {
+		t.Fatalf("forever → %+v", is)
+	}
+	if r := hx("PATCH", "/p/shop/issues/"+string(fp)+"/status", "status=ignored:bogus"); r.Code != 400 {
+		t.Errorf("bogus condition = %d", r.Code)
+	}
+	if r := hx("PATCH", "/p/shop/issues/"+string(fp)+"/status", "status=unresolved"); r.Code != 303 {
+		t.Fatalf("unresolved = %d", r.Code)
+	}
+	if is := issue(); is.Status != "unresolved" || is.IgnoreUntil != nil {
+		t.Fatalf("unresolved → %+v", is)
+	}
+
+	// A later event of the issue with a screenshot and an HTML file attached.
+	n := time.Now().UTC()
+	id := "b1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+	ev := strings.Replace(strings.ReplaceAll(crashEvent, "%s", n.Add(-time.Minute).Format(time.RFC3339)), "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4", id, 1)
+	png := "\x89PNG\r\n\x1a\nfake"
+	body := "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\"}\n" + ev + "\n" +
+		fmt.Sprintf("{\"type\":\"attachment\",\"length\":%d,\"filename\":\"screenshot.png\",\"content_type\":\"image/png\"}\n%s\n", len(png), png) +
+		"{\"type\":\"attachment\",\"length\":16,\"filename\":\"page.html\",\"content_type\":\"text/html\"}\n<script>1</script>\n"
+	in := &ingest.Ingester{Store: w.Store, Cfg: config.Config{}, Log: slog.Default()}
+	if res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), n), n); err != nil || res.Stored != 1 || res.Attachments != 2 {
+		t.Fatalf("ingest: %+v %v", res, err)
+	}
+	assertPage(t, mux, "/p/shop/events/"+id, "Attachments", "screenshot.png", "page.html", "/p/shop/events/"+id+"/attachments/0", "attachment-img")
+	assertPage(t, mux, "/p/shop/issues/"+string(fp), "attachment-img", "/p/shop/events/"+id+"/attachments/0")
+	req := httptest.NewRequest("GET", "/p/shop/events/"+id+"/attachments/0", nil)
+	req.AddCookie(sessionCookie)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != 200 || rec.Body.String() != png || rec.Header().Get("Content-Type") != "image/png" || rec.Header().Get("X-Content-Type-Options") != "nosniff" ||
+		!strings.HasPrefix(rec.Header().Get("Content-Disposition"), "inline;") {
+		t.Errorf("screenshot: %d %v %q", rec.Code, rec.Header(), rec.Body.String())
+	}
+	req = httptest.NewRequest("GET", "/p/shop/events/"+id+"/attachments/1", nil)
+	req.AddCookie(sessionCookie)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/octet-stream" || !strings.HasPrefix(rec.Header().Get("Content-Disposition"), "attachment;") {
+		t.Errorf("html attachment must be a download: %d %v", rec.Code, rec.Header())
+	}
+	if c, _ := get(t, mux, "/p/shop/events/"+id+"/attachments/7", false); c != 404 {
+		t.Errorf("missing attachment = %d", c)
+	}
+	req = httptest.NewRequest("GET", "/p/shop/events/"+id+"/attachments/0", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != 303 {
+		t.Errorf("attachment without a session = %d", rec.Code)
 	}
 }

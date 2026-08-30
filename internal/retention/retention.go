@@ -24,7 +24,7 @@ import (
 // independent of RETENTION_DAYS.
 const AggregateRetentionDays = 400
 
-// PartitionWidth is the width of one events / sessions partition (weeks,
+// PartitionWidth is the width of one events / sessions / attachments partition (weeks,
 // Monday-aligned). Retention drops whole partitions, so rows — payloads
 // included — live up to one width longer than RETENTION_DAYS.
 const PartitionWidth = 7 * 24 * time.Hour
@@ -34,7 +34,7 @@ const PartitionWidth = 7 * 24 * time.Hour
 const partitionsAhead = 2 * PartitionWidth
 
 // partitioned lists the tables and their partition key.
-var partitioned = []struct{ table, column string }{{"events", "occurred_at"}, {"sessions", "started_at"}}
+var partitioned = []struct{ table, column string }{{"events", "occurred_at"}, {"attachments", "occurred_at"}, {"sessions", "started_at"}}
 
 // rolled lists the rollup tables (bounded by AggregateRetentionDays).
 var rolled = []string{"event_stats_hourly_rolled", "issue_stats_hourly_rolled", "release_health_hourly_rolled"}
@@ -51,7 +51,7 @@ func Reconcile(ctx context.Context, st *store.Store, cfg config.Config, log *slo
 
 // ── partitions ─────────────────────────────────────────────────────────
 
-var partitionName = regexp.MustCompile(`^(events|sessions)_p(\d{8})$`)
+var partitionName = regexp.MustCompile(`^(events|attachments|sessions)_p(\d{8})$`)
 
 // weekStart is the Monday 00:00 UTC on or before t.
 func weekStart(t time.Time) time.Time {
@@ -139,7 +139,7 @@ func ensurePartition(ctx context.Context, st *store.Store, table, column string,
 	})
 }
 
-// Partition is one weekly partition of events / sessions.
+// Partition is one weekly partition of events / attachments / sessions.
 type Partition struct {
 	Name  string
 	Start time.Time

@@ -60,6 +60,17 @@ templ Issues(pg Page, d IssuesData) {
 				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="ignored">Ignore</button>
 				<button type="submit" data-slot="button" data-variant="outline" data-size="sm" name="status" value="unresolved">Reopen</button>
 			</div>
+			<span data-slot="native-select-wrapper" title="What Ignore means: the issue comes back to unresolved when this is met">
+				<select name="ignore" data-slot="native-select" class="h-8 text-xs" aria-label="Ignore until">
+					<option value="escalating">until escalating</option>
+					<option value="7d">{ "for 7 days" }</option>
+					<option value="30d">{ "for 30 days" }</option>
+					<option value="100">until 100 more events</option>
+					<option value="1000">until 1000 more events</option>
+					<option value="forever">{ "forever" }</option>
+				</select>
+				@ChevronIcon()
+			</span>
 		</div>
 		@IssuesTable(pg, d)
 	</form>
@@ -123,6 +134,9 @@ templ IssuesTable(pg Page, d IssuesData) {
 											@StatusBadge(string(is.Status))
 										}
 										{ issueSub(is) }
+										if l := ignoreLabel(is); l != "" {
+											<span class="ignore-note">{ " · " + l }</span>
+										}
 									</div>
 								</td>
 								<td>

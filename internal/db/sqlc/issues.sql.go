@@ -120,8 +120,96 @@ func (q *Queries) DeleteEmptyIssue(ctx context.Context, arg DeleteEmptyIssuePara
 	return err
 }
 
+const escalateIssue = `-- name: EscalateIssue :one
+UPDATE issues SET status = 'unresolved', ignore_until = NULL, ignore_until_count = NULL,
+    ignore_until_escalating = false, ignore_baseline = NULL, updated_at = now()
+WHERE project_id = $1 AND fingerprint = $2 AND status = 'ignored' AND ignore_until_escalating
+RETURNING project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at
+`
+
+type EscalateIssueParams struct {
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
+}
+
+// Flips one escalating issue back to unresolved (only while it is still
+// ignored-until-escalating: a concurrent status change wins).
+func (q *Queries) EscalateIssue(ctx context.Context, arg EscalateIssueParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, escalateIssue, arg.ProjectID, arg.Fingerprint)
+	var i Issue
+	err := row.Scan(
+		&i.ProjectID,
+		&i.Fingerprint,
+		&i.Title,
+		&i.Level,
+		&i.ErrorType,
+		&i.Transaction,
+		&i.Platform,
+		&i.Status,
+		&i.StatusBy,
+		&i.EventCount,
+		&i.StoredCount,
+		&i.FirstSeen,
+		&i.LastSeen,
+		&i.FirstRelease,
+		&i.LastRelease,
+		&i.Releases,
+		&i.ResolvedReleases,
+		&i.IgnoreUntil,
+		&i.IgnoreUntilCount,
+		&i.IgnoreUntilEscalating,
+		&i.IgnoreBaseline,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const escalationInputs = `-- name: EscalationInputs :many
+SELECT i.project_id, i.fingerprint, COALESCE(i.ignore_baseline, 0)::bigint AS baseline,
+       (SELECT count(*) FROM events e WHERE e.project_id = i.project_id AND e.fingerprint = i.fingerprint
+          AND e.occurred_at >= $1::timestamptz)::bigint AS recent
+FROM issues i
+WHERE i.status = 'ignored' AND i.ignore_until_escalating
+`
+
+type EscalationInputsRow struct {
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
+	Baseline    int64     `json:"baseline"`
+	Recent      int64     `json:"recent"`
+}
+
+// Ignored-until-escalating issues with their stored events in the exact
+// last hour (raw rows through the events_project_fingerprint index) next
+// to the baseline recorded when they were ignored.
+func (q *Queries) EscalationInputs(ctx context.Context, recentFrom time.Time) ([]EscalationInputsRow, error) {
+	rows, err := q.db.Query(ctx, escalationInputs, recentFrom)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EscalationInputsRow{}
+	for rows.Next() {
+		var i EscalationInputsRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.Fingerprint,
+			&i.Baseline,
+			&i.Recent,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getIssue = `-- name: GetIssue :one
-SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND fingerprint = $2
+SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at FROM issues WHERE project_id = $1 AND fingerprint = $2
 `
 
 type GetIssueParams struct {
@@ -150,6 +238,10 @@ func (q *Queries) GetIssue(ctx context.Context, arg GetIssueParams) (Issue, erro
 		&i.LastRelease,
 		&i.Releases,
 		&i.ResolvedReleases,
+		&i.IgnoreUntil,
+		&i.IgnoreUntilCount,
+		&i.IgnoreUntilEscalating,
+		&i.IgnoreBaseline,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -264,7 +356,7 @@ func (q *Queries) IssueTimeline(ctx context.Context, arg IssueTimelineParams) ([
 }
 
 const listIssuesByRelease = `-- name: ListIssuesByRelease :many
-SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND (first_release = $2 OR last_release = $2)
+SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at FROM issues WHERE project_id = $1 AND (first_release = $2 OR last_release = $2)
 ORDER BY event_count DESC LIMIT $3
 `
 
@@ -301,6 +393,10 @@ func (q *Queries) ListIssuesByRelease(ctx context.Context, arg ListIssuesByRelea
 			&i.LastRelease,
 			&i.Releases,
 			&i.ResolvedReleases,
+			&i.IgnoreUntil,
+			&i.IgnoreUntilCount,
+			&i.IgnoreUntilEscalating,
+			&i.IgnoreBaseline,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -315,7 +411,7 @@ func (q *Queries) ListIssuesByRelease(ctx context.Context, arg ListIssuesByRelea
 }
 
 const listNewIssues = `-- name: ListNewIssues :many
-SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND first_seen >= $2 ORDER BY first_seen DESC LIMIT $3
+SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at FROM issues WHERE project_id = $1 AND first_seen >= $2 ORDER BY first_seen DESC LIMIT $3
 `
 
 type ListNewIssuesParams struct {
@@ -351,6 +447,10 @@ func (q *Queries) ListNewIssues(ctx context.Context, arg ListNewIssuesParams) ([
 			&i.LastRelease,
 			&i.Releases,
 			&i.ResolvedReleases,
+			&i.IgnoreUntil,
+			&i.IgnoreUntilCount,
+			&i.IgnoreUntilEscalating,
+			&i.IgnoreBaseline,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -365,7 +465,7 @@ func (q *Queries) ListNewIssues(ctx context.Context, arg ListNewIssuesParams) ([
 }
 
 const listRegressions = `-- name: ListRegressions :many
-SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at FROM issues WHERE project_id = $1 AND status = 'regression' ORDER BY last_seen DESC LIMIT $2
+SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at FROM issues WHERE project_id = $1 AND status = 'regression' ORDER BY last_seen DESC LIMIT $2
 `
 
 type ListRegressionsParams struct {
@@ -400,6 +500,10 @@ func (q *Queries) ListRegressions(ctx context.Context, arg ListRegressionsParams
 			&i.LastRelease,
 			&i.Releases,
 			&i.ResolvedReleases,
+			&i.IgnoreUntil,
+			&i.IgnoreUntilCount,
+			&i.IgnoreUntilEscalating,
+			&i.IgnoreBaseline,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -416,24 +520,42 @@ func (q *Queries) ListRegressions(ctx context.Context, arg ListRegressionsParams
 const setIssueStatus = `-- name: SetIssueStatus :one
 UPDATE issues SET status = $3::issue_status, status_by = $4,
     resolved_releases = CASE WHEN $3::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
+    ignore_until = CASE WHEN $3::issue_status = 'ignored' THEN $5::timestamptz END,
+    ignore_until_count = CASE WHEN $3::issue_status = 'ignored' THEN event_count + $6::bigint END,
+    ignore_until_escalating = $3::issue_status = 'ignored' AND $7::bool,
+    ignore_baseline = CASE WHEN $3::issue_status = 'ignored' AND $7::bool THEN
+        (SELECT COALESCE(sum(h.events), 0)::bigint FROM issue_stats_hourly h
+         WHERE h.project_id = issues.project_id AND h.fingerprint = issues.fingerprint
+           AND h.bucket >= date_trunc('hour', now()) - INTERVAL '24 hours' AND h.bucket < date_trunc('hour', now())) END,
     updated_at = now()
-WHERE project_id = $1 AND fingerprint = $2 RETURNING project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at
+WHERE issues.project_id = $1 AND issues.fingerprint = $2 RETURNING project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at
 `
 
 type SetIssueStatusParams struct {
-	ProjectID   int64       `json:"project_id"`
-	Fingerprint sentry.ID   `json:"fingerprint"`
-	Status      IssueStatus `json:"status"`
-	StatusBy    *string     `json:"status_by"`
+	ProjectID        int64       `json:"project_id"`
+	Fingerprint      sentry.ID   `json:"fingerprint"`
+	Status           IssueStatus `json:"status"`
+	StatusBy         *string     `json:"status_by"`
+	IgnoreUntil      *time.Time  `json:"ignore_until"`
+	IgnoreEvents     *int64      `json:"ignore_events"`
+	IgnoreEscalating bool        `json:"ignore_escalating"`
 }
 
 // Resolving records the releases seen so far (regression detection).
+// Ignoring records its conditions (Sentry's archive "until …"): a time,
+// a number of further events (ignore_until_count = event_count + N), or
+// escalation — for which the baseline is the issue's stored events over
+// the 24 full hours before now (issue_stats_hourly), the same baseline
+// the unhandled_spike rule uses. Any other status clears them.
 func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) (Issue, error) {
 	row := q.db.QueryRow(ctx, setIssueStatus,
 		arg.ProjectID,
 		arg.Fingerprint,
 		arg.Status,
 		arg.StatusBy,
+		arg.IgnoreUntil,
+		arg.IgnoreEvents,
+		arg.IgnoreEscalating,
 	)
 	var i Issue
 	err := row.Scan(
@@ -454,6 +576,10 @@ func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) 
 		&i.LastRelease,
 		&i.Releases,
 		&i.ResolvedReleases,
+		&i.IgnoreUntil,
+		&i.IgnoreUntilCount,
+		&i.IgnoreUntilEscalating,
+		&i.IgnoreBaseline,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -463,28 +589,85 @@ func (q *Queries) SetIssueStatus(ctx context.Context, arg SetIssueStatusParams) 
 const setIssuesStatus = `-- name: SetIssuesStatus :execrows
 UPDATE issues SET status = $3::issue_status, status_by = $4,
     resolved_releases = CASE WHEN $3::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
+    ignore_until = CASE WHEN $3::issue_status = 'ignored' THEN $5::timestamptz END,
+    ignore_until_count = CASE WHEN $3::issue_status = 'ignored' THEN event_count + $6::bigint END,
+    ignore_until_escalating = $3::issue_status = 'ignored' AND $7::bool,
+    ignore_baseline = CASE WHEN $3::issue_status = 'ignored' AND $7::bool THEN
+        (SELECT COALESCE(sum(h.events), 0)::bigint FROM issue_stats_hourly h
+         WHERE h.project_id = issues.project_id AND h.fingerprint = issues.fingerprint
+           AND h.bucket >= date_trunc('hour', now()) - INTERVAL '24 hours' AND h.bucket < date_trunc('hour', now())) END,
     updated_at = now()
-WHERE project_id = $1 AND fingerprint = ANY($2::uuid[])
+WHERE issues.project_id = $1 AND issues.fingerprint = ANY($2::uuid[])
 `
 
 type SetIssuesStatusParams struct {
-	ProjectID int64       `json:"project_id"`
-	Column2   []sentry.ID `json:"column_2"`
-	Status    IssueStatus `json:"status"`
-	StatusBy  *string     `json:"status_by"`
+	ProjectID        int64       `json:"project_id"`
+	Column2          []sentry.ID `json:"column_2"`
+	Status           IssueStatus `json:"status"`
+	StatusBy         *string     `json:"status_by"`
+	IgnoreUntil      *time.Time  `json:"ignore_until"`
+	IgnoreEvents     *int64      `json:"ignore_events"`
+	IgnoreEscalating bool        `json:"ignore_escalating"`
 }
 
+// The bulk form of SetIssueStatus (same rules).
 func (q *Queries) SetIssuesStatus(ctx context.Context, arg SetIssuesStatusParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setIssuesStatus,
 		arg.ProjectID,
 		arg.Column2,
 		arg.Status,
 		arg.StatusBy,
+		arg.IgnoreUntil,
+		arg.IgnoreEvents,
+		arg.IgnoreEscalating,
 	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const unignoreDue = `-- name: UnignoreDue :many
+WITH due AS (
+    SELECT project_id, fingerprint, (ignore_until IS NOT NULL AND ignore_until <= now()) AS by_time
+    FROM issues
+    WHERE status = 'ignored'
+      AND ((ignore_until IS NOT NULL AND ignore_until <= now()) OR (ignore_until_count IS NOT NULL AND event_count >= ignore_until_count))
+    FOR UPDATE)
+UPDATE issues i SET status = 'unresolved', ignore_until = NULL, ignore_until_count = NULL,
+    ignore_until_escalating = false, ignore_baseline = NULL, updated_at = now()
+FROM due d
+WHERE i.project_id = d.project_id AND i.fingerprint = d.fingerprint
+RETURNING i.project_id, i.fingerprint, (CASE WHEN d.by_time THEN 'time' ELSE 'count' END)::text AS reason
+`
+
+type UnignoreDueRow struct {
+	ProjectID   int64     `json:"project_id"`
+	Fingerprint sentry.ID `json:"fingerprint"`
+	Reason      string    `json:"reason"`
+}
+
+// Ignored issues whose time or count condition is met go back to
+// unresolved (alerts.CheckIgnored). Returns them with the reason (read
+// before the update: RETURNING sees the cleared columns).
+func (q *Queries) UnignoreDue(ctx context.Context) ([]UnignoreDueRow, error) {
+	rows, err := q.db.Query(ctx, unignoreDue)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UnignoreDueRow{}
+	for rows.Next() {
+		var i UnignoreDueRow
+		if err := rows.Scan(&i.ProjectID, &i.Fingerprint, &i.Reason); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertIssue = `-- name: UpsertIssue :one
@@ -505,7 +688,7 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
                          AND NOT (COALESCE(issues.resolved_releases, '{}') @> EXCLUDED.releases)
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now()
-RETURNING project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, created_at, updated_at, (xmax = 0) AS created,
+RETURNING project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at, (xmax = 0) AS created,
           COALESCE(issues.status = 'regression' AND (SELECT status FROM prev) = 'resolved', false)::bool AS regressed
 `
 
@@ -527,27 +710,31 @@ type UpsertIssueParams struct {
 }
 
 type UpsertIssueRow struct {
-	ProjectID        int64       `json:"project_id"`
-	Fingerprint      sentry.ID   `json:"fingerprint"`
-	Title            string      `json:"title"`
-	Level            EventLevel  `json:"level"`
-	ErrorType        *string     `json:"error_type"`
-	Transaction      *string     `json:"transaction"`
-	Platform         *string     `json:"platform"`
-	Status           IssueStatus `json:"status"`
-	StatusBy         *string     `json:"status_by"`
-	EventCount       int64       `json:"event_count"`
-	StoredCount      int64       `json:"stored_count"`
-	FirstSeen        time.Time   `json:"first_seen"`
-	LastSeen         time.Time   `json:"last_seen"`
-	FirstRelease     *string     `json:"first_release"`
-	LastRelease      *string     `json:"last_release"`
-	Releases         []string    `json:"releases"`
-	ResolvedReleases []string    `json:"resolved_releases"`
-	CreatedAt        time.Time   `json:"created_at"`
-	UpdatedAt        time.Time   `json:"updated_at"`
-	Created          bool        `json:"created"`
-	Regressed        bool        `json:"regressed"`
+	ProjectID             int64       `json:"project_id"`
+	Fingerprint           sentry.ID   `json:"fingerprint"`
+	Title                 string      `json:"title"`
+	Level                 EventLevel  `json:"level"`
+	ErrorType             *string     `json:"error_type"`
+	Transaction           *string     `json:"transaction"`
+	Platform              *string     `json:"platform"`
+	Status                IssueStatus `json:"status"`
+	StatusBy              *string     `json:"status_by"`
+	EventCount            int64       `json:"event_count"`
+	StoredCount           int64       `json:"stored_count"`
+	FirstSeen             time.Time   `json:"first_seen"`
+	LastSeen              time.Time   `json:"last_seen"`
+	FirstRelease          *string     `json:"first_release"`
+	LastRelease           *string     `json:"last_release"`
+	Releases              []string    `json:"releases"`
+	ResolvedReleases      []string    `json:"resolved_releases"`
+	IgnoreUntil           *time.Time  `json:"ignore_until"`
+	IgnoreUntilCount      *int64      `json:"ignore_until_count"`
+	IgnoreUntilEscalating bool        `json:"ignore_until_escalating"`
+	IgnoreBaseline        *int64      `json:"ignore_baseline"`
+	CreatedAt             time.Time   `json:"created_at"`
+	UpdatedAt             time.Time   `json:"updated_at"`
+	Created               bool        `json:"created"`
+	Regressed             bool        `json:"regressed"`
 }
 
 // Called once per (project, fingerprint) per envelope with the folded
@@ -596,6 +783,10 @@ func (q *Queries) UpsertIssue(ctx context.Context, arg UpsertIssueParams) (Upser
 		&i.LastRelease,
 		&i.Releases,
 		&i.ResolvedReleases,
+		&i.IgnoreUntil,
+		&i.IgnoreUntilCount,
+		&i.IgnoreUntilEscalating,
+		&i.IgnoreBaseline,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Created,

@@ -19,6 +19,7 @@ const (
 	AlertTypeNewIssue       AlertType = "new_issue"
 	AlertTypeRegression     AlertType = "regression"
 	AlertTypeUnhandledSpike AlertType = "unhandled_spike"
+	AlertTypeEscalating     AlertType = "escalating"
 )
 
 func (e *AlertType) Scan(src interface{}) error {
@@ -345,6 +346,18 @@ type ApiKey struct {
 	RevokedAt  *time.Time `json:"revoked_at"`
 }
 
+type Attachment struct {
+	OccurredAt     time.Time `json:"occurred_at"`
+	ProjectID      int64     `json:"project_id"`
+	EventID        sentry.ID `json:"event_id"`
+	N              int32     `json:"n"`
+	Filename       string    `json:"filename"`
+	ContentType    string    `json:"content_type"`
+	AttachmentType string    `json:"attachment_type"`
+	Size           int64     `json:"size"`
+	Data           []byte    `json:"data"`
+}
+
 type CrashcartSchema struct {
 	Version   int32     `json:"version"`
 	CreatedAt time.Time `json:"created_at"`
@@ -404,25 +417,29 @@ type EventStatsHourlyRolled struct {
 }
 
 type Issue struct {
-	ProjectID        int64       `json:"project_id"`
-	Fingerprint      sentry.ID   `json:"fingerprint"`
-	Title            string      `json:"title"`
-	Level            EventLevel  `json:"level"`
-	ErrorType        *string     `json:"error_type"`
-	Transaction      *string     `json:"transaction"`
-	Platform         *string     `json:"platform"`
-	Status           IssueStatus `json:"status"`
-	StatusBy         *string     `json:"status_by"`
-	EventCount       int64       `json:"event_count"`
-	StoredCount      int64       `json:"stored_count"`
-	FirstSeen        time.Time   `json:"first_seen"`
-	LastSeen         time.Time   `json:"last_seen"`
-	FirstRelease     *string     `json:"first_release"`
-	LastRelease      *string     `json:"last_release"`
-	Releases         []string    `json:"releases"`
-	ResolvedReleases []string    `json:"resolved_releases"`
-	CreatedAt        time.Time   `json:"created_at"`
-	UpdatedAt        time.Time   `json:"updated_at"`
+	ProjectID             int64       `json:"project_id"`
+	Fingerprint           sentry.ID   `json:"fingerprint"`
+	Title                 string      `json:"title"`
+	Level                 EventLevel  `json:"level"`
+	ErrorType             *string     `json:"error_type"`
+	Transaction           *string     `json:"transaction"`
+	Platform              *string     `json:"platform"`
+	Status                IssueStatus `json:"status"`
+	StatusBy              *string     `json:"status_by"`
+	EventCount            int64       `json:"event_count"`
+	StoredCount           int64       `json:"stored_count"`
+	FirstSeen             time.Time   `json:"first_seen"`
+	LastSeen              time.Time   `json:"last_seen"`
+	FirstRelease          *string     `json:"first_release"`
+	LastRelease           *string     `json:"last_release"`
+	Releases              []string    `json:"releases"`
+	ResolvedReleases      []string    `json:"resolved_releases"`
+	IgnoreUntil           *time.Time  `json:"ignore_until"`
+	IgnoreUntilCount      *int64      `json:"ignore_until_count"`
+	IgnoreUntilEscalating bool        `json:"ignore_until_escalating"`
+	IgnoreBaseline        *int64      `json:"ignore_baseline"`
+	CreatedAt             time.Time   `json:"created_at"`
+	UpdatedAt             time.Time   `json:"updated_at"`
 }
 
 type IssueStatsHourly struct {

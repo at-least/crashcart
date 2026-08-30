@@ -275,6 +275,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	}
 	tick(time.Minute, store.LeaderRollup, "stats rollup", func(ctx context.Context) error { _, err := retention.Rollup(ctx, st, cfg); return err })
 	tick(cfg.AlertInterval, store.LeaderSpikeCheck, "unhandled-spike check", notifier.CheckSpikes)
+	tick(time.Minute, store.LeaderIgnoreCheck, "ignored-issue check", notifier.CheckIgnored)
 	tick(time.Hour, store.LeaderSweep, "retention sweep", func(ctx context.Context) error { return retention.Sweep(ctx, st, cfg, log) })
 
 	// At shutdown the SSE streams are told to end (they would otherwise

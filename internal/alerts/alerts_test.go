@@ -62,7 +62,7 @@ func setup(t *testing.T) (*store.Store, sqlc.Project, *sink, *Notifier) {
 		t.Fatal(err)
 	}
 	rules, _ := st.ListAlertRules(ctx, p.ID)
-	if len(rules) != 3 {
+	if len(rules) != 4 {
 		t.Fatalf("rules = %+v", rules)
 	}
 	if err := EnsureRules(ctx, st, p.ID); err != nil {
@@ -353,5 +353,119 @@ func TestWebhookClientBlocksLoopback(t *testing.T) {
 	}
 	if AlertsTotal.Value("x", "webhook", "blocked") < 0 {
 		t.Fatal("metric registered")
+	}
+}
+
+// TestCheckIgnored: an ignored issue comes back when its time passes, its
+// count is reached, or it escalates (with an alert).
+func TestCheckIgnored(t *testing.T) {
+	st, p, s, n := setup(t)
+	ctx := context.Background()
+	at := time.Now().UTC()
+	mk := func(name string, count int64) sentry.ID {
+		fp := sentry.DerivedID([]byte(name))
+		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: name, Level: "error", EventCount: count, StoredCount: count, FirstSeen: at, LastSeen: at}); err != nil {
+			t.Fatal(err)
+		}
+		return fp
+	}
+	insert := func(fp sentry.ID, n int, ago time.Duration) {
+		rows := make([]store.EventInsert, 0, n)
+		for i := 0; i < n; i++ {
+			rows = append(rows, store.EventInsert{
+				OccurredAt: at.Add(-ago).Add(-time.Duration(i) * time.Second), ProjectID: p.ID, EventID: sentry.DerivedID([]byte(fmt.Sprint(fp, ago, i))),
+				Level: "error", Message: "boom", Fingerprint: &fp, Tags: []byte("{}"),
+			})
+		}
+		if err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return store.InsertEvents(ctx, tx, rows) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set := func(fp sentry.ID, pr sqlc.SetIssueStatusParams) sqlc.Issue {
+		pr.ProjectID, pr.Fingerprint, pr.Status = p.ID, fp, "ignored"
+		is, err := st.SetIssueStatus(ctx, pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return is
+	}
+	status := func(fp sentry.ID) sqlc.Issue {
+		is, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return is
+	}
+	past, future, five := at.Add(-time.Minute), at.Add(time.Hour), int64(5)
+	timed, later, counted, esc, busy, forever := mk("timed", 1), mk("later", 1), mk("counted", 10), mk("esc", 10), mk("busy", 24), mk("forever", 1)
+	insert(busy, 24, 2*time.Hour) // its baseline: 24 stored events in the 24 h before now
+	set(timed, sqlc.SetIssueStatusParams{IgnoreUntil: &past})
+	set(later, sqlc.SetIssueStatusParams{IgnoreUntil: &future})
+	if is := set(counted, sqlc.SetIssueStatusParams{IgnoreEvents: &five}); is.IgnoreUntilCount == nil || *is.IgnoreUntilCount != 15 {
+		t.Fatalf("counted: %+v", is)
+	}
+	if is := set(esc, sqlc.SetIssueStatusParams{IgnoreEscalating: true}); !is.IgnoreUntilEscalating || is.IgnoreBaseline == nil || *is.IgnoreBaseline != 0 {
+		t.Fatalf("esc: %+v", is)
+	}
+	if is := set(busy, sqlc.SetIssueStatusParams{IgnoreEscalating: true}); is.IgnoreBaseline == nil || *is.IgnoreBaseline != 24 {
+		t.Fatalf("busy baseline: %+v", is)
+	}
+	set(forever, sqlc.SetIssueStatusParams{})
+	// Five more events reach counted's threshold.
+	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: counted, Title: "counted", Level: "error", EventCount: 5, StoredCount: 0, FirstSeen: at, LastSeen: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.CheckIgnored(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if is := status(timed); is.Status != "unresolved" || is.IgnoreUntil != nil {
+		t.Errorf("timed: %+v", is)
+	}
+	if is := status(later); is.Status != "ignored" {
+		t.Errorf("later: %+v", is)
+	}
+	if is := status(counted); is.Status != "unresolved" || is.IgnoreUntilCount != nil {
+		t.Errorf("counted: %+v", is)
+	}
+	for _, fp := range []sentry.ID{esc, busy, forever} {
+		if is := status(fp); is.Status != "ignored" {
+			t.Errorf("%s: %+v", is.Title, is)
+		}
+	}
+	if s.count() != 0 {
+		t.Fatalf("alerts = %d, want 0", s.count())
+	}
+	// esc: 12 events in the last hour on a baseline of 0 → escalates, one
+	// alert. busy: 3 in the last hour on 24/day → not a spike.
+	insert(esc, 12, 0)
+	insert(busy, 3, 0)
+	if err := n.CheckIgnored(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if is := status(esc); is.Status != "unresolved" || is.IgnoreUntilEscalating || is.IgnoreBaseline != nil {
+		t.Errorf("esc after: %+v", is)
+	}
+	if is := status(busy); is.Status != "ignored" {
+		t.Errorf("busy after: %+v", is)
+	}
+	if s.count() != 1 {
+		t.Fatalf("alerts = %d, want 1", s.count())
+	}
+	got := s.payloads[0]
+	if got.Type != TypeEscalating || got.Fingerprint != string(esc) || got.Recent == nil || *got.Recent != 12 || got.Baseline == nil || *got.Baseline != 0 ||
+		got.Title != "esc" || !strings.HasSuffix(got.URL, "/p/shop/issues/"+string(esc)) {
+		t.Errorf("payload = %+v", got)
+	}
+	if txt := TelegramText(got); !strings.Contains(txt, "Escalating in Shop") || !strings.Contains(txt, "12 in the last hour") {
+		t.Errorf("telegram text = %q", txt)
+	}
+	// Nothing left to do; the counters saw each reason.
+	if err := n.CheckIgnored(ctx); err != nil || s.count() != 1 {
+		t.Fatalf("second run: err=%v alerts=%d", err, s.count())
+	}
+	for _, reason := range []string{"time", "count", "escalating"} {
+		if IssuesUnignored.Value(reason) < 1 {
+			t.Errorf("metric %s = %d", reason, IssuesUnignored.Value(reason))
+		}
 	}
 }

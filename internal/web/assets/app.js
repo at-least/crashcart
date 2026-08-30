@@ -108,6 +108,8 @@
     var body = new URLSearchParams();
     fps.forEach((fp) => body.append("fp", fp));
     body.append("status", status);
+    var ignore = form.querySelector('select[name="ignore"]');
+    if (status === "ignored" && ignore) body.append("ignore", ignore.value);
     fetch(form.getAttribute("hx-post"), {
       method: "POST",
       headers: { "HX-Request": "true", "Content-Type": "application/x-www-form-urlencoded" },

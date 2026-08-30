@@ -166,15 +166,31 @@ type Session struct {
 
 // Envelope is the parsed result of one POST body.
 type Envelope struct {
-	Events   []*Event
-	Sessions []Session
-	Dropped  int // items of types CrashCart does not store
-	Invalid  int // event items that did not parse (logged and reported to the SDK)
+	EventID     string // the header's event_id (32-hex) — the event the attachments belong to; "" when absent or malformed
+	Events      []*Event
+	Sessions    []Session
+	Attachments []Attachment
+	Dropped     int // items of types CrashCart does not store, and attachments over the limits
+	Invalid     int // event items that did not parse (logged and reported to the SDK)
+}
+
+// Attachment is one envelope `attachment` item: a file the SDK attached
+// to the envelope's event — a crash screenshot (`screenshot.png`), a view
+// hierarchy, a log. The SDKs send them in the event's own envelope; the
+// header's event_id says which event.
+type Attachment struct {
+	Filename       string // item header `filename`, base name only; "attachment" when absent
+	ContentType    string // item header `content_type`; application/octet-stream when absent
+	AttachmentType string // item header `attachment_type`; event.attachment when absent
+	Data           []byte
 }
 
 type itemHeader struct {
-	Type   string `json:"type"`
-	Length *int   `json:"length"`
+	Type           string `json:"type"`
+	Length         *int   `json:"length"`
+	Filename       string `json:"filename"`
+	ContentType    string `json:"content_type"`
+	AttachmentType string `json:"attachment_type"`
 }
 
 type envelopeHeader struct {
@@ -198,6 +214,9 @@ func Parse(body []byte, now time.Time) Envelope {
 	fallbackTS := parseTimestamp(hdr.SentAt)
 	if fallbackTS.IsZero() {
 		fallbackTS = now
+	}
+	if id, ok := ParseID(hdr.EventID); ok {
+		env.EventID = string(id)
 	}
 	rest := []byte{}
 	if nl < len(body) {
@@ -247,7 +266,18 @@ func Parse(body []byte, now time.Time) Envelope {
 				ss = ss[:n]
 			}
 			env.Sessions = append(env.Sessions, ss...)
-		case "transaction", "attachment", "profile", "replay_event", "replay_recording",
+		case "attachment":
+			if len(env.Attachments) >= MaxAttachments || len(itemBody) > MaxAttachmentSize {
+				env.Dropped++
+				continue
+			}
+			env.Attachments = append(env.Attachments, Attachment{
+				Filename:       attachmentName(ih.Filename),
+				ContentType:    cleanLower(ih.ContentType, maxContentType, "application/octet-stream"),
+				AttachmentType: cleanLower(ih.AttachmentType, maxContentType, "event.attachment"),
+				Data:           itemBody,
+			})
+		case "transaction", "profile", "replay_event", "replay_recording",
 			"client_report", "check_in", "log", "statsd", "feedback", "user_report", "span":
 			env.Dropped++
 		default:
@@ -264,7 +294,38 @@ func Parse(body []byte, now time.Time) Envelope {
 const (
 	MaxEvents   = 500
 	MaxSessions = 5000
+	// Attachments: at most MaxAttachments per envelope (one event's), each
+	// at most MaxAttachmentSize; the rest are dropped and counted. A crash
+	// screenshot is a few hundred KB; the bound keeps a minidump or a log
+	// dump from becoming the largest thing in the database.
+	MaxAttachments    = 8
+	MaxAttachmentSize = 8 << 20
+	maxFilename       = 255
+	maxContentType    = 128
 )
+
+// attachmentName is the item's filename as stored: the base name (a path
+// from the SDK is not a path here), bounded; "attachment" when empty.
+func attachmentName(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.LastIndexAny(s, `/\`); i >= 0 {
+		s = s[i+1:]
+	}
+	s = Truncate(s, maxFilename)
+	if s == "" || s == "." || s == ".." {
+		return "attachment"
+	}
+	return s
+}
+
+// cleanLower trims, lowercases and bounds a header value; def when empty.
+func cleanLower(s string, max int, def string) string {
+	s = Truncate(strings.ToLower(strings.TrimSpace(s)), max)
+	if s == "" {
+		return def
+	}
+	return s
+}
 
 func cutLine(b []byte) (line, rest []byte) {
 	if i := bytes.IndexByte(b, '\n'); i >= 0 {

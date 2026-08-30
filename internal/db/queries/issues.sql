@@ -34,16 +34,70 @@ SELECT * FROM issues WHERE project_id = $1 AND fingerprint = $2;
 
 -- name: SetIssueStatus :one
 -- Resolving records the releases seen so far (regression detection).
+-- Ignoring records its conditions (Sentry's archive "until …"): a time,
+-- a number of further events (ignore_until_count = event_count + N), or
+-- escalation — for which the baseline is the issue's stored events over
+-- the 24 full hours before now (issue_stats_hourly), the same baseline
+-- the unhandled_spike rule uses. Any other status clears them.
 UPDATE issues SET status = sqlc.arg(status)::issue_status, status_by = sqlc.narg(status_by),
     resolved_releases = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
+    ignore_until = CASE WHEN sqlc.arg(status)::issue_status = 'ignored' THEN sqlc.narg(ignore_until)::timestamptz END,
+    ignore_until_count = CASE WHEN sqlc.arg(status)::issue_status = 'ignored' THEN event_count + sqlc.narg(ignore_events)::bigint END,
+    ignore_until_escalating = sqlc.arg(status)::issue_status = 'ignored' AND sqlc.arg(ignore_escalating)::bool,
+    ignore_baseline = CASE WHEN sqlc.arg(status)::issue_status = 'ignored' AND sqlc.arg(ignore_escalating)::bool THEN
+        (SELECT COALESCE(sum(h.events), 0)::bigint FROM issue_stats_hourly h
+         WHERE h.project_id = issues.project_id AND h.fingerprint = issues.fingerprint
+           AND h.bucket >= date_trunc('hour', now()) - INTERVAL '24 hours' AND h.bucket < date_trunc('hour', now())) END,
     updated_at = now()
-WHERE project_id = $1 AND fingerprint = $2 RETURNING *;
+WHERE issues.project_id = $1 AND issues.fingerprint = $2 RETURNING *;
 
 -- name: SetIssuesStatus :execrows
+-- The bulk form of SetIssueStatus (same rules).
 UPDATE issues SET status = sqlc.arg(status)::issue_status, status_by = sqlc.narg(status_by),
     resolved_releases = CASE WHEN sqlc.arg(status)::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
+    ignore_until = CASE WHEN sqlc.arg(status)::issue_status = 'ignored' THEN sqlc.narg(ignore_until)::timestamptz END,
+    ignore_until_count = CASE WHEN sqlc.arg(status)::issue_status = 'ignored' THEN event_count + sqlc.narg(ignore_events)::bigint END,
+    ignore_until_escalating = sqlc.arg(status)::issue_status = 'ignored' AND sqlc.arg(ignore_escalating)::bool,
+    ignore_baseline = CASE WHEN sqlc.arg(status)::issue_status = 'ignored' AND sqlc.arg(ignore_escalating)::bool THEN
+        (SELECT COALESCE(sum(h.events), 0)::bigint FROM issue_stats_hourly h
+         WHERE h.project_id = issues.project_id AND h.fingerprint = issues.fingerprint
+           AND h.bucket >= date_trunc('hour', now()) - INTERVAL '24 hours' AND h.bucket < date_trunc('hour', now())) END,
     updated_at = now()
-WHERE project_id = $1 AND fingerprint = ANY($2::uuid[]);
+WHERE issues.project_id = $1 AND issues.fingerprint = ANY($2::uuid[]);
+
+-- name: UnignoreDue :many
+-- Ignored issues whose time or count condition is met go back to
+-- unresolved (alerts.CheckIgnored). Returns them with the reason (read
+-- before the update: RETURNING sees the cleared columns).
+WITH due AS (
+    SELECT project_id, fingerprint, (ignore_until IS NOT NULL AND ignore_until <= now()) AS by_time
+    FROM issues
+    WHERE status = 'ignored'
+      AND ((ignore_until IS NOT NULL AND ignore_until <= now()) OR (ignore_until_count IS NOT NULL AND event_count >= ignore_until_count))
+    FOR UPDATE)
+UPDATE issues i SET status = 'unresolved', ignore_until = NULL, ignore_until_count = NULL,
+    ignore_until_escalating = false, ignore_baseline = NULL, updated_at = now()
+FROM due d
+WHERE i.project_id = d.project_id AND i.fingerprint = d.fingerprint
+RETURNING i.project_id, i.fingerprint, (CASE WHEN d.by_time THEN 'time' ELSE 'count' END)::text AS reason;
+
+-- name: EscalationInputs :many
+-- Ignored-until-escalating issues with their stored events in the exact
+-- last hour (raw rows through the events_project_fingerprint index) next
+-- to the baseline recorded when they were ignored.
+SELECT i.project_id, i.fingerprint, COALESCE(i.ignore_baseline, 0)::bigint AS baseline,
+       (SELECT count(*) FROM events e WHERE e.project_id = i.project_id AND e.fingerprint = i.fingerprint
+          AND e.occurred_at >= sqlc.arg(recent_from)::timestamptz)::bigint AS recent
+FROM issues i
+WHERE i.status = 'ignored' AND i.ignore_until_escalating;
+
+-- name: EscalateIssue :one
+-- Flips one escalating issue back to unresolved (only while it is still
+-- ignored-until-escalating: a concurrent status change wins).
+UPDATE issues SET status = 'unresolved', ignore_until = NULL, ignore_until_count = NULL,
+    ignore_until_escalating = false, ignore_baseline = NULL, updated_at = now()
+WHERE project_id = $1 AND fingerprint = $2 AND status = 'ignored' AND ignore_until_escalating
+RETURNING *;
 
 -- name: AdjustIssueStoredCount :exec
 UPDATE issues SET stored_count = GREATEST(0, stored_count + $3), event_count = GREATEST(0, event_count + $3), updated_at = now()

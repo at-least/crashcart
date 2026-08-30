@@ -30,7 +30,9 @@ last 24 hours, and the first/last release.
 
 Filter by **status** (`unresolved`, `resolved`, `regression`,
 `ignored`), release, and free-text search (`q=` matches title and
-culprit). Select rows to change status in bulk.
+culprit). Select rows to change status in bulk; the select next to
+**Ignore** says [until when](./issues#ignoring-with-a-condition) (until
+escalating by default).
 
 ### Keyboard triage
 
@@ -52,7 +54,10 @@ not reload the list under you.
   available; in-app frames highlighted, SDK and system frames collapsed.
 - **Breakdown** by release, device model, OS version, environment.
 - **Events** belonging to the issue, paged, with the same filters.
-- **Status** control and the release the issue was resolved on.
+- **Status** control — Unresolved, Resolved, or Ignored until escalating /
+  for 7 or 30 days / until 100 or 1000 more events / for good — and, for
+  an ignored issue, when it comes back.
+- The latest event's **screenshot**, when the SDK attached one.
 
 Statuses and what they mean are in [Issues & grouping](./issues#lifecycle).
 
@@ -63,7 +68,8 @@ messages and non-exception events that are not part of any issue. Filters:
 level, release, environment, platform, `user_id`, tags.
 
 `/p/{slug}/events/{event_id}` — the full event: exception chain, symbolicated and
-original frames, breadcrumbs, tags, user, contexts, and the raw payload.
+original frames, attachments (screenshots inline, other files as
+downloads), breadcrumbs, tags, user, contexts, and the raw payload.
 
 ## Releases
 

@@ -29,6 +29,15 @@ const envelope = `{"event_id":"a1b2","sent_at":"2026-08-20T10:00:00Z"}
 {"aggregates":[{"started":"2026-08-20T09:00:00Z","exited":90,"crashed":1,"errored":2}],"attrs":{"release":"2.4.0","environment":"production"}}
 `
 
+// withAttachment is an event envelope carrying a (fake) PNG screenshot; the
+// header's event_id names the event the attachment belongs to.
+const withAttachment = `{"event_id":"e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3","sent_at":"2026-08-20T10:00:00Z"}
+{"type":"event"}
+{"event_id":"e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3","timestamp":"2026-08-20T09:57:00Z","level":"error","platform":"android","release":"2.4.0","exception":{"values":[{"type":"IllegalStateException","value":"closed","stacktrace":{"frames":[{"module":"com.example.Cart","function":"pay","in_app":true}]}}]}}
+{"type":"attachment","length":12,"filename":"screenshot.png","content_type":"image/png","attachment_type":"event.attachment"}
+PNGPNGPNGPNG
+`
+
 // fill writes a project with events, sessions, an issue, a symbol file,
 // alert rules and a channel into st.
 func fill(t *testing.T, st *store.Store) sqlc.Project {
@@ -48,6 +57,14 @@ func fill(t *testing.T, st *store.Store) sqlc.Project {
 	}
 	if res.Stored != 2 || res.Sessions != 3 {
 		t.Fatalf("ingest: %+v", res)
+	}
+	// One more event in its own envelope, with a screenshot attached.
+	res2, err := in.Ingest(ctx, p, sentry.Parse([]byte(withAttachment), now), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Stored != 1 || res2.Attachments != 1 {
+		t.Fatalf("ingest with attachment: %+v", res2)
 	}
 	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0], Status: "resolved"}); err != nil {
 		t.Fatal(err)
@@ -132,7 +149,7 @@ func TestRoundTrip(t *testing.T) {
 	if !slices.Equal(seq, Tables) {
 		t.Fatalf("table order %v, want %v", seq, Tables)
 	}
-	want := map[string]int{"users": 1, "api_keys": 1, "projects": 1, "releases": 1, "issues": 1, "events": 2, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
+	want := map[string]int{"users": 1, "api_keys": 1, "projects": 1, "releases": 1, "issues": 2, "events": 3, "attachments": 1, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s: %d rows, want %d", k, got[k], v)

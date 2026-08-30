@@ -75,6 +75,23 @@ templ EventBody(pg Page, d EventData) {
 				@StackTrace(st, pg.S.Persist().Href("/settings")+"#symbols")
 			</section>
 		}
+		if len(d.Attachments) > 0 {
+			<section class="event-section">
+				<h2 class="sheet-h">Attachments <span class="font-normal normal-case tracking-normal">({ strconv.Itoa(len(d.Attachments)) })</span></h2>
+				@AttachmentImages(pg, string(d.E.EventID), d.Attachments)
+				<ul class="attachment-list">
+					for _, a := range d.Attachments {
+						<li>
+							<a class="underline" href={ u(attachmentHref(pg, string(d.E.EventID), a)) } download?={ !isImage(a.ContentType) }>{ a.Filename }</a>
+							<span class="text-muted-foreground">{ " · " + a.ContentType + " · " + sizeLabel(a.Size) }</span>
+							if a.AttachmentType != "event.attachment" {
+								<span class="text-muted-foreground">{ " · " + a.AttachmentType }</span>
+							}
+						</li>
+					}
+				</ul>
+			</section>
+		}
 		if len(d.Crumbs) > 0 {
 			<section class="event-section">
 				<h2 class="sheet-h">Breadcrumbs <span class="font-normal normal-case tracking-normal">({ strconv.Itoa(len(d.Crumbs)) }, newest first)</span></h2>
@@ -161,5 +178,24 @@ templ Meta(label, value, title string) {
 	<div class="min-w-0">
 		<div class="meta-k">{ label }</div>
 		<div class={ metaClass(value) } title={ firstNonEmpty(title, value) }>{ orDash(value) }</div>
+	</div>
+}
+
+func attachmentHref(pg Page, eventID string, a sqlcAttachmentRow) string {
+	return "/p/" + pg.S.Slug + "/events/" + eventID + "/attachments/" + strconv.Itoa(int(a.N))
+}
+
+// AttachmentImages shows the image attachments (a crash screenshot)
+// inline; each opens full-size in a new tab.
+templ AttachmentImages(pg Page, eventID string, atts []sqlcAttachmentRow) {
+	<div class="attachments">
+		for _, a := range atts {
+			if isImage(a.ContentType) {
+				<a class="attachment" href={ u(attachmentHref(pg, eventID, a)) } target="_blank" rel="noopener" title={ a.Filename + " · " + sizeLabel(a.Size) }>
+					<img class="attachment-img" src={ attachmentHref(pg, eventID, a) } alt={ a.Filename } loading="lazy"/>
+					<span class="attachment-name">{ a.Filename }</span>
+				</a>
+			}
+		}
 	</div>
 }

@@ -4,7 +4,7 @@ CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnor
 CREATE TYPE issue_status   AS ENUM ('unresolved', 'resolved', 'ignored', 'regression');
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
-CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike');
+CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike', 'escalating');
 CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
 
 -- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
@@ -84,6 +84,18 @@ CREATE TABLE events (
     PRIMARY KEY (project_id, event_id, occurred_at)
 );
 
+CREATE TABLE attachments (
+    occurred_at     TIMESTAMPTZ NOT NULL,
+    project_id      BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id        UUID NOT NULL,
+    n               INTEGER NOT NULL,
+    filename        TEXT NOT NULL,
+    content_type    TEXT NOT NULL,
+    attachment_type TEXT NOT NULL,
+    size            BIGINT NOT NULL,
+    data            BYTEA NOT NULL,
+    PRIMARY KEY (project_id, event_id, occurred_at, n)
+);
 
 CREATE TABLE sessions (
     started_at  TIMESTAMPTZ NOT NULL,
@@ -122,6 +134,10 @@ CREATE TABLE issues (
     last_release     TEXT,
     releases         TEXT[] NOT NULL DEFAULT '{}',
     resolved_releases TEXT[],
+    ignore_until            TIMESTAMPTZ,
+    ignore_until_count      BIGINT,
+    ignore_until_escalating BOOLEAN NOT NULL DEFAULT false,
+    ignore_baseline         BIGINT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, fingerprint)

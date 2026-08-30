@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/crashcartapp/crashcart/internal/api"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -408,8 +410,17 @@ func (w *Web) sparklines(ctx context.Context, projectID int64, fps []sentry.ID, 
 	return out, nil
 }
 
-// writableStatuses is what the viewer may set ("regression" is ingest's verdict).
-var writableStatuses = map[string]bool{"resolved": true, "ignored": true, "unresolved": true}
+// statusForm reads a status change from the form: `status` (unresolved,
+// resolved, or an ignoreOptions value), with a separate `ignore` field
+// (the bulk bar's select: escalating, 7d, 30d, 100, forever) folded in
+// for status=ignored. "regression" is ingest's verdict, never a form's.
+func statusForm(form url.Values, at time.Time) (status string, ig ignore, ok bool) {
+	v := form.Get("status")
+	if cond := form.Get("ignore"); v == "ignored" && cond != "" {
+		v = "ignored:" + cond
+	}
+	return parseStatus(v, at)
+}
 
 // issuesBulk sets the status of the selected issues and answers with the
 // refreshed table fragment (the POST URL carries the list state).
@@ -422,18 +433,19 @@ func (w *Web) issuesBulk(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "bad form", http.StatusBadRequest)
 		return
 	}
-	status := r.PostForm.Get("status")
+	status, ig, okStatus := statusForm(r.PostForm, now())
 	var fps []sentry.ID
 	for _, s := range r.PostForm["fp"] {
 		if fp, ok := sentry.ParseID(s); ok {
 			fps = append(fps, fp)
 		}
 	}
-	if !writableStatuses[status] || len(fps) == 0 {
+	if !okStatus || len(fps) == 0 {
 		http.Error(rw, "status and fp[] required", http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(status), StatusBy: actorName(r)}); err != nil {
+	if _, err := w.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(status), StatusBy: actorName(r),
+		IgnoreUntil: ig.Until, IgnoreEvents: ig.Events, IgnoreEscalating: ig.Escalating}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -460,6 +472,7 @@ type BreakdownList struct {
 type IssueData struct {
 	Issue      sqlc.Issue
 	Latest     *sqlc.Event
+	Images     []sqlc.ListAttachmentsRow // the latest event's image attachments (a crash screenshot)
 	Stacks     []Stack
 	Users      int64
 	Breakdowns []BreakdownList
@@ -503,6 +516,13 @@ func (w *Web) issue(rw http.ResponseWriter, r *http.Request) {
 		d.Latest = &ev
 		d.LatestID = string(ev.EventID)
 		d.Stacks = stacksOf(ev, parsePayload(ev, w.payload(ev)))
+		if atts, err := w.Store.ListAttachments(ctx, sqlc.ListAttachmentsParams{ProjectID: p.ID, EventID: ev.EventID, OccurredAt: ev.OccurredAt}); err == nil {
+			for _, a := range atts {
+				if isImage(a.ContentType) {
+					d.Images = append(d.Images, a)
+				}
+			}
+		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		w.fail(rw, r, err)
 		return
@@ -562,8 +582,8 @@ func (w *Web) issueStatus(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "bad form", http.StatusBadRequest)
 		return
 	}
-	status := r.Form.Get("status")
-	if !writableStatuses[status] {
+	status, ig, okStatus := statusForm(r.Form, now())
+	if !okStatus {
 		http.Error(rw, "bad status", http.StatusBadRequest)
 		return
 	}
@@ -572,7 +592,8 @@ func (w *Web) issueStatus(rw http.ResponseWriter, r *http.Request) {
 		http.NotFound(rw, r)
 		return
 	}
-	if _, err := w.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(status), StatusBy: actorName(r)}); err != nil {
+	if _, err := w.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(status), StatusBy: actorName(r),
+		IgnoreUntil: ig.Until, IgnoreEvents: ig.Events, IgnoreEscalating: ig.Escalating}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(rw, r)
 			return
@@ -637,14 +658,47 @@ func (w *Web) events(rw http.ResponseWriter, r *http.Request) {
 
 // EventData feeds the event page.
 type EventData struct {
-	E        sqlc.Event
-	Payload  json.RawMessage // the raw event (events.payload, decoded); nil when the row has none
-	Issue    *sqlc.Issue
-	Stacks   []Stack
-	Crumbs   []sentry.Breadcrumb
-	Contexts []ContextGroup
-	User     []KV
-	Tags     map[string]string
+	E           sqlc.Event
+	Payload     json.RawMessage // the raw event (events.payload, decoded); nil when the row has none
+	Issue       *sqlc.Issue
+	Stacks      []Stack
+	Crumbs      []sentry.Breadcrumb
+	Contexts    []ContextGroup
+	User        []KV
+	Tags        map[string]string
+	Attachments []sqlc.ListAttachmentsRow
+}
+
+// isImage: an attachment the page shows inline (the browser renders it;
+// anything else is a download).
+func isImage(contentType string) bool { return api.InlineImage(contentType) }
+
+// attachment is GET /p/{slug}/events/{id}/attachments/{n}: the bytes.
+func (w *Web) attachment(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	id, ok := sentry.ParseID(r.PathValue("id"))
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if !ok || err != nil || n < 0 {
+		http.NotFound(rw, r)
+		return
+	}
+	e, err := w.Store.GetEvent(r.Context(), sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
+	if err == nil {
+		var a sqlc.Attachment
+		a, err = w.Store.GetAttachment(r.Context(), sqlc.GetAttachmentParams{ProjectID: p.ID, EventID: id, OccurredAt: e.OccurredAt, N: int32(n)})
+		if err == nil {
+			api.ServeAttachment(rw, a)
+			return
+		}
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.NotFound(rw, r)
+		return
+	}
+	w.fail(rw, r, err)
 }
 
 func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
@@ -671,6 +725,10 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 	ev := parsePayload(e, payload) // once: stacks, breadcrumbs and contexts all read it
 	d := EventData{E: e, Payload: payload, Stacks: stacksOf(e, ev), Crumbs: crumbsOf(ev), Tags: tagsMap(e.Tags)}
 	d.Contexts, d.User = payloadContexts(payload)
+	if d.Attachments, err = w.Store.ListAttachments(ctx, sqlc.ListAttachmentsParams{ProjectID: p.ID, EventID: e.EventID, OccurredAt: e.OccurredAt}); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
 	if e.Fingerprint != nil {
 		if is, err := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: *e.Fingerprint}); err == nil {
 			d.Issue = &is

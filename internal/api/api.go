@@ -60,8 +60,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"GET /api/projects/{slug}/issues/{fingerprint}":   h.getIssue,
 		"PATCH /api/projects/{slug}/issues/{fingerprint}": h.updateIssue,
 		// events
-		"GET /api/projects/{slug}/events":      h.listEvents,
-		"GET /api/projects/{slug}/events/{id}": h.getEvent,
+		"GET /api/projects/{slug}/events":                      h.listEvents,
+		"GET /api/projects/{slug}/events/{id}":                 h.getEvent,
+		"GET /api/projects/{slug}/events/{id}/attachments/{n}": h.getAttachment,
 		// releases
 		"GET /api/projects/{slug}/releases":           h.listReleases,
 		"GET /api/projects/{slug}/releases/{version}": h.getRelease,

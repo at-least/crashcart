@@ -1,16 +1,22 @@
 // Package seed writes demo data through the real ingest path: a week of
 // unhandled, errors and messages for a mobile shop app, three releases with a
-// spike of unhandled errors on one day, and session aggregates so release health has a
-// crash-free rate. Everything is deterministic (seeded rand) except the
-// event ids, which are fresh on every run.
+// spike of unhandled errors on one day, session aggregates so release health has a
+// crash-free rate, and a screenshot attached to some of the crashes.
+// Everything is deterministic (seeded rand) except the event ids, which
+// are fresh on every run.
 package seed
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"image"
+	"image/color"
+	"image/png"
 	mrand "math/rand/v2"
 	"strings"
 	"time"
@@ -172,7 +178,7 @@ func Run(ctx context.Context, in *ingest.Ingester, slug string) error {
 	if err != nil {
 		return fmt.Errorf("seed: project: %w", err)
 	}
-	for _, typ := range []string{"new_issue", "regression", "unhandled_spike"} {
+	for _, typ := range []string{"new_issue", "regression", "unhandled_spike", "escalating"} {
 		if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ), Enabled: true, CooldownMinutes: 60}); err != nil {
 			return fmt.Errorf("seed: alert rule %s: %w", typ, err)
 		}
@@ -188,7 +194,19 @@ func Run(ctx context.Context, in *ingest.Ingester, slug string) error {
 		dayStart := start.Add(time.Duration(day) * 24 * time.Hour)
 		items := g.day(day, dayStart)
 		for len(items) > 0 {
+			// An event with attachments goes in its own envelope: the
+			// header's event_id says whose they are.
 			n := min(batchSize, len(items))
+			if items[0].attachments != nil {
+				n = 1
+			} else {
+				for i := 1; i < n; i++ {
+					if items[i].attachments != nil {
+						n = i
+						break
+					}
+				}
+			}
 			env := sentry.Parse(g.envelope(items[:n]), now)
 			if _, err := in.Ingest(ctx, p, env, now); err != nil {
 				return fmt.Errorf("seed: ingest day %d: %w", day, err)
@@ -205,10 +223,18 @@ type gen struct {
 	now time.Time
 }
 
-// item is one envelope item: "event" or "sessions".
+// item is one envelope item: "event" or "sessions". An event may carry
+// attachments (a screenshot), sent after it in its own envelope.
 type item struct {
-	typ  string
-	body []byte
+	typ         string
+	body        []byte
+	eventID     string
+	attachments []attachment
+}
+
+type attachment struct {
+	filename, contentType string
+	body                  []byte
 }
 
 // day builds the envelope items for one day: exception events, message
@@ -242,12 +268,20 @@ func (g *gen) day(day int, dayStart time.Time) []item {
 				ts = end.Add(-time.Minute)
 			}
 		}
-		items = append(items, item{"event", g.exceptionEvent(def, rel, ts)})
+		body, id := g.exceptionEvent(def, rel, ts)
+		it := item{typ: "event", body: body}
+		// A crash screenshot on some of the unhandled ones (what the mobile
+		// SDKs attach with attachScreenshot).
+		if !def.handled && g.rng.IntN(6) == 0 {
+			it.eventID = id
+			it.attachments = []attachment{{"screenshot.png", "image/png", g.screenshot(def)}}
+		}
+		items = append(items, it)
 	}
 	for i := 0; i < nMessages; i++ {
 		rel := g.pick(mix)
 		ts := dayStart.Add(time.Duration(g.rng.Float64() * float64(span)))
-		items = append(items, item{"event", g.messageEvent(rel, ts)})
+		items = append(items, item{typ: "event", body: g.messageEvent(rel, ts)})
 	}
 	// Sessions: ~6000 per day split by release share, crash-free ≈ 99 %
 	// (the spike release drops to ≈ 97 % on the spike day).
@@ -263,7 +297,7 @@ func (g *gen) day(day int, dayStart time.Time) []item {
 		}
 		crashed := int(float64(total) * crashRate)
 		errored := int(float64(total) * (0.01 + g.rng.Float64()*0.01))
-		items = append(items, item{"sessions", g.sessionAggregate(rel, dayStart, total-crashed-errored, crashed, errored)})
+		items = append(items, item{typ: "sessions", body: g.sessionAggregate(rel, dayStart, total-crashed-errored, crashed, errored)})
 	}
 	g.rng.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
 	return items
@@ -356,7 +390,7 @@ func (g *gen) base(platform, rel, transaction, level string, ts time.Time) map[s
 	}
 }
 
-func (g *gen) exceptionEvent(d *issueDef, rel string, ts time.Time) []byte {
+func (g *gen) exceptionEvent(d *issueDef, rel string, ts time.Time) (body []byte, eventID string) {
 	ev := g.base(d.platform, rel, d.transaction, d.level, ts)
 	handled := d.handled
 	ev["exception"] = map[string]any{"values": []map[string]any{{
@@ -367,7 +401,52 @@ func (g *gen) exceptionEvent(d *issueDef, rel string, ts time.Time) []byte {
 	}}}
 	ev["breadcrumbs"] = map[string]any{"values": g.breadcrumbs(d.transaction, ts)}
 	b, _ := json.Marshal(ev)
-	return b
+	return b, ev["event_id"].(string)
+}
+
+// screenshot draws a phone screen (360×640) of the transaction the crash
+// happened in: an app bar in the transaction's colour, a few cards, and
+// the error dialog on top — a few KB of PNG.
+func (g *gen) screenshot(d *issueDef) []byte {
+	const w, h = 360, 640
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	fill := func(x0, y0, x1, y1 int, c color.RGBA) {
+		for y := y0; y < y1; y++ {
+			for x := x0; x < x1; x++ {
+				img.SetRGBA(x, y, c)
+			}
+		}
+	}
+	hs := fnv.New32a()
+	hs.Write([]byte(d.transaction))
+	hue := hs.Sum32()
+	bar := color.RGBA{R: uint8(40 + hue%120), G: uint8(60 + (hue>>8)%100), B: uint8(120 + (hue>>16)%100), A: 255}
+	fill(0, 0, w, h, color.RGBA{245, 245, 247, 255})
+	fill(0, 0, w, 24, color.RGBA{20, 20, 24, 255}) // status bar
+	fill(0, 24, w, 80, bar)                        // app bar
+	fill(16, 44, 16+len(d.transaction)*9, 60, color.RGBA{255, 255, 255, 255})
+	for i := 0; i < 4; i++ { // list cards
+		y := 100 + i*120
+		fill(16, y, w-16, y+104, color.RGBA{255, 255, 255, 255})
+		fill(28, y+12, 108, y+92, color.RGBA{220, 222, 228, 255})
+		fill(120, y+16, w-40, y+30, color.RGBA{60, 60, 70, 255})
+		fill(120, y+40, w-90, y+50, color.RGBA{160, 160, 170, 255})
+	}
+	fill(0, h-64, w, h, color.RGBA{255, 255, 255, 255}) // nav bar
+	for y := 0; y < h; y++ {                            // scrim
+		for x := 0; x < w; x++ {
+			c := img.RGBAAt(x, y)
+			img.SetRGBA(x, y, color.RGBA{c.R / 2, c.G / 2, c.B / 2, 255})
+		}
+	}
+	fill(32, 250, w-32, 390, color.RGBA{255, 255, 255, 255}) // dialog
+	fill(48, 268, 200, 284, color.RGBA{30, 30, 36, 255})     // title
+	fill(48, 300, w-48, 308, color.RGBA{120, 120, 130, 255}) // text
+	fill(48, 318, w-100, 326, color.RGBA{120, 120, 130, 255})
+	fill(w-140, 350, w-48, 376, color.RGBA{uint8(200 + hue%50), 60, 60, 255}) // button
+	var b bytes.Buffer
+	png.Encode(&b, img)
+	return b.Bytes()
 }
 
 func (g *gen) messageEvent(rel string, ts time.Time) []byte {
@@ -411,14 +490,25 @@ func (g *gen) sessionAggregate(rel string, dayStart time.Time, exited, crashed, 
 	return b
 }
 
-// envelope frames items as a Sentry envelope (explicit item lengths).
+// envelope frames items as a Sentry envelope (explicit item lengths). A
+// lone event with attachments is framed as the SDKs do: the header names
+// the event, the attachment items follow it.
 func (g *gen) envelope(items []item) []byte {
 	var sb strings.Builder
-	sb.WriteString(`{"sent_at":"` + g.now.Format(time.RFC3339) + `"}` + "\n")
+	if len(items) == 1 && items[0].eventID != "" {
+		fmt.Fprintf(&sb, `{"event_id":%q,"sent_at":%q}`+"\n", items[0].eventID, g.now.Format(time.RFC3339))
+	} else {
+		sb.WriteString(`{"sent_at":"` + g.now.Format(time.RFC3339) + `"}` + "\n")
+	}
 	for _, it := range items {
 		fmt.Fprintf(&sb, `{"type":%q,"length":%d}`+"\n", it.typ, len(it.body))
 		sb.Write(it.body)
 		sb.WriteByte('\n')
+		for _, a := range it.attachments {
+			fmt.Fprintf(&sb, `{"type":"attachment","length":%d,"filename":%q,"content_type":%q,"attachment_type":"event.attachment"}`+"\n", len(a.body), a.filename, a.contentType)
+			sb.Write(a.body)
+			sb.WriteByte('\n')
+		}
 	}
 	return []byte(sb.String())
 }

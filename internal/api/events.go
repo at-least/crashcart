@@ -2,7 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"mime"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,16 +120,97 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(payload), Breadcrumbs: breadcrumbsOf(ev, payload)})
+	atts, err := h.attachmentsOf(r, p.Slug, ev)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(payload), Breadcrumbs: breadcrumbsOf(ev, payload), Attachments: atts})
 }
 
 // eventDetail is the JSON API's event: the row, with the raw payload
-// embedded as JSON (null when it has none) and the breadcrumbs (newest
-// last, at most 20) read from it.
+// embedded as JSON (null when it has none), the breadcrumbs (newest
+// last, at most 20) read from it, and its attachments (metadata; the
+// bytes are at each one's url).
 type eventDetail struct {
 	sqlc.Event
 	Payload     json.RawMessage     `json:"payload"`
 	Breadcrumbs []sentry.Breadcrumb `json:"breadcrumbs"`
+	Attachments []attachmentOut     `json:"attachments"`
+}
+
+type attachmentOut struct {
+	N              int32  `json:"n"`
+	Filename       string `json:"filename"`
+	ContentType    string `json:"content_type"`
+	AttachmentType string `json:"attachment_type"`
+	Size           int64  `json:"size"`
+	URL            string `json:"url"`
+}
+
+func (h *Handler) attachmentsOf(r *http.Request, slug string, ev sqlc.Event) ([]attachmentOut, error) {
+	rows, err := h.Store.ListAttachments(r.Context(), sqlc.ListAttachmentsParams{ProjectID: ev.ProjectID, EventID: ev.EventID, OccurredAt: ev.OccurredAt})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]attachmentOut, 0, len(rows))
+	for _, a := range rows {
+		out = append(out, attachmentOut{N: a.N, Filename: a.Filename, ContentType: a.ContentType, AttachmentType: a.AttachmentType, Size: a.Size,
+			URL: "/api/projects/" + url.PathEscape(slug) + "/events/" + string(ev.EventID) + "/attachments/" + strconv.Itoa(int(a.N))})
+	}
+	return out, nil
+}
+
+// getAttachment is GET /api/projects/{slug}/events/{id}/attachments/{n}: the bytes.
+func (h *Handler) getAttachment(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	id, ok := sentry.ParseID(r.PathValue("id"))
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if !ok || err != nil || n < 0 {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	ev, err := h.Store.GetEvent(r.Context(), sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	a, err := h.Store.GetAttachment(r.Context(), sqlc.GetAttachmentParams{ProjectID: p.ID, EventID: id, OccurredAt: ev.OccurredAt, N: int32(n)})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	ServeAttachment(w, a)
+}
+
+// inlineImages are the content types a browser may render inline; a
+// PNG / JPEG cannot carry script. Everything else is served as a download
+// under application/octet-stream — an attachment is SDK-supplied bytes,
+// and text/html or SVG shown inline on this origin would run in the
+// viewer's session.
+var inlineImages = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
+
+// InlineImage reports whether an attachment of this content type is shown
+// inline (an <img>) rather than offered as a download.
+func InlineImage(contentType string) bool { return inlineImages[strings.ToLower(contentType)] }
+
+// ServeAttachment writes an attachment's bytes: images inline under their
+// own type, anything else as an octet-stream download; never sniffed.
+func ServeAttachment(w http.ResponseWriter, a sqlc.Attachment) {
+	disposition, ctype := "attachment", "application/octet-stream"
+	if InlineImage(a.ContentType) {
+		disposition, ctype = "inline", strings.ToLower(a.ContentType)
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": a.Filename}))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("Content-Length", strconv.Itoa(len(a.Data)))
+	w.Write(a.Data)
 }
 
 func breadcrumbsOf(ev sqlc.Event, payload []byte) []sentry.Breadcrumb {

@@ -31,9 +31,10 @@ test-db:
 	go vet ./...
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test ./...
 
-# Rebuilds the committed CSS artifact (needs `npm install`).
+# Rebuilds the committed CSS artifact with the locally installed Tailwind
+# (`npm install` first; no npx, so nothing is fetched at build time).
 css:
-	npx @tailwindcss/cli -i internal/web/styles/app.css -o internal/web/assets/app.css --minify
+	node_modules/.bin/tailwindcss -i internal/web/styles/app.css -o internal/web/assets/app.css --minify
 
 docker:
 	docker build -t $(IMAGE) .

@@ -6,6 +6,7 @@
 //	GET  /p/{slug}/issues/{fp}      issue: stack, breakdown, timeline, events
 //	GET  /p/{slug}/events           raw event list with filter toolbar
 //	GET  /p/{slug}/events/{id}      event page (fragment when HX-Request)
+//	GET  /p/{slug}/events/{id}/attachments/{n}  one attachment's bytes (a screenshot)
 //	GET  /p/{slug}/releases[/{v}]   release health
 //	GET  /p/{slug}/settings         DSN, sampling, alerts, channels, symbols
 //	GET  /p/{slug}/stream           SSE: new issues / regressions counter
@@ -86,6 +87,7 @@ func (w *Web) Register(mux *http.ServeMux) {
 	mux.Handle("PATCH /p/{slug}/issues/{fingerprint}/status", mutation(w.issueStatus))
 	mux.Handle("GET /p/{slug}/events", page(w.events))
 	mux.Handle("GET /p/{slug}/events/{id}", page(w.event))
+	mux.Handle("GET /p/{slug}/events/{id}/attachments/{n}", page(w.attachment))
 	mux.Handle("GET /p/{slug}/releases", page(w.releases))
 	mux.Handle("GET /p/{slug}/releases/{version}", page(w.release))
 	mux.Handle("GET /p/{slug}/settings", page(w.settings))

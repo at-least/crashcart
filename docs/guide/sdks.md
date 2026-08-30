@@ -144,10 +144,23 @@ SentrySdk.Init(o => {
 | `handled` | `exception.mechanism.handled` | Unhandled / Handled badge (neither without a mechanism), `handled=false` filter |
 | `server_name` | `server_name` | The `server_name` tag |
 | breadcrumbs, tags, extra | as sent | Event detail |
+| attachments | `attachment` envelope items | Event detail: screenshots inline, other files as downloads |
 
 Sessions (`session` / `sessions` items) feed
 [release health](./releases). Transactions, profiles, replays and client
 reports are accepted and discarded.
+
+### Attachments and screenshots
+
+Files the SDK attaches to an event are stored with it and shown on the
+event page. The mobile SDKs can attach a **screenshot** of the app at the
+moment of a crash — `options.attachScreenshot = true` on Android, iOS
+and Flutter (`SentryFlutter.init((o) => o.attachScreenshot = true)`),
+`attachViewHierarchy` for the view tree — and any SDK can add a file with
+`Sentry.addAttachment(...)`. Limits: 8 attachments per event, 8 MB each;
+an event that [sampling](./projects#sampling-and-daily-quota) drops
+loses its attachments too. Attachments are not scrubbed by
+`PII_REDACT`.
 
 Set [`PII_REDACT=true`](/deploy/configuration) to scrub emails, phone
 numbers, tokens and user ids before events are stored.

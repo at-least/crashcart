@@ -41,8 +41,8 @@ internal/
   symbolicate/        proguard / sourcemap (in-process), dsym (sidecar client), sidecar (the dSYM server: llvm-symbolizer + disk cache),
                       Service (cache + Resolve at ingest + job handlers)
   jobs/               worker loop (SKIP LOCKED), handlers by kind
-  alerts/             notifier (webhook, telegram), crash-spike scheduler
-  retention/          weekly partitions (ensure / drop), stats rollup (dirty keys), sweeps (issues, jobs, chunks, symbol files)
+  alerts/             notifier (webhook, telegram), unhandled-spike scheduler, ignored-issue check (time / count / escalating)
+  retention/          weekly partitions (events, attachments, sessions: ensure / drop), stats rollup (dirty keys), sweeps (issues, jobs, chunks, symbol files)
   api/                /api/projects/… JSON handlers, /api/0/… sentry-cli compat
   web/                templ views, handlers, state.go (URL ↔ ViewState), svg charts, assets/, styles/
   export/             NDJSON export / import (format: docs/reference/export-format.md)
@@ -66,7 +66,11 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`, in
   `ingest.UnhandledKeepFactor` for unhandled events, `sample_rate` — default 1, store
   everything) is what a project lowers to bound the database: stored
   events then grow with issues, not events. There is no second store; do
-  not add one.
+  not add one. Envelope `attachment` items (screenshots) are `attachments`
+  rows keyed by their event (`(project_id, event_id, occurred_at, n)`,
+  partitioned by week like `events`); kept only with a stored event,
+  bounded by `sentry.MaxAttachments` / `MaxAttachmentSize`; served through
+  `api.ServeAttachment` (images inline, the rest as downloads, `nosniff`).
 - Statistics: every write to `events` / `sessions` marks its (project, hour)
   in `event_stats_dirty` / `session_stats_dirty` in the same transaction
   (`MarkEventStatsDirty`, also after a fingerprint change); the
@@ -100,6 +104,12 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`, in
   needs a signed-in user (`users` + `user_sessions` cookie; `auth.Access.Session`;
   `/login`, `/setup`, `/account`); ingest is authenticated by the DSN key.
   `auth.ActorFrom(ctx)` is who acts (recorded in `issues.status_by`).
+- Issue status `ignored` carries its condition (`ignore_until`,
+  `ignore_until_count`, `ignore_until_escalating` + `ignore_baseline`);
+  `SetIssueStatus` / `SetIssuesStatus` take it, `alerts.CheckIgnored`
+  (every minute) lifts it. Viewer form values are `ignored` (until
+  escalating), `ignored:7d`, `ignored:100`, `ignored:forever` (`web.parseStatus`);
+  API fields are `ignore_minutes`, `ignore_events`, `ignore_until_escalating`.
 - Never rewrite `events.payload`. Symbolication writes `symbols`,
   `fingerprint`, `culprit`, `symbolicated` only.
 - Tests: unit tests next to the code; DB-backed tests use `internal/testdb`

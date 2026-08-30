@@ -20,7 +20,7 @@ import (
 )
 
 // AlertTypes are the rule types in display order (alert_rules CHECK).
-var AlertTypes = []string{"new_issue", "regression", "unhandled_spike"}
+var AlertTypes = []string{"new_issue", "regression", "unhandled_spike", "escalating"}
 
 // SettingsData feeds the settings page.
 type SettingsData struct {

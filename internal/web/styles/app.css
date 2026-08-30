@@ -1,4 +1,4 @@
-/* CrashCart viewer stylesheet — Tailwind v4 + shadless (local ../shadless),
+/* CrashCart viewer stylesheet — Tailwind v4 + shadless (local ../../at-least/shadless),
    compiled to internal/web/assets/app.css. Build: npm run css (the artifact
    is committed; the Go binary embeds it).
 
@@ -349,6 +349,12 @@
   .crumb-time { @apply shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums; }
   .crumb-cat { @apply font-mono text-[11px] text-muted-foreground; }
   .ctx-grid { @apply grid gap-3 md:grid-cols-3; }
+  .attachments { @apply flex flex-wrap gap-3; }
+  .attachment { @apply grid w-fit justify-items-center gap-1 text-xs text-muted-foreground; }
+  .attachment-img { @apply max-h-72 max-w-56 rounded-md border border-border bg-muted object-contain; }
+  .attachment-name { @apply max-w-56 truncate font-mono; }
+  .attachment-list { @apply grid gap-1 text-xs; }
+  .ignore-note { @apply text-xs text-muted-foreground; }
   .ctx { @apply rounded-lg border border-border p-3; }
   .ctx-name { @apply mb-1 font-mono text-[11px] font-semibold text-muted-foreground uppercase; }
   .kv { @apply grid gap-0.5; }

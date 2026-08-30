@@ -47,11 +47,12 @@ func (s *Store) Tx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx, 
 
 // Leader keys for RunAsLeader (pg advisory lock ids).
 const (
-	LeaderSpikeCheck int64 = 0x63726173 + 1 // "cras" + n
-	LeaderSweep      int64 = 0x63726173 + 2
-	LeaderRollup     int64 = 0x63726173 + 3
-	LeaderPartitions int64 = 0x63726173 + 4 // transaction-scoped: one partition creation at a time
-	LeaderSetup      int64 = 0x63726173 + 5 // transaction-scoped: the first user is created once
+	LeaderSpikeCheck  int64 = 0x63726173 + 1 // "cras" + n
+	LeaderSweep       int64 = 0x63726173 + 2
+	LeaderRollup      int64 = 0x63726173 + 3
+	LeaderPartitions  int64 = 0x63726173 + 4 // transaction-scoped: one partition creation at a time
+	LeaderSetup       int64 = 0x63726173 + 5 // transaction-scoped: the first user is created once
+	LeaderIgnoreCheck int64 = 0x63726173 + 6 // ignored issues: time / count expiry and escalation
 )
 
 // CreateFirstUser creates u only while the users table is empty, under a

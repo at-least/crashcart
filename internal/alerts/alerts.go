@@ -1,5 +1,6 @@
 // Package alerts delivers notifications (webhook, Telegram) for new issues,
-// regressions and unhandled-error spikes.
+// regressions, unhandled-error spikes and escalating issues, and runs the
+// ignored-issue check (time / count expiry, escalation).
 package alerts
 
 import (
@@ -19,12 +20,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/metrics"
-
 	"github.com/jackc/pgx/v5"
 
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/crashcartapp/crashcart/internal/metrics"
 	"github.com/crashcartapp/crashcart/internal/sentry"
 	"github.com/crashcartapp/crashcart/internal/store"
 )
@@ -34,15 +34,22 @@ const (
 	TypeNewIssue       = "new_issue"
 	TypeRegression     = "regression"
 	TypeUnhandledSpike = "unhandled_spike"
+	TypeEscalating     = "escalating" // an issue ignored until escalating came back
 )
 
 // Spike thresholds: at least MinSpikeUnhandled in the last hour and
-// SpikeFactor × the hourly mean of the 24 h before.
+// SpikeFactor × the hourly mean of the 24 h before. The same rule, applied
+// to one issue's stored events against the 24 h before it was ignored,
+// is what makes an ignored-until-escalating issue escalate.
 const (
 	MinSpikeUnhandled = 10
 	SpikeFactor       = 3
 	defaultCooldown   = 60
 )
+
+// IssuesUnignored counts ignored issues put back to unresolved by
+// CheckIgnored, by the condition that was met.
+var IssuesUnignored = metrics.NewCounter("crashcart_issues_unignored_total", "Ignored issues put back to unresolved, by reason (time, count, escalating).", "reason")
 
 // AlertsTotal counts deliveries by alert type, channel kind and outcome.
 var AlertsTotal = metrics.NewCounter("crashcart_alerts_total", "Alert deliveries by type, channel kind and outcome (sent, failed).", "type", "kind", "outcome")
@@ -78,12 +85,12 @@ type Payload struct {
 	FirstRelease  *string `json:"first_release,omitempty"`
 	LastRelease   *string `json:"last_release,omitempty"`
 	MoreSinceLast *int64  `json:"more_since_last,omitempty"` // new_issue: other issues that appeared since the last alert (suppressed by the cooldown)
-	Recent        *int64  `json:"recent,omitempty"`          // unhandled_spike: unhandled in the last hour
-	Baseline      *int64  `json:"baseline,omitempty"`        // unhandled_spike: unhandled in the 24 h before
+	Recent        *int64  `json:"recent,omitempty"`          // unhandled_spike: unhandled in the last hour; escalating: the issue's events in the last hour
+	Baseline      *int64  `json:"baseline,omitempty"`        // unhandled_spike: unhandled in the 24 h before; escalating: the issue's events in the 24 h before it was ignored
 	URL           string  `json:"url"`
 }
 
-// EnsureRules creates the project's three default rules (all enabled,
+// EnsureRules creates the project's four default rules (all enabled,
 // 60 min cooldown) when they do not exist yet. Existing rows are kept.
 func EnsureRules(ctx context.Context, st *store.Store, projectID int64) error {
 	return st.EnsureAlertRules(ctx, sqlc.EnsureAlertRulesParams{ProjectID: projectID, CooldownMinutes: defaultCooldown})
@@ -180,10 +187,72 @@ func (n *Notifier) spike(ctx context.Context, projectID, recent, baseline int64)
 }
 
 // IsSpike is the unhandled-spike rule: unhandled errors in the last hour versus
-// the hourly mean of the 24 h before it.
+// the hourly mean of the 24 h before it. Also the escalation rule of an
+// ignored issue (its own events, its own baseline).
 func IsSpike(recent, baseline int64) bool {
 	mean := float64(baseline) / 24
 	return recent >= MinSpikeUnhandled && float64(recent) >= SpikeFactor*mean
+}
+
+// CheckIgnored (scheduler, every minute) puts ignored issues whose
+// condition is met back to unresolved. Time and count are decided from
+// the row alone; escalation is IsSpike on the issue's stored events in
+// the exact last hour against the 24 h baseline recorded when it was
+// ignored, and sends an `escalating` alert per issue — under the
+// project's cooldown for that type, like the other alerts, so a bad hour
+// yields one message.
+func (n *Notifier) CheckIgnored(ctx context.Context) error {
+	due, err := n.Store.UnignoreDue(ctx)
+	if err != nil {
+		return fmt.Errorf("unignore: %w", err)
+	}
+	for _, d := range due {
+		n.log().Info("issue unignored", "project", d.ProjectID, "fingerprint", d.Fingerprint, "reason", d.Reason)
+		IssuesUnignored.Inc(d.Reason)
+	}
+	rows, err := n.Store.EscalationInputs(ctx, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		return fmt.Errorf("escalation inputs: %w", err)
+	}
+	var errs []error
+	for _, in := range rows {
+		if !IsSpike(in.Recent, in.Baseline) {
+			continue
+		}
+		issue, err := n.Store.EscalateIssue(ctx, sqlc.EscalateIssueParams{ProjectID: in.ProjectID, Fingerprint: in.Fingerprint})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // its status changed meanwhile
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		n.log().Info("issue escalating", "project", issue.ProjectID, "fingerprint", issue.Fingerprint, "recent", in.Recent, "baseline", in.Baseline)
+		IssuesUnignored.Inc("escalating")
+		if err := n.escalate(ctx, issue, in.Recent, in.Baseline); err != nil {
+			errs = append(errs, fmt.Errorf("issue %s: %w", issue.Fingerprint, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// escalate claims the escalating cooldown for the project and notifies.
+func (n *Notifier) escalate(ctx context.Context, issue sqlc.Issue, recent, baseline int64) error {
+	if err := EnsureRules(ctx, n.Store, issue.ProjectID); err != nil {
+		return err
+	}
+	p, err := n.Store.GetProjectByID(ctx, issue.ProjectID)
+	if err != nil {
+		return err
+	}
+	return n.deliver(ctx, issue.ProjectID, TypeEscalating, func(*time.Time) Payload {
+		return Payload{
+			Type: TypeEscalating, Project: p.Name, ProjectSlug: p.Slug, Title: issue.Title, Fingerprint: string(issue.Fingerprint),
+			Level: string(issue.Level), EventCount: issue.EventCount, FirstRelease: issue.FirstRelease, LastRelease: issue.LastRelease,
+			Recent: &recent, Baseline: &baseline,
+			URL: n.link(p.Slug, "/issues/"+url.PathEscape(string(issue.Fingerprint))),
+		}
+	})
 }
 
 // link builds the viewer URL for a project path; relative when PUBLIC_URL
@@ -227,12 +296,12 @@ func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload)
 			if errors.Is(err, ErrBlockedURL) {
 				outcome = "blocked"
 			}
-			AlertsTotal.Inc(payload.Type, string(ch.Kind), outcome)
 			n.log().Error("alert: channel failed", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "err", err)
+			AlertsTotal.Inc(payload.Type, string(ch.Kind), outcome)
 			continue
 		}
-		AlertsTotal.Inc(payload.Type, string(ch.Kind), "sent")
 		sent++
+		AlertsTotal.Inc(payload.Type, string(ch.Kind), "sent")
 		n.log().Info("alert: sent", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "fingerprint", payload.Fingerprint)
 	}
 	return sent
@@ -277,6 +346,8 @@ func TelegramText(p Payload) string {
 		b.WriteString("Regression")
 	case TypeUnhandledSpike:
 		b.WriteString("Unhandled error spike")
+	case TypeEscalating:
+		b.WriteString("Escalating")
 	default:
 		b.WriteString(p.Type)
 	}
@@ -286,6 +357,9 @@ func TelegramText(p Payload) string {
 		if p.LastRelease != nil && *p.LastRelease != "" {
 			fmt.Fprintf(&b, " · release %s", *p.LastRelease)
 		}
+	}
+	if p.Type == TypeEscalating && p.Recent != nil && p.Baseline != nil {
+		fmt.Fprintf(&b, "\n%d in the last hour (was %.1f/h when ignored)", *p.Recent, float64(*p.Baseline)/24)
 	}
 	if p.MoreSinceLast != nil {
 		fmt.Fprintf(&b, "\n+%d more new issues since the last alert", *p.MoreSinceLast)

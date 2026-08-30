@@ -18,6 +18,7 @@ do not coin synonyms.
 | **Transaction** | `event.transaction`: the screen, route or request the event happened in | ~~screen~~ ~~page~~ |
 | **Culprit** | Sentry's stack culprit: the innermost in-app frame as `module-or-file in function` (shown under the title) | ~~location~~ |
 | **Session** | One app run / page load reported for release health (`session` / `sessions` items) | |
+| **Attachment** | A file the SDK attached to an event (an envelope `attachment` item): a crash screenshot (`screenshot.png`), a view hierarchy, a log | ~~upload~~ ~~asset~~ |
 
 ## Event: level and handled
 
@@ -52,11 +53,21 @@ events — the word is reserved for sessions.
 | **unresolved** | Open |
 | **resolved** | Fixed (records the releases it had been seen on) |
 | **regression** | Was resolved, reappeared on a release it had not been seen on before — only ingest sets it (Sentry's *Regressed*, under "resolve in next release" rules) |
-| **ignored** | Known, won't fix (Sentry's *Archived*) |
+| **ignored** | Known, won't fix — for good, or **until** a condition (Sentry's *Archived* / "Archive until …"): a time, a number of further events, or **escalating** |
 
 Sentry's statuses, without the substatuses (`new` / `ongoing` /
 `escalating`); there is no "triaged" state. An issue's `level` is its
 latest event's.
+
+| Ignore condition | Column | Comes back to unresolved when |
+|---|---|---|
+| **until a time** | `ignore_until` | the time has passed |
+| **until N more events** | `ignore_until_count` (= `event_count` + N at ignore time) | `event_count` reaches it |
+| **until escalating** | `ignore_until_escalating`, `ignore_baseline` | its stored events in the last hour are 3× its hourly rate of the 24 h before it was ignored, and at least 10 — the `unhandled_spike` rule applied to one issue. Fires the `escalating` alert |
+
+Checked every minute (`alerts.CheckIgnored`). The viewer's plain
+**Ignore** is "until escalating" (Sentry's default *Archive*); the API's
+plain `{"status": "ignored"}` is for good.
 
 ## Event fields
 
@@ -88,6 +99,7 @@ shown under it, not in it.
 | `new_issue` | A fingerprint is seen for the first time |
 | `regression` | A resolved issue comes back on a new release |
 | `unhandled_spike` | Unhandled errors in the last hour are 3× the 24 h baseline (and at least 10) |
+| `escalating` | An issue ignored until escalating came back: its events in the last hour are 3× its rate of the 24 h before it was ignored (and at least 10) |
 
 ## Branding
 

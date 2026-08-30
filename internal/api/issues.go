@@ -41,10 +41,16 @@ type issueOut struct {
 	LastRelease      *string   `json:"last_release"`
 	Releases         []string  `json:"releases"`          // every release the issue was seen on ("" = events without one)
 	ResolvedReleases []string  `json:"resolved_releases"` // the releases at resolve time; a later event outside them is a regression
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	Users            *int64    `json:"users,omitempty"` // single-issue response only: distinct users in the window
-	Sparkline        []int64   `json:"sparkline,omitempty"`
+	// Ignore conditions (status ignored): back to unresolved at ignore_until,
+	// when event_count reaches ignore_until_count, or when the issue
+	// escalates. All unset: ignored for good.
+	IgnoreUntil           *time.Time `json:"ignore_until"`
+	IgnoreUntilCount      *int64     `json:"ignore_until_count"`
+	IgnoreUntilEscalating bool       `json:"ignore_until_escalating"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	Users                 *int64     `json:"users,omitempty"` // single-issue response only: distinct users in the window
+	Sparkline             []int64    `json:"sparkline,omitempty"`
 }
 
 func toIssueOut(i sqlc.Issue) issueOut {
@@ -53,8 +59,54 @@ func toIssueOut(i sqlc.Issue) issueOut {
 		Platform: i.Platform, Status: string(i.Status), StatusBy: i.StatusBy, EventCount: i.EventCount, StoredCount: i.StoredCount,
 		FirstSeen: i.FirstSeen.UTC(), LastSeen: i.LastSeen.UTC(),
 		FirstRelease: i.FirstRelease, LastRelease: i.LastRelease, Releases: i.Releases, ResolvedReleases: i.ResolvedReleases,
+		IgnoreUntil: utcPtr(i.IgnoreUntil), IgnoreUntilCount: i.IgnoreUntilCount, IgnoreUntilEscalating: i.IgnoreUntilEscalating,
 		CreatedAt: i.CreatedAt.UTC(), UpdatedAt: i.UpdatedAt.UTC(),
 	}
+}
+
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+// statusChange is the body of PATCH …/issues/{fingerprint} and the status
+// part of POST …/issues/bulk. With status ignored, the optional conditions
+// (any may be combined; none = ignored for good): ignore_minutes (back
+// after this long), ignore_events (back after this many further events),
+// ignore_until_escalating (back when the issue's events in an hour reach
+// the spike rule against the 24 h before now).
+type statusChange struct {
+	Status                string `json:"status"`
+	IgnoreMinutes         *int64 `json:"ignore_minutes"`
+	IgnoreEvents          *int64 `json:"ignore_events"`
+	IgnoreUntilEscalating bool   `json:"ignore_until_escalating"`
+}
+
+// params validates the change; the error is the user-facing message.
+func (c statusChange) params(at time.Time) (status sqlc.IssueStatus, until *time.Time, events *int64, escalating bool, err error) {
+	if !writableStatuses[c.Status] {
+		return "", nil, nil, false, badRequest("status must be one of unresolved, resolved, ignored")
+	}
+	if c.Status != "ignored" {
+		if c.IgnoreMinutes != nil || c.IgnoreEvents != nil || c.IgnoreUntilEscalating {
+			return "", nil, nil, false, badRequest("ignore_* fields need status ignored")
+		}
+		return sqlc.IssueStatus(c.Status), nil, nil, false, nil
+	}
+	if c.IgnoreMinutes != nil {
+		if *c.IgnoreMinutes <= 0 || *c.IgnoreMinutes > 366*24*60*10 {
+			return "", nil, nil, false, badRequest("ignore_minutes must be between 1 and ten years")
+		}
+		t := at.Add(time.Duration(*c.IgnoreMinutes) * time.Minute)
+		until = &t
+	}
+	if c.IgnoreEvents != nil && (*c.IgnoreEvents <= 0 || *c.IgnoreEvents > 1_000_000_000) {
+		return "", nil, nil, false, badRequest("ignore_events must be between 1 and 1000000000")
+	}
+	return sqlc.IssueStatusIgnored, until, c.IgnoreEvents, c.IgnoreUntilEscalating, nil
 }
 
 type timelineBucket struct {
@@ -203,15 +255,14 @@ func (h *Handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var in struct {
-		Status string `json:"status"`
-	}
+	var in statusChange
 	if err := readJSON(w, r, &in); err != nil {
 		h.fail(w, err)
 		return
 	}
-	if !writableStatuses[in.Status] {
-		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, resolved, ignored")
+	status, until, events, escalating, err := in.params(time.Now().UTC())
+	if err != nil {
+		h.fail(w, err)
 		return
 	}
 	fp, ok := sentry.ParseID(r.PathValue("fingerprint"))
@@ -219,7 +270,8 @@ func (h *Handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: sqlc.IssueStatus(in.Status), StatusBy: actorName(r)})
+	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: status, StatusBy: actorName(r),
+		IgnoreUntil: until, IgnoreEvents: events, IgnoreEscalating: escalating})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -234,14 +286,15 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Fingerprints []string `json:"fingerprints"`
-		Status       string   `json:"status"`
+		statusChange
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		h.fail(w, err)
 		return
 	}
-	if !writableStatuses[in.Status] {
-		writeErr(w, http.StatusBadRequest, "status must be one of unresolved, resolved, ignored")
+	status, until, events, escalating, err := in.params(time.Now().UTC())
+	if err != nil {
+		h.fail(w, err)
 		return
 	}
 	if len(in.Fingerprints) == 0 {
@@ -257,7 +310,8 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		fps = append(fps, fp)
 	}
-	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: sqlc.IssueStatus(in.Status), StatusBy: actorName(r)})
+	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: status, StatusBy: actorName(r),
+		IgnoreUntil: until, IgnoreEvents: events, IgnoreEscalating: escalating})
 	if err != nil {
 		h.fail(w, err)
 		return

@@ -15,7 +15,7 @@ CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnor
 CREATE TYPE issue_status   AS ENUM ('unresolved', 'resolved', 'ignored', 'regression');
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
-CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike');
+CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike', 'escalating');
 CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
 
 -- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
@@ -123,6 +123,34 @@ CREATE INDEX events_project_unhandled ON events (project_id, occurred_at DESC) W
 CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filters are `tags @> {k: v}`
 
 
+-- ── attachments ────────────────────────────────────────────────────────
+-- The envelope's attachment items (a crash screenshot, a view hierarchy,
+-- a log the app attached), kept with their event: the key is the event's,
+-- so a resent envelope lands on the same rows, and the table is
+-- partitioned by week on the event's time like events — retention drops
+-- them together, and an event that sampling dropped has none (the
+-- attachments of a stored event are what is kept; sampling bounds them
+-- as it bounds payloads). One row per file; n is the item's position
+-- among the event's attachments. Bounded at ingest
+-- (sentry.MaxAttachmentSize per file, sentry.MaxAttachments per envelope).
+-- The bytes are stored as sent (a PNG is already compressed: STORAGE
+-- EXTERNAL keeps TOAST from compressing again).
+
+CREATE TABLE attachments (
+    occurred_at     TIMESTAMPTZ NOT NULL,             -- the event's occurred_at (partition key)
+    project_id      BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id        UUID NOT NULL,
+    n               INTEGER NOT NULL,                 -- position among the event's attachments (0-based)
+    filename        TEXT NOT NULL,                    -- item header `filename` ("screenshot.png")
+    content_type    TEXT NOT NULL,                    -- item header `content_type` (application/octet-stream when absent)
+    attachment_type TEXT NOT NULL,                    -- item header `attachment_type`: event.attachment (default), event.view_hierarchy, event.minidump, …
+    size            BIGINT NOT NULL,
+    data            BYTEA NOT NULL,
+    PRIMARY KEY (project_id, event_id, occurred_at, n)
+) PARTITION BY RANGE (occurred_at);
+ALTER TABLE attachments ALTER COLUMN data SET STORAGE EXTERNAL;
+CREATE TABLE attachments_default PARTITION OF attachments DEFAULT;
+
 -- ── sessions (release health) ──────────────────────────────────────────
 
 CREATE TABLE sessions (
@@ -174,11 +202,21 @@ CREATE TABLE issues (
     last_release     TEXT,
     releases         TEXT[] NOT NULL DEFAULT '{}',    -- every release this issue was seen on ('' = none); appended at ingest
     resolved_releases TEXT[],                         -- `releases` at resolve time: a later event on a release outside it is a regression (Sentry's "resolve in next release")
+    -- Conditions of an `ignored` issue (Sentry's archive "until …"): any
+    -- that is met puts it back to unresolved (alerts.CheckIgnored, every
+    -- minute). All NULL / false: ignored for good.
+    ignore_until            TIMESTAMPTZ,              -- until this time
+    ignore_until_count      BIGINT,                   -- until event_count reaches this (set as event_count + N when ignoring)
+    ignore_until_escalating BOOLEAN NOT NULL DEFAULT false, -- until its events in an hour are alerts.SpikeFactor × the hourly rate of the 24 h before it was ignored (ignore_baseline; and at least alerts.MinSpikeUnhandled) — the unhandled_spike rule, per issue
+    ignore_baseline         BIGINT,                   -- stored events in the 24 h before it was ignored (for ignore_until_escalating)
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, fingerprint)
 );
 CREATE INDEX issues_project_last_seen ON issues (project_id, last_seen DESC);
+-- The conditional ignores, across projects: what CheckIgnored reads.
+CREATE INDEX issues_ignored_conditional ON issues (project_id, fingerprint)
+    WHERE status = 'ignored' AND (ignore_until IS NOT NULL OR ignore_until_count IS NOT NULL OR ignore_until_escalating);
 CREATE INDEX issues_project_status ON issues (project_id, status, last_seen DESC);
 CREATE INDEX issues_project_first_seen ON issues (project_id, first_seen DESC);   -- "new issues since" (SSE, overview)
 CREATE INDEX issues_project_first_release ON issues (project_id, first_release); -- release pages

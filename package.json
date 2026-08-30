@@ -6,7 +6,7 @@
     "css": "tailwindcss -i internal/web/styles/app.css -o internal/web/assets/app.css --minify"
   },
   "dependencies": {
-    "shadless": "file:../shadless"
+    "shadless": "file:../../at-least/shadless"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.3",

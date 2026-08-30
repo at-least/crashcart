@@ -8,6 +8,7 @@ should go.
 | **New issue** | An issue is seen for the first time |
 | **Regression** | A resolved issue comes back on a different release |
 | **Unhandled error spike** | At least 10 unhandled errors (`exception.mechanism.handled = false`) in the last hour, and 3× the usual hourly rate of the previous day |
+| **Escalating** | An issue you [ignored until escalating](./issues#ignoring-with-a-condition) is back: at least 10 of its events in the last hour, and 3× its hourly rate of the day before you ignored it |
 
 Each alert type has a **cooldown** (minutes) so a noisy hour doesn't
 produce a message every minute.
@@ -40,6 +41,9 @@ takes it.
 
 An unhandled-spike alert (`"type": "unhandled_spike"`) carries `recent` (unhandled errors in the
 last hour) and `baseline` (in the 24 hours before) instead of the issue fields.
+An escalating alert (`"type": "escalating"`) carries the issue fields plus
+`recent` (the issue's events in the last hour) and `baseline` (its events
+in the 24 hours before it was ignored).
 `url` links straight to the issue or project, using
 [`PUBLIC_URL`](/deploy/configuration).
 
