@@ -289,3 +289,42 @@ func TestIngestUngroupedSampledWithRedaction(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 }
+
+// TestIngestClampsFarPastClock: an event (or session) dated before the
+// retention window is a wrong device clock: it is stored at now, so
+// issues.first_seen / releases.first_seen are not dragged back for good.
+// A late event inside the window keeps its time.
+func TestIngestClampsFarPastClock(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &Ingester{Store: st, Cfg: config.Config{RetentionDays: 30}, Log: slog.Default()}
+	now := time.Now().UTC()
+	late := now.Add(-10 * 24 * time.Hour).Truncate(time.Second)
+	env := sentry.Parse(envelope(crash("1.0", "1970-01-02T00:00:00Z", 1), crash("1.0", late.Format(time.RFC3339), 2)), now)
+	env.Sessions = append(env.Sessions, sentry.Session{SID: "s1", Release: "1.0", Status: "ok", StartedAt: time.Date(1970, 1, 2, 0, 0, 0, 0, time.UTC), Count: 1})
+	res, err := in.Ingest(ctx, p, env, now)
+	if err != nil || res.Stored != 2 || res.Sessions != 1 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	iss, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !iss.FirstSeen.Equal(late) {
+		t.Fatalf("first_seen = %v, want the late (in-window) event %v", iss.FirstSeen, late)
+	}
+	var at time.Time
+	if err := st.Pool.QueryRow(ctx, `SELECT min(occurred_at) FROM events WHERE project_id = $1`, p.ID).Scan(&at); err != nil || at.Year() == 1970 {
+		t.Fatalf("oldest stored event = %v %v (1970 event stored as-is)", at, err)
+	}
+	if err := st.Pool.QueryRow(ctx, `SELECT started_at FROM sessions WHERE sid = 's1'`).Scan(&at); err != nil || at.Year() == 1970 {
+		t.Fatalf("session started_at = %v %v", at, err)
+	}
+	if err := st.Pool.QueryRow(ctx, `SELECT first_seen FROM releases WHERE project_id = $1 AND release = '1.0'`, p.ID).Scan(&at); err != nil || !at.Equal(late) {
+		t.Fatalf("releases.first_seen = %v %v, want %v", at, err, late)
+	}
+}

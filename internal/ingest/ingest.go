@@ -370,12 +370,17 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	seenEvent := map[sentry.ID]bool{}
 	symCtx, cancelSym := context.WithTimeout(ctx, SymbolicateBudget)
 	defer cancelSym()
+	past := now.Add(-in.retention())
+	for i := range env.Sessions {
+		env.Sessions[i].StartedAt = clampPast(env.Sessions[i].StartedAt, past, now)
+	}
 	for _, ev := range env.Events {
 		if seenEvent[ev.EventID] {
 			res.Duplicates++ // the same event twice in one envelope
 			continue
 		}
 		seenEvent[ev.EventID] = true
+		ev.Timestamp = clampPast(ev.Timestamp, past, now)
 		if in.Cfg.PIIRedact {
 			redact(ev)
 		}
@@ -704,6 +709,29 @@ func redact(ev *sentry.Event) {
 	// The raw payload is stored verbatim otherwise; with redaction on we
 	// scrub the whole document textually so nothing leaks via detail views.
 	ev.Raw = []byte(RedactText(string(ev.Raw)))
+}
+
+// retention is RETENTION_DAYS as a duration (30 days when unset, like
+// internal/retention).
+func (in *Ingester) retention() time.Duration {
+	d := in.Cfg.RetentionDays
+	if d < 1 {
+		d = 30
+	}
+	return time.Duration(d) * 24 * time.Hour
+}
+
+// clampPast treats a time before the retention window as a wrong device
+// clock and uses now instead — the mirror of the parser's rule for the
+// future. A late event inside the window (a crash sent weeks after it
+// happened) keeps its time. Without this, one device reporting 1970
+// would drag issues.first_seen and releases.first_seen (both LEAST) back
+// for good, while the event itself is swept within the hour.
+func clampPast(t, past, now time.Time) time.Time {
+	if t.Before(past) {
+		return now.UTC().Truncate(time.Microsecond)
+	}
+	return t
 }
 
 func nilIfEmpty(s string) *string {

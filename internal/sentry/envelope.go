@@ -616,7 +616,10 @@ func parseTimestamp(raw json.RawMessage) time.Time {
 	}
 	var f float64
 	if json.Unmarshal(raw, &f) == nil {
-		if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+		// Out of any plausible range (1e15 ms is the year 33658): a value
+		// the float→int64 conversion could not represent, or garbage.
+		// Zero means "no timestamp", and the fallback applies.
+		if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f >= 1e15 {
 			return time.Time{}
 		}
 		if f < 1e12 { // seconds

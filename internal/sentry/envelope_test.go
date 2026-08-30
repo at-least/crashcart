@@ -94,6 +94,8 @@ func TestParseTimestampVariants(t *testing.T) {
 		`1787998530000`:               "2026-08-29T10:15:30Z",
 		`"garbage"`:                   "2026-08-29T11:00:00Z", // sent_at fallback
 		`null`:                        "2026-08-29T11:00:00Z",
+		`1e300`:                       "2026-08-29T11:00:00Z", // not representable: fallback, not a year -292277024
+		`1e16`:                        "2026-08-29T11:00:00Z",
 	}
 	for in, want := range cases {
 		env := Parse(envelope(`{"type":"event"}`, `{"message":"x","timestamp":`+in+`}`), now)
