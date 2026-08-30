@@ -18,6 +18,7 @@ type Config struct {
 	CORSOrigin    string // SDK ingest endpoints (browser SDKs); "*" by default
 	APICORSOrigin string // /api/* JSON API; "" = no CORS headers (same-origin / non-browser callers)
 	RateLimit     int    // requests / minute / credential; 0 = off
+	TrustProxy    bool   // X-Forwarded-For names the client (behind a reverse proxy)
 
 	RetentionDays    int
 	AlertInterval    time.Duration
@@ -40,6 +41,7 @@ func Load() (Config, error) {
 		SymbolicateURL:   strings.TrimSuffix(get("SYMBOLICATE_URL", ""), "/"),
 		TelegramBotToken: get("TELEGRAM_BOT_TOKEN", ""),
 		PIIRedact:        get("PII_REDACT", "false") == "true",
+		TrustProxy:       get("TRUST_PROXY", "false") == "true",
 		CustomTags:       SplitCSV(get("CUSTOM_TAGS", "")),
 	}
 	var err error

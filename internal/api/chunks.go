@@ -27,6 +27,7 @@ import (
 
 const (
 	chunkSize        = 8 << 20
+	maxAssembleFiles = 64 // files per assemble request
 	chunksPerRequest = 8
 	maxRequestSize   = chunkSize*chunksPerRequest + 1<<20
 )
@@ -107,9 +108,19 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if len(req) > maxAssembleFiles {
+		h.fail(w, badRequest("at most 64 files per assemble request"))
+		return
+	}
 	out := map[string]assembleResponse{}
 	for checksum, f := range req {
 		checksum = strings.ToLower(checksum)
+		// The size bound before any chunk is read: the chunk list alone
+		// says when the file cannot fit.
+		if (len(f.Chunks)-1)*chunkSize > symbolicate.MaxUpload {
+			out[checksum] = assembleResponse{State: "error", MissingChunks: []string{}, Detail: "file exceeds 50 MB"}
+			continue
+		}
 		chunks := make([]string, len(f.Chunks))
 		for i, c := range f.Chunks {
 			chunks[i] = strings.ToLower(c)

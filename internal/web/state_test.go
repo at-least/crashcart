@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -81,5 +82,16 @@ func TestFormat(t *testing.T) {
 	n := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	if timeAgo(n.Add(-3*time.Minute), n) != "3m ago" || timeAgo(n.Add(-2*24*time.Hour), n) != "2d ago" || timeAgo(n.Add(-30*24*time.Hour), n) != "Jul 30" {
 		t.Errorf("timeAgo: %s %s", timeAgo(n.Add(-3*time.Minute), n), timeAgo(n.Add(-30*24*time.Hour), n))
+	}
+}
+
+func TestViewStateBounds(t *testing.T) {
+	q := url.Values{"offset": {"900000000"}, "q": {strings.Repeat("x", 5000)}, "release": {"1.0"}}
+	s := ParseViewState("p", q)
+	if s.Offset != MaxOffset {
+		t.Errorf("offset = %d, want clamped to %d", s.Offset, MaxOffset)
+	}
+	if len(s.Filters["q"]) != MaxFilterLen || s.Filters["release"] != "1.0" {
+		t.Errorf("filters = %v", s.Filters)
 	}
 }

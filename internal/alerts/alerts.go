@@ -52,18 +52,19 @@ type Notifier struct {
 // Payload is the JSON body of a webhook call (and the source of the
 // Telegram text). Fields are snake_case like the rest of the API.
 type Payload struct {
-	Type         string  `json:"type"`
-	Project      string  `json:"project"`
-	ProjectSlug  string  `json:"project_slug"`
-	Title        string  `json:"title"`
-	Fingerprint  string  `json:"fingerprint,omitempty"`
-	Level        string  `json:"level,omitempty"`
-	EventCount   int64   `json:"event_count,omitempty"`
-	FirstRelease *string `json:"first_release,omitempty"`
-	LastRelease  *string `json:"last_release,omitempty"`
-	Recent       *int64  `json:"recent,omitempty"`   // crash_spike: crashes in the last hour
-	Baseline     *int64  `json:"baseline,omitempty"` // crash_spike: crashes in the 24 h before
-	URL          string  `json:"url"`
+	Type          string  `json:"type"`
+	Project       string  `json:"project"`
+	ProjectSlug   string  `json:"project_slug"`
+	Title         string  `json:"title"`
+	Fingerprint   string  `json:"fingerprint,omitempty"`
+	Level         string  `json:"level,omitempty"`
+	EventCount    int64   `json:"event_count,omitempty"`
+	FirstRelease  *string `json:"first_release,omitempty"`
+	LastRelease   *string `json:"last_release,omitempty"`
+	MoreSinceLast *int64  `json:"more_since_last,omitempty"` // new_issue: other issues that appeared since the last alert (suppressed by the cooldown)
+	Recent        *int64  `json:"recent,omitempty"`          // crash_spike: crashes in the last hour
+	Baseline      *int64  `json:"baseline,omitempty"`        // crash_spike: crashes in the 24 h before
+	URL           string  `json:"url"`
 }
 
 // EnsureRules creates the project's three default rules (all enabled,
@@ -73,18 +74,16 @@ func EnsureRules(ctx context.Context, st *store.Store, projectID int64) error {
 }
 
 // Issue handles job kind "alert" ({type: new_issue|regression, fingerprint}).
-// Delivery is best effort: the cooldown is claimed first, so a retry could
-// not re-send anyway; per-channel failures are logged and nil is returned.
+// The cooldown is claimed first (atomically, so replicas cannot both
+// send); when nothing could be delivered — every channel failed, or there
+// is none — the claim is given back, so one outage does not also eat the
+// next alert of the hour. Per-channel failures are logged and nil is
+// returned. The cooldown is per project and type: the payload says how
+// many other issues appeared since the last alert, so the ones it
+// suppresses are not invisible.
 func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint string) error {
 	if typ != TypeNewIssue && typ != TypeRegression {
 		return fmt.Errorf("alert: unknown type %q", typ)
-	}
-	claimed, err := n.Store.TouchAlertRule(ctx, sqlc.TouchAlertRuleParams{ProjectID: projectID, Type: sqlc.AlertType(typ)})
-	if err != nil {
-		return err
-	}
-	if claimed == 0 {
-		return nil // disabled, cooling down, or no rule row
 	}
 	fp, ok := sentry.ParseID(fingerprint)
 	if !ok {
@@ -101,12 +100,26 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 	if err != nil {
 		return err
 	}
+	previous, claimed, err := n.claim(ctx, projectID, sqlc.AlertType(typ))
+	if err != nil || !claimed {
+		return err // disabled, cooling down, or no rule row
+	}
 	payload := Payload{
 		Type: typ, Project: p.Name, ProjectSlug: p.Slug, Title: issue.Title, Fingerprint: string(issue.Fingerprint),
 		Level: string(issue.Level), EventCount: issue.EventCount, FirstRelease: issue.FirstRelease, LastRelease: issue.LastRelease,
 		URL: n.link(p.Slug, "/issues/"+url.PathEscape(fingerprint)),
 	}
-	n.notify(ctx, projectID, payload)
+	if typ == TypeNewIssue && previous != nil {
+		if more, err := n.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: projectID, FirstSeen: *previous}); err == nil && more > 1 {
+			m := more - 1 // this one
+			payload.MoreSinceLast = &m
+		}
+	}
+	if n.notify(ctx, projectID, payload) == 0 {
+		if err := n.Store.UnclaimAlertRule(ctx, sqlc.UnclaimAlertRuleParams{ProjectID: projectID, Type: sqlc.AlertType(typ), Previous: previous}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -142,24 +155,24 @@ func (n *Notifier) spike(ctx context.Context, projectID, recent, baseline int64)
 	if err := EnsureRules(ctx, n.Store, projectID); err != nil {
 		return err
 	}
-	claimed, err := n.Store.TouchAlertRule(ctx, sqlc.TouchAlertRuleParams{ProjectID: projectID, Type: TypeCrashSpike})
-	if err != nil {
+	previous, claimed, err := n.claim(ctx, projectID, TypeCrashSpike)
+	if err != nil || !claimed {
 		return err
-	}
-	if claimed == 0 {
-		return nil
 	}
 	p, err := n.Store.GetProjectByID(ctx, projectID)
 	if err != nil {
 		return err
 	}
-	n.notify(ctx, p.ID, Payload{
+	sent := n.notify(ctx, p.ID, Payload{
 		Type: TypeCrashSpike, Project: p.Name, ProjectSlug: p.Slug,
 		Title:  fmt.Sprintf("Crash spike: %d crashes in the last hour (baseline %.1f/h)", recent, float64(baseline)/24),
 		Level:  "fatal",
 		Recent: &recent, Baseline: &baseline,
 		URL: n.link(p.Slug, "?crash=1&range=1h"),
 	})
+	if sent == 0 {
+		return n.Store.UnclaimAlertRule(ctx, sqlc.UnclaimAlertRuleParams{ProjectID: projectID, Type: TypeCrashSpike, Previous: previous})
+	}
 	return nil
 }
 
@@ -176,20 +189,41 @@ func (n *Notifier) link(slug, path string) string {
 	return n.Cfg.PublicURL + "/p/" + url.PathEscape(slug) + path
 }
 
-// notify sends payload to every channel of the project; failures are logged.
-func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload) {
+// claim takes the rule's cooldown; previous is last_triggered before the
+// claim, for UnclaimAlertRule when nothing could be delivered.
+func (n *Notifier) claim(ctx context.Context, projectID int64, typ sqlc.AlertType) (previous *time.Time, claimed bool, err error) {
+	rule, err := n.Store.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: projectID, Type: typ})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	rows, err := n.Store.TouchAlertRule(ctx, sqlc.TouchAlertRuleParams{ProjectID: projectID, Type: typ})
+	if err != nil {
+		return nil, false, err
+	}
+	return rule.LastTriggered, rows > 0, nil
+}
+
+// notify sends payload to every channel of the project; failures are
+// logged. Returns how many channels took it.
+func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload) int {
 	channels, err := n.Store.ListAlertChannels(ctx, projectID)
 	if err != nil {
 		n.log().Error("alert: list channels", "project", projectID, "err", err)
-		return
+		return 0
 	}
+	sent := 0
 	for _, ch := range channels {
 		if err := n.send(ctx, ch, payload); err != nil {
 			n.log().Error("alert: channel failed", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "err", err)
 			continue
 		}
+		sent++
 		n.log().Info("alert: sent", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "fingerprint", payload.Fingerprint)
 	}
+	return sent
 }
 
 func (n *Notifier) send(ctx context.Context, ch sqlc.AlertChannel, payload Payload) error {
@@ -240,6 +274,9 @@ func TelegramText(p Payload) string {
 		if p.LastRelease != nil && *p.LastRelease != "" {
 			fmt.Fprintf(&b, " · release %s", *p.LastRelease)
 		}
+	}
+	if p.MoreSinceLast != nil {
+		fmt.Fprintf(&b, "\n+%d more new issues since the last alert", *p.MoreSinceLast)
 	}
 	if p.URL != "" {
 		b.WriteString("\n" + p.URL)

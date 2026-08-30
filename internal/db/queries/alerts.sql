@@ -17,10 +17,16 @@ FROM unnest(ARRAY['new_issue', 'regression', 'crash_spike']::alert_type[]) AS t
 ON CONFLICT (project_id, type) DO NOTHING;
 
 -- name: TouchAlertRule :execrows
--- Claims the cooldown atomically: succeeds only if it is not still cooling down.
+-- Claims the cooldown atomically: succeeds only if it is not still cooling
+-- down (0 rows: disabled, cooling down, or no rule).
 UPDATE alert_rules SET last_triggered = now()
 WHERE project_id = $1 AND type = $2 AND enabled
   AND (last_triggered IS NULL OR last_triggered < now() - make_interval(mins => cooldown_minutes));
+
+-- name: UnclaimAlertRule :exec
+-- Gives a claim back (nothing was delivered): the cooldown must not eat
+-- the next alert too.
+UPDATE alert_rules SET last_triggered = sqlc.narg(previous) WHERE project_id = $1 AND type = $2;
 
 -- name: ListAlertChannels :many
 SELECT * FROM alert_channels WHERE project_id = $1 ORDER BY id;

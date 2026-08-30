@@ -103,8 +103,13 @@ func BearerCredential(r *http.Request) string {
 // IPCredential keys buckets by client IP (for unauthenticated HTML routes).
 func IPCredential(r *http.Request) string { return "ip:" + clientIP(r) }
 
+// TrustProxy: honour X-Forwarded-For (the first address) as the client IP.
+// Off by default — a client can send the header itself and choose its own
+// rate-limit bucket. Set from TRUST_PROXY at startup.
+var TrustProxy bool
+
 func clientIP(r *http.Request) string {
-	if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
+	if xf := r.Header.Get("X-Forwarded-For"); TrustProxy && xf != "" {
 		if i := strings.IndexByte(xf, ','); i >= 0 {
 			xf = xf[:i]
 		}

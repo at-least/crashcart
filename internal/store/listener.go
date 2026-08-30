@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -70,9 +72,13 @@ func (l *Listener) deliver(channel, payload string) {
 func (l *Listener) Run(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
+		started := time.Now()
 		err := l.listen(ctx)
 		if ctx.Err() != nil {
 			return
+		}
+		if time.Since(started) > time.Minute {
+			backoff = time.Second // it was healthy for a while: not a reconnect storm
 		}
 		l.log().Warn("notify: listener disconnected, reconnecting", "err", err, "in", backoff)
 		select {
@@ -97,13 +103,29 @@ func (l *Listener) listen(ctx context.Context) error {
 		}
 	}
 	for {
-		n, err := conn.WaitForNotification(ctx)
+		// A LISTEN connection is idle for minutes at a time: a NAT or
+		// proxy dropping it would never be noticed (no FIN reaches us,
+		// nothing is ever written). Wait in bounded slices and ping in
+		// between, which both detects a dead socket and keeps it alive.
+		wait, cancel := context.WithTimeout(ctx, ListenKeepalive)
+		n, err := conn.WaitForNotification(wait)
+		cancel()
 		if err != nil {
-			return err
+			if ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			if err := conn.Ping(ctx); err != nil {
+				return fmt.Errorf("keepalive: %w", err)
+			}
+			continue
 		}
 		l.deliver(n.Channel, n.Payload)
 	}
 }
+
+// ListenKeepalive is how long WaitForNotification blocks before the
+// connection is pinged.
+var ListenKeepalive = 45 * time.Second
 
 func (l *Listener) log() *slog.Logger {
 	if l.Log != nil {

@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/crashcartapp/crashcart/internal/api"
+	"github.com/crashcartapp/crashcart/internal/auth"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/ingest"
 	"github.com/crashcartapp/crashcart/internal/store"
@@ -25,6 +26,7 @@ type Deps struct {
 
 // New builds the root handler.
 func New(d Deps) http.Handler {
+	auth.TrustProxy = d.Cfg.TrustProxy
 	mux := http.NewServeMux()
 	in := &ingest.Ingester{Store: d.Store, Cfg: d.Cfg, Symbols: d.Symbols, Log: d.Log}
 	mux.Handle("POST /api/{project}/envelope/{$}", in.Handler())

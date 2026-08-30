@@ -8,6 +8,7 @@ package sqlc
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 const createAlertChannel = `-- name: CreateAlertChannel :one
@@ -161,13 +162,31 @@ type TouchAlertRuleParams struct {
 	Type      AlertType `json:"type"`
 }
 
-// Claims the cooldown atomically: succeeds only if it is not still cooling down.
+// Claims the cooldown atomically: succeeds only if it is not still cooling
+// down (0 rows: disabled, cooling down, or no rule).
 func (q *Queries) TouchAlertRule(ctx context.Context, arg TouchAlertRuleParams) (int64, error) {
 	result, err := q.db.Exec(ctx, touchAlertRule, arg.ProjectID, arg.Type)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const unclaimAlertRule = `-- name: UnclaimAlertRule :exec
+UPDATE alert_rules SET last_triggered = $3 WHERE project_id = $1 AND type = $2
+`
+
+type UnclaimAlertRuleParams struct {
+	ProjectID int64      `json:"project_id"`
+	Type      AlertType  `json:"type"`
+	Previous  *time.Time `json:"previous"`
+}
+
+// Gives a claim back (nothing was delivered): the cooldown must not eat
+// the next alert too.
+func (q *Queries) UnclaimAlertRule(ctx context.Context, arg UnclaimAlertRuleParams) error {
+	_, err := q.db.Exec(ctx, unclaimAlertRule, arg.ProjectID, arg.Type, arg.Previous)
+	return err
 }
 
 const upsertAlertRule = `-- name: UpsertAlertRule :one

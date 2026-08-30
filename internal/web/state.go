@@ -62,7 +62,7 @@ func ParseViewState(slug string, q url.Values) ViewState {
 		s.Sort = q.Get("sort")
 	}
 	if n, err := strconv.Atoi(q.Get("offset")); err == nil && n > 0 {
-		s.Offset = n
+		s.Offset = min(n, MaxOffset) // OFFSET is a sort-and-discard: bounded
 	}
 	if c, ok := store.ParseCursor(q.Get("before")); ok && !c.IsZero() {
 		s.Before = c.String()
@@ -72,14 +72,28 @@ func ParseViewState(slug string, q url.Values) ViewState {
 			continue
 		}
 		if v := q.Get(k); v != "" {
-			s.Filters[k] = v
+			s.Filters[k] = clip(v, MaxFilterLen)
 		}
 	}
 	// The search form submits a transient column + query pair.
 	if col, qv := q.Get("search_col"), strings.TrimSpace(q.Get("search_q")); col != "" && qv != "" && filterKey(col) {
-		s.Filters[col] = qv
+		s.Filters[col] = clip(qv, MaxFilterLen)
 	}
 	return s
+}
+
+// Bounds on URL state: an offset is a sort-and-discard in Postgres, and a
+// filter value becomes an ILIKE pattern or an index key.
+const (
+	MaxOffset    = 10000
+	MaxFilterLen = 200
+)
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 func isIssueStatus(s string) bool {

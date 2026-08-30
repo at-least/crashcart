@@ -235,3 +235,69 @@ func TestTelegramErrorHidesToken(t *testing.T) {
 		t.Fatalf("token leaked in error: %v", err)
 	}
 }
+
+// TestCooldownGivenBackWhenNothingDelivered: a claim that delivered to no
+// channel is returned, so the outage does not also eat the next alert.
+func TestCooldownGivenBackWhenNothingDelivered(t *testing.T) {
+	st, p, s, n := setup(t)
+	ctx := context.Background()
+	good, _ := st.ListAlertChannels(ctx, p.ID)
+	for _, ch := range good {
+		st.DeleteAlertChannel(ctx, sqlc.DeleteAlertChannelParams{ProjectID: p.ID, ID: ch.ID})
+	}
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "nope", 500) }))
+	defer bad.Close()
+	cfg, _ := json.Marshal(map[string]string{"url": bad.URL})
+	badCh, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "webhook", Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := time.Now().UTC()
+	fp := sentry.DerivedID([]byte("gb"))
+	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(fp)); err != nil {
+		t.Fatal(err)
+	}
+	rule, _ := st.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue})
+	if rule.LastTriggered != nil {
+		t.Fatalf("cooldown kept although nothing was delivered: %v", rule.LastTriggered)
+	}
+	// The endpoint comes back: the next alert goes out at once.
+	st.DeleteAlertChannel(ctx, sqlc.DeleteAlertChannelParams{ProjectID: p.ID, ID: badCh.ID})
+	for _, ch := range good {
+		st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: ch.Kind, Config: ch.Config})
+	}
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(fp)); err != nil || s.count() != 1 {
+		t.Fatalf("after recovery: err=%v sent=%d", err, s.count())
+	}
+	rule, _ = st.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue})
+	if rule.LastTriggered == nil {
+		t.Fatal("cooldown not claimed after a delivery")
+	}
+}
+
+// TestNewIssueAlertCountsSuppressed: the cooldown is per project, so the
+// alert that gets through says how many other new issues it stands for.
+func TestNewIssueAlertCountsSuppressed(t *testing.T) {
+	st, p, s, n := setup(t)
+	ctx := context.Background()
+	past := time.Now().UTC().Add(-2 * time.Hour)
+	if _, err := st.Pool.Exec(ctx, "UPDATE alert_rules SET last_triggered = $1 WHERE project_id = $2 AND type = 'new_issue'", past, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	var fp sentry.ID
+	for i := 0; i < 4; i++ {
+		fp = sentry.DerivedID([]byte{byte(i)})
+		at := time.Now().UTC().Add(-time.Duration(4-i) * time.Minute)
+		st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: at, LastSeen: at})
+	}
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(fp)); err != nil || s.count() != 1 {
+		t.Fatalf("err=%v sent=%d", err, s.count())
+	}
+	if got := s.payloads[0].MoreSinceLast; got == nil || *got != 3 {
+		t.Fatalf("more_since_last = %v, want 3", got)
+	}
+	if !strings.Contains(TelegramText(s.payloads[0]), "+3 more new issues") {
+		t.Errorf("telegram text: %q", TelegramText(s.payloads[0]))
+	}
+}

@@ -80,3 +80,35 @@ func TestListenerNotifications(t *testing.T) {
 		t.Fatal("no regression notification")
 	}
 }
+
+// TestListenerKeepalive: a notification still arrives after the listener
+// has been idle longer than its keepalive (the wait is sliced and the
+// connection pinged in between).
+func TestListenerKeepalive(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	old := store.ListenKeepalive
+	store.ListenKeepalive = 50 * time.Millisecond
+	t.Cleanup(func() { store.ListenKeepalive = old })
+	l := &store.Listener{Pool: st.Pool}
+	jobs, stop := l.Subscribe(store.ChannelJobs, "")
+	defer stop()
+	go l.Run(ctx)
+	time.Sleep(300 * time.Millisecond) // several keepalive rounds
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte(`{"k":1}`), RunAfter: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-jobs:
+			return
+		case <-time.After(200 * time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatal("no notification after keepalive rounds")
+			}
+		}
+	}
+}
