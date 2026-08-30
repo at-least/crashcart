@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -264,6 +265,22 @@ func TestIngestHTTP(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 413 {
 		t.Fatalf("corrupt gzip → %d", rec.Code)
+	}
+	// Over the daily quota: 429 with Sentry's rate-limit header, so the SDK
+	// stops sending (all categories) until the next UTC day.
+	if _, err := st.Pool.Exec(ctx, "UPDATE projects SET daily_quota = 1 WHERE id = $1", p.ID); err != nil {
+		t.Fatal(err)
+	}
+	in.byKey = nil // the DSN-key cache holds the project for a minute
+	req = newRequest("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), body)
+	req.Header.Set("X-Sentry-Auth", "Sentry sentry_key=secretkey")
+	rec = newRecorder()
+	h.ServeHTTP(rec, req)
+	limits := rec.Header().Get("X-Sentry-Rate-Limits")
+	secs, _, _ := strings.Cut(limits, ":")
+	n, _ := strconv.Atoi(secs)
+	if rec.Code != 429 || !strings.HasSuffix(limits, ":error;transaction;session:project:quota") || n < 1 || n > 24*3600+1 || rec.Header().Get("Retry-After") != secs {
+		t.Fatalf("over quota → %d %q retry-after=%q", rec.Code, limits, rec.Header().Get("Retry-After"))
 	}
 }
 

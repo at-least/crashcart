@@ -112,3 +112,55 @@ func TestListenerKeepalive(t *testing.T) {
 		}
 	}
 }
+
+// TestListenerReconnects: when the LISTEN connection dies (the server
+// drops it here), the listener counts the loss, reconnects and delivers
+// again — the wake-ups a replica relies on survive a network blip.
+func TestListenerReconnects(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l := &store.Listener{Pool: st.Pool}
+	jobs, stop := l.Subscribe(store.ChannelJobs, "")
+	defer stop()
+	go l.Run(ctx)
+	wait := func(what string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-jobs:
+				return
+			case <-time.After(200 * time.Millisecond):
+				if time.Now().After(deadline) {
+					t.Fatalf("no jobs notification %s", what)
+				}
+			}
+		}
+	}
+	wait("before the disconnect")
+	before := store.ListenerReconnects.Value()
+	// Kill the listening backend: its last statement was the LISTEN.
+	var killed int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+		WHERE datname = current_database() AND pid <> pg_backend_pid() AND query LIKE 'LISTEN %') k`).Scan(&killed); err != nil || killed == 0 {
+		t.Fatalf("terminate listener backend: killed=%d err=%v", killed, err)
+	}
+	wait("after the reconnect")
+	if got := store.ListenerReconnects.Value(); got != before+1 {
+		t.Errorf("reconnects = %d, want %d", got, before+1)
+	}
+	// Drain what the retries queued so the count above stays exact.
+	for {
+		select {
+		case <-jobs:
+			continue
+		default:
+		}
+		break
+	}
+}

@@ -42,3 +42,28 @@ func TestRateLimitWindow(t *testing.T) {
 		t.Fatal("old window must be dropped")
 	}
 }
+
+func TestCredentials(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.9:4321"
+	req.Header.Set("Authorization", "Bearer   cc_secret  ")
+	req.Header.Set("X-Forwarded-For", "198.51.100.7, 10.0.0.2")
+	if got := BearerCredential(req); got != "cc_secret" {
+		t.Errorf("bearer = %q", got)
+	}
+	// Without a trusted proxy the forwarded header is the client's to forge: ignored.
+	if got := IPCredential(false)(req); got != "ip:203.0.113.9" {
+		t.Errorf("untrusted proxy = %q", got)
+	}
+	// Behind one, the first (leftmost) address is the client.
+	if got := IPCredential(true)(req); got != "ip:198.51.100.7" {
+		t.Errorf("trusted proxy = %q", got)
+	}
+	req.Header.Del("X-Forwarded-For")
+	if got := IPCredential(true)(req); got != "ip:203.0.113.9" {
+		t.Errorf("trusted proxy without header = %q", got)
+	}
+	if got := BearerCredential(httptest.NewRequest("GET", "/", nil)); got != "" {
+		t.Errorf("no header = %q", got)
+	}
+}

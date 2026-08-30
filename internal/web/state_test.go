@@ -85,6 +85,64 @@ func TestFormat(t *testing.T) {
 	if timeAgo(n.Add(-3*time.Minute), n) != "3m ago" || timeAgo(n.Add(-2*24*time.Hour), n) != "2d ago" || timeAgo(n.Add(-30*24*time.Hour), n) != "Jul 30" {
 		t.Errorf("timeAgo: %s %s", timeAgo(n.Add(-3*time.Minute), n), timeAgo(n.Add(-30*24*time.Hour), n))
 	}
+	// A device clock ahead of ours is shown absolute rather than as a negative age.
+	if got := timeAgo(n.Add(time.Minute), n); got != "Aug 29 12:01:00 UTC" {
+		t.Errorf("future timeAgo = %s", got)
+	}
+	local := n.In(time.FixedZone("X", 8*3600))
+	if formatTime(local) != "Aug 29 12:00:00 UTC" || formatDateTime(local) != "2026-08-29 12:00:00 UTC" {
+		t.Errorf("format: %s / %s (must render in UTC)", formatTime(local), formatDateTime(local))
+	}
+	for in, want := range map[string]string{"FATAL": "fatal", "warn": "warning", "Warning": "warning", "critical": "fatal", "info": "info", "": "debug", "verbose": "debug"} {
+		if got := levelKey(in); got != want {
+			t.Errorf("levelKey(%q) = %s, want %s", in, got, want)
+		}
+	}
+	if plural(1, "event") != "1 event" || plural(0, "event") != "0 events" || plural(12, "user") != "12 users" {
+		t.Errorf("plural: %s %s", plural(1, "event"), plural(0, "event"))
+	}
+	if orDash("") != "—" || orDash("x") != "x" || firstNonEmpty("", "b") != "b" || firstNonEmpty("a", "b") != "a" || boolAttr(true) != "true" || boolAttr(false) != "false" {
+		t.Error("orDash / firstNonEmpty / boolAttr")
+	}
+	if m := tagsMap([]byte(`{"build":"42"}`)); m["build"] != "42" {
+		t.Errorf("tagsMap = %v", m)
+	}
+	if m := tagsMap([]byte(`not json`)); m == nil || len(m) != 0 {
+		t.Errorf("tagsMap of garbage must be an empty map, got %v", m)
+	}
+	var nilStr *string
+	x := "x"
+	if deref(nilStr) != "" || deref(&x) != "x" || derefStr(nilStr) != "" || derefStr(&x) != "x" || i64(7) != "7" || itoa(-3) != "-3" {
+		t.Error("deref / i64 / itoa")
+	}
+}
+
+func TestViewStatePaging(t *testing.T) {
+	q, _ := url.ParseQuery("win=24h&level=fatal&offset=50")
+	s := ParseViewState("app", q)
+	n := s.WithOffset(100)
+	if n.Offset != 100 || s.Offset != 50 || n.Filters["level"] != "fatal" || n.Win != "24h" {
+		t.Errorf("WithOffset = %+v (from %+v)", n, s)
+	}
+	if n := s.WithOffset(-5); n.Offset != 0 {
+		t.Errorf("negative offset = %d", n.Offset)
+	}
+	c := store.Cursor{At: time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC), EventID: "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"}
+	b := s.WithBefore(c)
+	if b.Before != c.String() || s.Before != "" || b.Cursor() != c {
+		t.Errorf("WithBefore = %+v", b)
+	}
+	if got := b.Href("/events"); !strings.Contains(got, "before=2026-08-29T10%3A00%3A00Z_e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1") || !strings.Contains(got, "level=fatal") {
+		t.Errorf("href = %s", got)
+	}
+	if z := s.WithBefore(store.Cursor{}); z.Before != "" {
+		t.Errorf("zero cursor = %q", z.Before)
+	}
+	// Filters are copied, not shared.
+	n.Filters["level"] = "info"
+	if s.Filters["level"] != "fatal" {
+		t.Error("WithOffset must copy the filters")
+	}
 }
 
 func TestViewStateBounds(t *testing.T) {

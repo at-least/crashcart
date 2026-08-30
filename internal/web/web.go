@@ -55,7 +55,7 @@ func (w *Web) Register(mux *http.ServeMux) {
 	limit := auth.RateLimit("web", w.Cfg.RateLimit, auth.IPCredential(w.Cfg.TrustProxy))
 	// Signed-in pages; the sign-in pages themselves are public (rate limited).
 	page := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, w.access.Session, limit) }
-	public := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, limit) }
+	public := func(h http.HandlerFunc) http.Handler { return auth.Chain(h, w.access.Identify, limit) }
 	mutation := func(h http.HandlerFunc) http.Handler { return page(requireHX(h)) }
 
 	mux.Handle("GET /login", public(w.loginPage))

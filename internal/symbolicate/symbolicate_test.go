@@ -70,6 +70,22 @@ func TestSourceMap(t *testing.T) {
 	if f.Filename != "src/a.js" {
 		t.Errorf("single map should be the fallback = %+v", f)
 	}
+
+	// ResolveAll reports whether anything changed: mapped frames do, unmapped ones pass through.
+	frames := []Frame{{Filename: "bundle.js", Lineno: 1, Colno: 1}, {Filename: "bundle.js", Lineno: 5, Colno: 0}}
+	out, changed := sm.ResolveAll(frames)
+	if !changed || len(out) != 2 || out[0].Filename != "src/a.js" || out[1] != frames[1] {
+		t.Errorf("ResolveAll = %+v changed=%v", out, changed)
+	}
+	if frames[0].Filename != "bundle.js" {
+		t.Error("ResolveAll must not modify its input")
+	}
+	if out, changed := sm.ResolveAll([]Frame{{Filename: "bundle.js", Lineno: 5}}); changed || len(out) != 1 {
+		t.Errorf("nothing mapped: %+v changed=%v", out, changed)
+	}
+	if out, changed := sm.ResolveAll(nil); changed || len(out) != 0 {
+		t.Errorf("empty: %+v changed=%v", out, changed)
+	}
 }
 
 func TestFrameJSONOmitsZero(t *testing.T) {

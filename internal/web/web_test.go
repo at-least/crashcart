@@ -172,6 +172,27 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 303 || rec.Header().Get("Location") != "/p/shop/issues/"+fp {
 		t.Errorf("status = %d %s", rec.Code, rec.Header().Get("Location"))
 	}
+	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "triaged" || got.StatusBy == nil || *got.StatusBy != "dev@example.com" {
+		t.Errorf("status select: %+v", got)
+	}
+	patch := func(path, body string) int {
+		req := httptest.NewRequest("PATCH", path, strings.NewReader(body))
+		req.AddCookie(sessionCookie)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := patch("/p/shop/issues/"+fp+"/status", "status=deleted"); c != 400 {
+		t.Errorf("unknown status accepted: %d", c)
+	}
+	if c := patch("/p/shop/issues/"+string(sentry.DerivedID([]byte("nope")))+"/status", "status=resolved"); c != 404 {
+		t.Errorf("unknown issue: %d", c)
+	}
+	if c := patch("/p/shop/issues/not-an-id/status", "status=resolved"); c != 404 {
+		t.Errorf("malformed fingerprint: %d", c)
+	}
 
 	// settings mutations
 	hx := func(method, path, body string) *httptest.ResponseRecorder {
@@ -426,5 +447,93 @@ func TestAuthFlow(t *testing.T) {
 	}
 	if rec := do("POST", "/login", "email=me%40example.com&password=correct+horse+battery&next=https%3A%2F%2Fevil.example", nil, false); rec.Header().Get("Location") != "/" {
 		t.Errorf("open redirect: %s", rec.Header().Get("Location"))
+	}
+}
+
+// TestAccountUsers: the account page adds and removes users (a signed-in
+// user cannot remove their own account), and /login redirects the
+// signed-in and the fresh install.
+func TestAccountUsers(t *testing.T) {
+	w, _, mux := setup(t)
+	ctx := context.Background()
+	do := func(method, path, body string, cookie *http.Cookie, hx bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		if hx {
+			req.Header.Set("HX-Request", "true")
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := do("GET", "/login", "", sessionCookie, false); rec.Code != 303 || rec.Header().Get("Location") != "/" {
+		t.Errorf("login page signed in: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := do("GET", "/login?next=/p/shop/issues", "", nil, false); rec.Code != 200 || !strings.Contains(rec.Body.String(), `value="/p/shop/issues"`) {
+		t.Errorf("login page signed out: %d %.200s", rec.Code, rec.Body.String())
+	}
+	if rec := do("GET", "/login?next=https://evil.example/", "", nil, false); rec.Code != 200 || strings.Contains(rec.Body.String(), "evil.example") {
+		t.Error("an off-site next must not be carried into the form")
+	}
+	assertPage(t, mux, "/account", "dev@example.com", "Add user", "API keys")
+
+	// Adding a user: validation messages re-render the page; success redirects.
+	if rec := do("POST", "/account/users", "email=ops%40example.com&password=correct+horse+battery", sessionCookie, false); rec.Code != 403 {
+		t.Errorf("mutation without HX-Request must be refused: %d", rec.Code)
+	}
+	if rec := do("POST", "/account/users", "email=not-an-email&password=correct+horse+battery", sessionCookie, true); rec.Code != 200 || !strings.Contains(rec.Body.String(), "A valid email is required.") {
+		t.Errorf("bad email: %d", rec.Code)
+	}
+	if rec := do("POST", "/account/users", "email=ops%40example.com&password=short", sessionCookie, true); rec.Code != 200 || !strings.Contains(rec.Body.String(), "at least 10 characters") {
+		t.Errorf("short password: %d", rec.Code)
+	}
+	if rec := do("POST", "/account/users", "email=Ops%40Example.com&name=Ops&password=correct+horse+battery", sessionCookie, true); rec.Code != 303 || rec.Header().Get("Location") != "/account" {
+		t.Fatalf("add user: %d %v", rec.Code, rec.Header())
+	}
+	users, err := w.Store.ListUsers(ctx)
+	if err != nil || len(users) != 2 {
+		t.Fatalf("users = %d %v", len(users), err)
+	}
+	var self, ops int64
+	for _, u := range users {
+		switch u.Email {
+		case "dev@example.com":
+			self = u.ID
+		case "ops@example.com": // normalized to lower case
+			ops = u.ID
+		}
+	}
+	if self == 0 || ops == 0 {
+		t.Fatalf("users = %+v", users)
+	}
+	if rec := do("POST", "/account/users", "email=OPS%40example.com&password=correct+horse+battery", sessionCookie, true); rec.Code != 200 || !strings.Contains(rec.Body.String(), "already has an account") {
+		t.Errorf("duplicate email: %d", rec.Code)
+	}
+	// The new user can sign in.
+	if rec := do("POST", "/login", "email=ops%40example.com&password=correct+horse+battery", nil, false); rec.Code != 303 || len(rec.Result().Cookies()) == 0 {
+		t.Errorf("new user sign-in: %d", rec.Code)
+	}
+	assertPage(t, mux, "/account", "ops@example.com", "Ops")
+
+	// Removing: not yourself, not a bogus id; another user goes.
+	if rec := do("DELETE", "/account/users/"+strconv.FormatInt(self, 10), "", sessionCookie, true); rec.Code != 400 {
+		t.Errorf("remove own account: %d", rec.Code)
+	}
+	if rec := do("DELETE", "/account/users/abc", "", sessionCookie, true); rec.Code != 404 {
+		t.Errorf("bogus id: %d", rec.Code)
+	}
+	if rec := do("DELETE", "/account/users/"+strconv.FormatInt(ops, 10), "", sessionCookie, true); rec.Code != 303 {
+		t.Errorf("remove user: %d", rec.Code)
+	}
+	if users, _ := w.Store.ListUsers(ctx); len(users) != 1 || users[0].ID != self {
+		t.Errorf("after removal: %+v", users)
+	}
+	if rec := do("POST", "/login", "email=ops%40example.com&password=correct+horse+battery", nil, false); rec.Code != 401 {
+		t.Errorf("removed user can still sign in: %d", rec.Code)
 	}
 }

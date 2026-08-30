@@ -145,6 +145,20 @@ func isHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https")
 }
 
+// Identify puts the user on the context when a live session cookie is
+// present and passes through otherwise — for the public pages, which
+// behave differently for a signed-in user but never require one.
+func (a *Access) Identify(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
+			if u, err := a.Store.GetUserSession(r.Context(), HashToken(c.Value)); err == nil {
+				r = r.WithContext(WithActor(r.Context(), Actor{UserID: u.ID, Name: u.Email}))
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Session requires a live session cookie and puts the user on the context.
 // Without one, a browser is sent to /login (or /setup while no user exists);
 // an htmx request gets 401 with HX-Redirect so the page navigates.

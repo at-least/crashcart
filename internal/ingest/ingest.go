@@ -728,10 +728,3 @@ func nilIfEmpty(s string) *string {
 	}
 	return &s
 }
-
-func nonNil[T any](s []T) []T {
-	if s == nil {
-		return []T{}
-	}
-	return s
-}

@@ -2,12 +2,16 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"github.com/crashcartapp/crashcart/internal/db/sqlc"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +95,62 @@ func TestChunkUpload(t *testing.T) {
 	rec, _ = e.do("GET", "/api/0/projects/o/app/files/dsyms/?debug_id=564ca29d-9553-5cda-b46b-135303369724", nil)
 	if rec.Code != 200 || !bytes.Contains(rec.Body.Bytes(), []byte(`"objectName":"mapping.txt"`)) {
 		t.Fatalf("dsyms lookup: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestProguardArtifactRelease: the Gradle plugin's bundled sentry-cli
+// follows a legacy ProGuard upload with {proguard_uuid, release_name};
+// it tags that one mapping.
+func TestProguardArtifactRelease(t *testing.T) {
+	e := newEnv(t)
+	p := e.createProject("app")
+	ctx := context.Background()
+	mapping := []byte("com.example.Foo -> a.b:\n    void bar() -> c\n")
+	uuid := "564ca29d-9553-5cda-b46b-135303369724"
+	other := "11111111-2222-3333-4444-555555555555"
+	releases := func() map[string]any {
+		t.Helper()
+		out := map[string]any{}
+		for _, s := range e.get("/api/projects/app/symbols", 200)["symbols"].([]any) {
+			m := s.(map[string]any)
+			out[m["debug_id"].(string)] = m["release"]
+		}
+		return out
+	}
+	for i, id := range []string{uuid, other} {
+		id := id
+		if _, err := e.st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", DebugID: &id, Filename: fmt.Sprintf("mapping%d.txt", i), Size: int64(len(mapping)), Data: mapping}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := releases(); len(r) != 2 {
+		t.Fatalf("two untagged mappings expected: %v", r)
+	}
+	// Without a uuid nothing is tagged (201 all the same: sentry-cli only checks the status).
+	rec, _ := e.do("POST", "/api/0/projects/o/app/files/proguard-artifact-releases", map[string]any{"proguard_uuid": "", "release_name": "2.4.1"})
+	if rec.Code != 201 {
+		t.Fatalf("no uuid: %d %s", rec.Code, rec.Body.String())
+	}
+	if r := releases(); r[uuid] != nil || r[other] != nil {
+		t.Fatalf("tagged without a uuid: %v", r)
+	}
+	// sentry-cli sends the uuid upper-case; only that mapping gets the release.
+	rec, _ = e.do("POST", "/api/0/projects/o/app/files/proguard-artifact-releases", map[string]any{"proguard_uuid": strings.ToUpper(uuid), "release_name": "2.4.1"})
+	if rec.Code != 201 {
+		t.Fatalf("associate: %d %s", rec.Code, rec.Body.String())
+	}
+	if r := releases(); r[uuid] != "2.4.1" || r[other] != nil {
+		t.Fatalf("after associate: %v", r)
+	}
+	// The project may be given by id, and an unknown one is 404.
+	rec, _ = e.do("POST", fmt.Sprintf("/api/0/projects/o/%d/files/proguard-artifact-releases", p.ID), map[string]any{"proguard_uuid": other, "release_name": "2.5.0"})
+	if rec.Code != 201 || releases()[other] != "2.5.0" {
+		t.Fatalf("by id: %d %v", rec.Code, releases())
+	}
+	if rec, _ := e.do("POST", "/api/0/projects/o/nope/files/proguard-artifact-releases", map[string]any{"proguard_uuid": uuid, "release_name": "x"}); rec.Code != 404 {
+		t.Errorf("unknown project: %d", rec.Code)
+	}
+	if rec, _ := e.do("POST", "/api/0/projects/o/app/files/proguard-artifact-releases", "not json"); rec.Code != 400 {
+		t.Errorf("bad body: %d", rec.Code)
 	}
 }

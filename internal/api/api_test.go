@@ -611,3 +611,32 @@ func TestAPIKeyRevoked(t *testing.T) {
 		t.Error("last_used_at not recorded")
 	}
 }
+
+// TestPreflightWithoutCORS: with API_CORS_ORIGIN unset the CORS middleware
+// is not mounted, so an OPTIONS request reaches the handler itself — an
+// authenticated 204 with no CORS headers, and 401 without a key.
+func TestPreflightWithoutCORS(t *testing.T) {
+	st := testdb.New(t)
+	mux := http.NewServeMux()
+	(&Handler{Store: st, Cfg: config.Config{}, Log: slog.Default(), Symbols: &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient("")}}).Register(mux)
+	_, key, err := (&auth.Access{Store: st}).CreateAPIKey(context.Background(), "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/projects", "/api/projects/demo/issues", "/api/0/organizations/o/chunk-upload/"} {
+		req := httptest.NewRequest("OPTIONS", path, nil)
+		req.Header.Set("Origin", "http://x")
+		req.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent || rec.Header().Get("Access-Control-Allow-Origin") != "" {
+			t.Errorf("OPTIONS %s = %d %v", path, rec.Code, rec.Header())
+		}
+		req.Header.Del("Authorization")
+		rec = httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("OPTIONS %s without a key = %d", path, rec.Code)
+		}
+	}
+}

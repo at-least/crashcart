@@ -331,7 +331,7 @@ func (s *Store) Breakdowns(ctx context.Context, f EventFilter, columns []string,
 			return nil, fmt.Errorf("breakdown: column %q not allowed", column)
 		}
 		args = append(args, column)
-		vals = append(vals, fmt.Sprintf("($%d::text, COALESCE(%s, ''))", len(args), expr))
+		vals = append(vals, fmt.Sprintf("($%d::text, COALESCE(%s::text, ''))", len(args), expr)) // ::text — level is an enum
 		out[column] = []Breakdown{}
 	}
 	if len(vals) == 0 {

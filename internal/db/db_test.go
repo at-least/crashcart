@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/crashcartapp/crashcart/internal/db"
 	"github.com/crashcartapp/crashcart/internal/testdb"
@@ -55,5 +57,25 @@ func TestProjectDefaults(t *testing.T) {
 	}
 	if quota != 0 || rate != 1 {
 		t.Fatalf("defaults: daily_quota=%d sample_rate=%v (want 0 = unlimited, 1)", quota, rate)
+	}
+}
+
+func TestConnect(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Close()
+	if _, err := db.Connect(ctx, "postgres://nobody:nothing@127.0.0.1:1/nowhere?sslmode=disable&connect_timeout=2"); err == nil {
+		t.Error("an unreachable server must fail Connect, not the first query")
+	}
+	if _, err := db.Connect(ctx, "::not a url::"); err == nil {
+		t.Error("an unparseable URL must fail")
 	}
 }
