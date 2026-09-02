@@ -10,21 +10,21 @@ Download the latest release for your platform — a single static binary
 with the web assets embedded, nothing else to install:
 
 ```sh
-curl -fsSL https://github.com/crashcartapp/crashcart/releases/latest/download/crashcart_linux_amd64.tar.gz | tar xz crashcart
+curl -fsSL https://github.com/at-least/crashcart/releases/latest/download/crashcart_linux_amd64.tar.gz | tar xz crashcart
 sudo install -m 755 crashcart /usr/local/bin/crashcart
 crashcart version
 ```
 
 Builds are published for `linux_amd64`, `linux_arm64`, `darwin_amd64` and
 `darwin_arm64`; see the
-[releases page](https://github.com/crashcartapp/crashcart/releases) for
+[releases page](https://github.com/at-least/crashcart/releases) for
 checksums.
 
 ::: details Building from source instead
 Needs Go 1.25 or newer.
 
 ```sh
-git clone https://github.com/crashcartapp/crashcart
+git clone https://github.com/at-least/crashcart
 cd crashcart
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o crashcart ./cmd/crashcart
 sudo install -m 755 crashcart /usr/local/bin/crashcart
@@ -115,7 +115,7 @@ follow [Connect an SDK](/guide/sdks), and go through
 Download the new release, replace the binary, restart:
 
 ```sh
-curl -fsSL https://github.com/crashcartapp/crashcart/releases/latest/download/crashcart_linux_amd64.tar.gz | tar xz crashcart
+curl -fsSL https://github.com/at-least/crashcart/releases/latest/download/crashcart_linux_amd64.tar.gz | tar xz crashcart
 sudo install -m 755 crashcart /usr/local/bin/crashcart
 sudo systemctl restart crashcart
 ```

@@ -17,7 +17,7 @@ hero:
       link: /deploy/docker
     - theme: alt
       text: GitHub
-      link: https://github.com/crashcartapp/crashcart
+      link: https://github.com/at-least/crashcart
 
 features:
   - icon: 🔌

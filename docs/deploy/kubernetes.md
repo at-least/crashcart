@@ -60,7 +60,7 @@ spec:
     spec:
       containers:
         - name: crashcart
-          image: ghcr.io/crashcartapp/crashcart:latest
+          image: ghcr.io/at-least/crashcart:latest
           ports:
             - containerPort: 8080
           envFrom:
@@ -254,7 +254,7 @@ Open `https://crashcart.example.com`, create the first account on the
 Pin the image to a release and change it to upgrade:
 
 ```sh
-kubectl -n crashcart set image deployment/crashcart crashcart=ghcr.io/crashcartapp/crashcart:0.2.0
+kubectl -n crashcart set image deployment/crashcart crashcart=ghcr.io/at-least/crashcart:0.2.0
 kubectl -n crashcart rollout status deployment/crashcart
 ```
 
