@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 func sha(b []byte) string {

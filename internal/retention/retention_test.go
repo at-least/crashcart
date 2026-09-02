@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/config"
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/sentry"
-	"github.com/crashcartapp/crashcart/internal/testdb"
+	"github.com/at-least/crashcart/internal/config"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/testdb"
 )
 
 func TestWeekStart(t *testing.T) {

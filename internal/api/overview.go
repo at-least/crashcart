@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 // topReleases is how many releases the overview timeline keeps apart;

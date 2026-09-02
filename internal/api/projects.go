@@ -9,11 +9,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/crashcartapp/crashcart/internal/alerts"
-	"github.com/crashcartapp/crashcart/internal/auth"
-	"github.com/crashcartapp/crashcart/internal/config"
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/alerts"
+	"github.com/at-least/crashcart/internal/auth"
+	"github.com/at-least/crashcart/internal/config"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/sentry"
 )
 
 // projectOut is the JSON shape of a project (public key exposed as the DSN).

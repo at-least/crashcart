@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // Handler processes one job; returning an error schedules a retry.

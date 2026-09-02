@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 // IssueFilter is the optional WHERE / ORDER of ListIssues. Zero values are

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 // ignore is the condition an issue is ignored under (Sentry's archive

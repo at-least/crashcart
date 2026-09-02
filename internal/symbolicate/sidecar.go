@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/sentry"
 )
 
 // Sidecar is the dSYM symbolication service (`crashcart symbolicate`): an

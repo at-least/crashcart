@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 type sessionsOut struct {

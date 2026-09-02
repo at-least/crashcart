@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/sentry"
 )
 
 type AlertType string

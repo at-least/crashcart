@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/db"
-	"github.com/crashcartapp/crashcart/internal/testdb"
+	"github.com/at-least/crashcart/internal/db"
+	"github.com/at-least/crashcart/internal/testdb"
 )
 
 func TestInitVersion(t *testing.T) {

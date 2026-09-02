@@ -10,8 +10,8 @@ import (
 	"github.com/a-h/templ"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/auth"
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/auth"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 // ── sign in ──

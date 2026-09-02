@@ -14,8 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/config"
-	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/config"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // AggregateRetentionDays is how long the rollup tables keep history,

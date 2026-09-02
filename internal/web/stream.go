@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // Poll cadence of the SSE endpoint (variables so tests can shorten them).

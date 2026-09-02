@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/testdb"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/testdb"
 )
 
 // TestClaimJobsSkipsLockedRows: SKIP LOCKED — a claim does not wait for

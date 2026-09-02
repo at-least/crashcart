@@ -7,16 +7,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/crashcartapp/crashcart/internal/alerts"
-	"github.com/crashcartapp/crashcart/internal/auth"
+	"github.com/at-least/crashcart/internal/alerts"
+	"github.com/at-least/crashcart/internal/auth"
 
 	"github.com/a-h/templ"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/sentry"
-	"github.com/crashcartapp/crashcart/internal/symbolicate"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/symbolicate"
 )
 
 // AlertTypes are the rule types in display order (alert_rules CHECK).

@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/crashcartapp/crashcart/internal/symbolicate"
+	"github.com/at-least/crashcart/internal/symbolicate"
 	"github.com/jackc/pgx/v5"
 )
 

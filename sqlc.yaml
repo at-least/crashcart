@@ -22,12 +22,12 @@ sql:
               pointer: true
           - db_type: "uuid"
             go_type:
-              import: "github.com/crashcartapp/crashcart/internal/sentry"
+              import: "github.com/at-least/crashcart/internal/sentry"
               type: "ID"
           - db_type: "uuid"
             nullable: true
             go_type:
-              import: "github.com/crashcartapp/crashcart/internal/sentry"
+              import: "github.com/at-least/crashcart/internal/sentry"
               type: "ID"
               pointer: true
           - db_type: "jsonb"

@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/crashcartapp/crashcart/internal/alerts"
+	"github.com/at-least/crashcart/internal/alerts"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 var alertTypes = map[string]bool{"new_issue": true, "regression": true, "unhandled_spike": true, "escalating": true}

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/sentry"
-	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // ViewState is everything a page needs from the URL query. Every navigation

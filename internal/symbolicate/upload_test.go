@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/testdb"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/testdb"
 )
 
 func TestUpload(t *testing.T) {

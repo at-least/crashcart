@@ -9,11 +9,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/crashcartapp/crashcart/internal/config"
-	"github.com/crashcartapp/crashcart/internal/db/sqlc"
-	"github.com/crashcartapp/crashcart/internal/sentry"
-	"github.com/crashcartapp/crashcart/internal/store"
-	"github.com/crashcartapp/crashcart/internal/testdb"
+	"github.com/at-least/crashcart/internal/config"
+	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/testdb"
 )
 
 // Tests of the documented retention claims (ARCHITECTURE.md), each one

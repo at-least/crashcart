@@ -9,7 +9,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/sentry"
 )
 
 const addIssueStored = `-- name: AddIssueStored :exec
