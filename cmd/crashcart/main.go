@@ -270,6 +270,14 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	tick(time.Minute, store.LeaderMonitorCheck, "monitor check", notifier.CheckMonitors)
 	tick(time.Hour, store.LeaderSweep, "retention sweep", func(ctx context.Context) error { return retention.Sweep(ctx, st, cfg, log) })
 
+	// Pool stats are per-process, not leader-elected: every replica logs
+	// its own (see Store.LogPoolStats).
+	work.Add(1)
+	go func() {
+		defer work.Done()
+		every(workCtx, time.Minute, func() { st.LogPoolStats(log) })
+	}()
+
 	// At shutdown the SSE streams are told to end (they would otherwise
 	// hold Shutdown until its deadline) while every other in-flight
 	// request keeps its context and finishes: Shutdown drains them, and

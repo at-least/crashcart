@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -122,6 +123,19 @@ func (s *Store) RunAsLeader(ctx context.Context, key int64, fn func()) (bool, er
 	defer conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", key)
 	fn()
 	return true, nil
+}
+
+// LogPoolStats logs both pools' connection stats — a rising
+// EmptyAcquireCount (an Acquire had to wait because none was immediately
+// free) is the leading indicator of the exhaustion issue #1 describes,
+// visible before it becomes a full hang. Not leader-elected: pool
+// exhaustion is a per-process condition, so every replica logs its own.
+func (s *Store) LogPoolStats(log *slog.Logger) {
+	for name, p := range map[string]*pgxpool.Pool{"query": s.Pool, "lock": s.lockPool} {
+		st := p.Stat()
+		log.Info("pool stats", "pool", name, "acquired", st.AcquiredConns(), "idle", st.IdleConns(), "max", st.MaxConns(),
+			"empty_acquire_count", st.EmptyAcquireCount(), "empty_acquire_wait", st.EmptyAcquireWaitTime())
+	}
 }
 
 // Close closes both pools.

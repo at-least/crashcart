@@ -1,8 +1,11 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -194,6 +197,45 @@ func TestRunAsLeaderDoesNotStarveQueryPool(t *testing.T) {
 	}
 	if n := ran.Load(); n != int32(len(keys)) {
 		t.Fatalf("only %d/%d fn ran", n, len(keys))
+	}
+}
+
+// TestLogPoolStats: both pools appear in the log, by name, with their own
+// MaxConns — Pool's is whatever the caller configured, lockPool's is the
+// fixed maxLeaderLocks (5) regardless. This is the signal issue #1 was
+// missing: nothing logged pool state before the process hung.
+func TestLogPoolStats(t *testing.T) {
+	st := testdb.NewWithMaxConns(t, 3)
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	st.LogPoolStats(log)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 log lines (query, lock), got %d:\n%s", len(lines), buf.String())
+	}
+	seen := map[string]bool{}
+	for _, l := range lines {
+		if !strings.Contains(l, `msg="pool stats"`) {
+			t.Errorf("not a pool-stats line: %s", l)
+		}
+		switch {
+		case strings.Contains(l, "pool=query"):
+			seen["query"] = true
+			if !strings.Contains(l, "max=3") {
+				t.Errorf("query pool max should be the configured 3: %s", l)
+			}
+		case strings.Contains(l, "pool=lock"):
+			seen["lock"] = true
+			if !strings.Contains(l, "max=5") {
+				t.Errorf("lock pool max should be maxLeaderLocks (5): %s", l)
+			}
+		default:
+			t.Errorf("unexpected pool line: %s", l)
+		}
+	}
+	if !seen["query"] || !seen["lock"] {
+		t.Fatalf("missing a pool's line: %v", seen)
 	}
 }
 
