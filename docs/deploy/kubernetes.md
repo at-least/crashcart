@@ -266,7 +266,10 @@ what changes if a release bumps the schema.
 ## Scaling
 
 CrashCart keeps no local state; raise `replicas` freely. All pods share
-the one database, including background work.
+the one database, including background work. The one exception is
+`BLOB_STORE=fs` — symbol files in a directory are local to the pod that
+wrote them — so with more than one replica keep symbol files in the
+database (the default) or in a bucket (`BLOB_STORE=s3`).
 
 ## Backups
 

@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-const deleteSymbolFile = `-- name: DeleteSymbolFile :execrows
-DELETE FROM symbol_files WHERE project_id = $1 AND id = $2
+const deleteSymbolFile = `-- name: DeleteSymbolFile :one
+DELETE FROM symbol_files WHERE project_id = $1 AND id = $2 RETURNING blob_key
 `
 
 type DeleteSymbolFileParams struct {
@@ -19,24 +19,37 @@ type DeleteSymbolFileParams struct {
 	ID        int64 `json:"id"`
 }
 
-func (q *Queries) DeleteSymbolFile(ctx context.Context, arg DeleteSymbolFileParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteSymbolFile, arg.ProjectID, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// RETURNING blob_key so the caller can delete the blob after commit
+// (pgx.ErrNoRows: no such file).
+func (q *Queries) DeleteSymbolFile(ctx context.Context, arg DeleteSymbolFileParams) (*string, error) {
+	row := q.db.QueryRow(ctx, deleteSymbolFile, arg.ProjectID, arg.ID)
+	var blob_key *string
+	err := row.Scan(&blob_key)
+	return blob_key, err
 }
 
-const expireSymbolFiles = `-- name: ExpireSymbolFiles :execrows
-DELETE FROM symbol_files WHERE uploaded_at < $1
+const expireSymbolFiles = `-- name: ExpireSymbolFiles :many
+DELETE FROM symbol_files WHERE uploaded_at < $1 RETURNING blob_key
 `
 
-func (q *Queries) ExpireSymbolFiles(ctx context.Context, uploadedAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, expireSymbolFiles, uploadedAt)
+func (q *Queries) ExpireSymbolFiles(ctx context.Context, uploadedAt time.Time) ([]*string, error) {
+	rows, err := q.db.Query(ctx, expireSymbolFiles, uploadedAt)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	items := []*string{}
+	for rows.Next() {
+		var blob_key *string
+		if err := rows.Scan(&blob_key); err != nil {
+			return nil, err
+		}
+		items = append(items, blob_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listSymbolFiles = `-- name: ListSymbolFiles :many
@@ -84,6 +97,18 @@ func (q *Queries) ListSymbolFiles(ctx context.Context, projectID int64) ([]ListS
 	return items, nil
 }
 
+const lockSymbolFile = `-- name: LockSymbolFile :exec
+SELECT pg_advisory_xact_lock(hashtext($1::text))
+`
+
+// Serializes writers of one symbol_files row (its unique key as text) for
+// the transaction: the previous blob_key read by SymbolFileBlobKey is then
+// the one the upsert replaces, whatever a concurrent upload does.
+func (q *Queries) LockSymbolFile(ctx context.Context, key string) error {
+	_, err := q.db.Exec(ctx, lockSymbolFile, key)
+	return err
+}
+
 const setSymbolFileRelease = `-- name: SetSymbolFileRelease :execrows
 UPDATE symbol_files SET release = $1
 WHERE project_id = $2 AND release IS NULL
@@ -113,8 +138,59 @@ func (q *Queries) SetSymbolFileRelease(ctx context.Context, arg SetSymbolFileRel
 	return result.RowsAffected(), nil
 }
 
+const symbolFileBlobKey = `-- name: SymbolFileBlobKey :one
+SELECT blob_key FROM symbol_files
+WHERE project_id = $1 AND kind = $2 AND release IS NOT DISTINCT FROM $4::text AND filename = $3
+`
+
+type SymbolFileBlobKeyParams struct {
+	ProjectID int64      `json:"project_id"`
+	Kind      SymbolKind `json:"kind"`
+	Filename  string     `json:"filename"`
+	Release   *string    `json:"release"`
+}
+
+// The blob_key of the row an upload is about to replace (its unique key;
+// IS NOT DISTINCT FROM so a NULL-release dSYM row matches).
+func (q *Queries) SymbolFileBlobKey(ctx context.Context, arg SymbolFileBlobKeyParams) (*string, error) {
+	row := q.db.QueryRow(ctx, symbolFileBlobKey,
+		arg.ProjectID,
+		arg.Kind,
+		arg.Filename,
+		arg.Release,
+	)
+	var blob_key *string
+	err := row.Scan(&blob_key)
+	return blob_key, err
+}
+
+const symbolFileBlobKeys = `-- name: SymbolFileBlobKeys :many
+SELECT blob_key::text FROM symbol_files WHERE project_id = $1 AND blob_key IS NOT NULL
+`
+
+// Every blob a project's symbol files point at: deleted after the project is.
+func (q *Queries) SymbolFileBlobKeys(ctx context.Context, projectID int64) ([]string, error) {
+	rows, err := q.db.Query(ctx, symbolFileBlobKeys, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var blob_key string
+		if err := rows.Scan(&blob_key); err != nil {
+			return nil, err
+		}
+		items = append(items, blob_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const symbolFileByDebugID = `-- name: SymbolFileByDebugID :one
-SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1
+SELECT id, project_id, kind, release, debug_id, filename, size, data, blob_key, uploaded_at FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1
 `
 
 type SymbolFileByDebugIDParams struct {
@@ -134,20 +210,27 @@ func (q *Queries) SymbolFileByDebugID(ctx context.Context, arg SymbolFileByDebug
 		&i.Filename,
 		&i.Size,
 		&i.Data,
+		&i.BlobKey,
 		&i.UploadedAt,
 	)
 	return i, err
 }
 
 const symbolFileData = `-- name: SymbolFileData :one
-SELECT data FROM symbol_files WHERE id = $1
+SELECT data, blob_key FROM symbol_files WHERE id = $1
 `
 
-func (q *Queries) SymbolFileData(ctx context.Context, id int64) ([]byte, error) {
+type SymbolFileDataRow struct {
+	Data    []byte  `json:"data"`
+	BlobKey *string `json:"blob_key"`
+}
+
+// The row's location: data, or the blob_key to fetch it by.
+func (q *Queries) SymbolFileData(ctx context.Context, id int64) (SymbolFileDataRow, error) {
 	row := q.db.QueryRow(ctx, symbolFileData, id)
-	var data []byte
-	err := row.Scan(&data)
-	return data, err
+	var i SymbolFileDataRow
+	err := row.Scan(&i.Data, &i.BlobKey)
+	return i, err
 }
 
 const symbolFileExists = `-- name: SymbolFileExists :one
@@ -264,7 +347,7 @@ func (q *Queries) SymbolFileMetasForRelease(ctx context.Context, arg SymbolFileM
 }
 
 const symbolFilesForRelease = `-- name: SymbolFilesForRelease :many
-SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at FROM symbol_files WHERE project_id = $1 AND release = $3::text AND kind = $2
+SELECT id, project_id, kind, release, debug_id, filename, size, data, blob_key, uploaded_at FROM symbol_files WHERE project_id = $1 AND release = $3::text AND kind = $2
 `
 
 type SymbolFilesForReleaseParams struct {
@@ -291,6 +374,7 @@ func (q *Queries) SymbolFilesForRelease(ctx context.Context, arg SymbolFilesForR
 			&i.Filename,
 			&i.Size,
 			&i.Data,
+			&i.BlobKey,
 			&i.UploadedAt,
 		); err != nil {
 			return nil, err
@@ -339,10 +423,10 @@ func (q *Queries) SymbolFilesVersion(ctx context.Context, arg SymbolFilesVersion
 }
 
 const upsertSymbolFile = `-- name: UpsertSymbolFile :one
-INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, blob_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET
-    debug_id = EXCLUDED.debug_id, size = EXCLUDED.size, data = EXCLUDED.data, uploaded_at = now()
+    debug_id = EXCLUDED.debug_id, size = EXCLUDED.size, data = EXCLUDED.data, blob_key = EXCLUDED.blob_key, uploaded_at = now()
 RETURNING id, project_id, kind, release, debug_id, filename, size, uploaded_at
 `
 
@@ -354,6 +438,7 @@ type UpsertSymbolFileParams struct {
 	Filename  string     `json:"filename"`
 	Size      int64      `json:"size"`
 	Data      []byte     `json:"data"`
+	BlobKey   *string    `json:"blob_key"`
 }
 
 type UpsertSymbolFileRow struct {
@@ -367,6 +452,9 @@ type UpsertSymbolFileRow struct {
 	UploadedAt time.Time  `json:"uploaded_at"`
 }
 
+// Exactly one of data / blob_key is set (the row's location, see
+// internal/symbolicate/files.go); DO UPDATE sets both so a re-upload can
+// move a row between the two.
 func (q *Queries) UpsertSymbolFile(ctx context.Context, arg UpsertSymbolFileParams) (UpsertSymbolFileRow, error) {
 	row := q.db.QueryRow(ctx, upsertSymbolFile,
 		arg.ProjectID,
@@ -376,6 +464,7 @@ func (q *Queries) UpsertSymbolFile(ctx context.Context, arg UpsertSymbolFilePara
 		arg.Filename,
 		arg.Size,
 		arg.Data,
+		arg.BlobKey,
 	)
 	var i UpsertSymbolFileRow
 	err := row.Scan(

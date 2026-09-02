@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/at-least/crashcart/internal/blob"
 )
 
 // Config is everything the binary needs; loaded once in main.
@@ -35,6 +37,10 @@ type Config struct {
 	WebhookAllowPrivate bool // webhooks may target RFC 1918 / ULA addresses (a service on the LAN)
 	PIIRedact           bool
 	CustomTags          []string // tag keys the viewer shows as filters
+
+	BlobStore string        // where symbol files are stored: "postgres" (default), "s3" or "fs"
+	BlobDir   string        // BLOB_STORE=fs: the directory
+	S3        blob.S3Config // BLOB_STORE=s3
 }
 
 // Group is a section of the configuration reference.
@@ -88,6 +94,17 @@ var Vars = []Var{
 		Doc: "Let webhooks target private addresses (10/8, 172.16/12, 192.168/16, fc00::/7) — a service on your LAN. Loopback, link-local (cloud metadata) and redirects are always refused"},
 	{Name: "CUSTOM_TAGS", Group: "Optional features",
 		Doc: "Comma-separated tag keys to offer as filters in the viewer, e.g. `tenant,feature_flag`"},
+	{Name: "BLOB_STORE", Group: "Optional features", Default: "postgres",
+		Doc: "Where uploaded symbol files (ProGuard mappings, dSYMs, source maps) are kept: `postgres` — in the database, nothing else to run; `s3` — an S3-compatible bucket, for large mapping files and several replicas; `fs` — a local directory, one replica only. Files already uploaded stay where they are; `crashcart export` / `import` moves them"},
+	{Name: "BLOB_DIR", Group: "Optional features", Doc: "`BLOB_STORE=fs`: the directory symbol files are written to"},
+	{Name: "S3_BUCKET", Group: "Optional features", Doc: "`BLOB_STORE=s3`: the bucket (must exist)"},
+	{Name: "S3_ENDPOINT", Group: "Optional features", Shown: "AWS",
+		Doc: "`BLOB_STORE=s3`: host[:port] of an S3-compatible store — MinIO, R2, Backblaze, Ceph — e.g. `minio:9000` or `https://<account>.r2.cloudflarestorage.com` (`http://` for a plain-HTTP MinIO on the LAN). Empty means AWS S3"},
+	{Name: "S3_REGION", Group: "Optional features", Shown: "`us-east-1`", Doc: "`BLOB_STORE=s3`: the bucket's region (AWS); other stores ignore it"},
+	{Name: "S3_ACCESS_KEY", Group: "Optional features",
+		Doc: "`BLOB_STORE=s3`: static credentials, with `S3_SECRET_KEY`. Leave both empty to use the usual chain: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, the shared credentials file, or an instance / task / pod role"},
+	{Name: "S3_SECRET_KEY", Group: "Optional features", Doc: "`BLOB_STORE=s3`: see `S3_ACCESS_KEY`"},
+	{Name: "S3_PREFIX", Group: "Optional features", Doc: "`BLOB_STORE=s3`: key prefix inside the bucket, e.g. `crashcart/`"},
 
 	{Name: "LISTEN_ADDR", Group: "Tuning", Default: ":8080", Doc: "Port to listen on"},
 	{Name: "TRUST_PROXY", Group: "Tuning", Default: "false",
@@ -126,9 +143,31 @@ func Load() (Config, error) {
 		TrustProxy:          get("TRUST_PROXY") == "true",
 		WebhookAllowPrivate: get("WEBHOOK_ALLOW_PRIVATE") == "true",
 		CustomTags:          SplitCSV(get("CUSTOM_TAGS")),
+		BlobStore:           get("BLOB_STORE"),
+		BlobDir:             get("BLOB_DIR"),
+		S3: blob.S3Config{
+			Bucket: get("S3_BUCKET"), Endpoint: get("S3_ENDPOINT"), Region: get("S3_REGION"),
+			AccessKey: get("S3_ACCESS_KEY"), SecretKey: get("S3_SECRET_KEY"), Prefix: get("S3_PREFIX"),
+		},
 	}
 	if c.SymbolicateCacheDir == "" {
 		c.SymbolicateCacheDir = filepath.Join(os.TempDir(), "crashcart-symbols")
+	}
+	switch c.BlobStore {
+	case "postgres":
+	case "fs":
+		if c.BlobDir == "" {
+			return c, fmt.Errorf("BLOB_STORE=fs needs BLOB_DIR")
+		}
+	case "s3":
+		if c.S3.Bucket == "" {
+			return c, fmt.Errorf("BLOB_STORE=s3 needs S3_BUCKET")
+		}
+		if (c.S3.AccessKey == "") != (c.S3.SecretKey == "") {
+			return c, fmt.Errorf("S3_ACCESS_KEY and S3_SECRET_KEY must be set together")
+		}
+	default:
+		return c, fmt.Errorf("BLOB_STORE must be postgres, s3 or fs, not %q", c.BlobStore)
 	}
 	var err error
 	if c.RateLimit, err = intEnv("RATE_LIMIT"); err != nil {

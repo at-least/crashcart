@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
@@ -51,6 +52,7 @@ const (
 type Service struct {
 	Store *store.Store
 	DSYM  *DSYMClient // Enabled() false when no sidecar
+	Blobs blob.Store  // where uploads go; nil = the symbol_files.data column (files.go)
 
 	mu     sync.Mutex
 	cache  map[cacheKey]*cacheEntry
@@ -290,6 +292,17 @@ func (s *Service) evictOldestLocked() {
 // of the rows it read. A nil mapping is a definite miss (cached for
 // missTTL); an error is transient and is not cached.
 func (s *Service) fetch(ctx context.Context, k cacheKey) (mapping any, version string, err error) {
+	mapping, version, err = s.fetchOnce(ctx, k)
+	if errors.Is(err, blob.ErrNotFound) {
+		// A re-upload replaced an object between the row read and the
+		// Get: the rows now point at the new keys. Once more, then it is
+		// a transient error (never a cached miss).
+		mapping, version, err = s.fetchOnce(ctx, k)
+	}
+	return mapping, version, err
+}
+
+func (s *Service) fetchOnce(ctx context.Context, k cacheKey) (mapping any, version string, err error) {
 	var files []sqlc.SymbolFile
 	if strings.HasPrefix(k.key, debugPrefix) {
 		id := strings.TrimPrefix(k.key, debugPrefix)
@@ -320,8 +333,29 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (mapping any, version s
 	if len(files) == 0 {
 		return nil, version, nil
 	}
+	for i := range files {
+		if files[i].Data, err = s.symbolBytes(ctx, files[i].Data, files[i].BlobKey); err != nil {
+			return nil, "", err
+		}
+	}
 	m, err := parseFiles(k.kind, files)
 	return m, version, err
+}
+
+// symbolFileBytes loads one row's bytes by id for the sidecar, re-reading
+// the row once when its object was replaced under us (fetch's rule).
+func (s *Service) symbolFileBytes(ctx context.Context, id int64) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		row, err := s.Store.SymbolFileData(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		b, err := s.symbolBytes(ctx, row.Data, row.BlobKey)
+		if errors.Is(err, blob.ErrNotFound) && attempt == 0 {
+			continue
+		}
+		return b, err
+	}
 }
 
 // parseFiles builds the in-memory mapping of one cache key from its rows.
@@ -517,7 +551,7 @@ func (s *Service) dsym(ctx context.Context, projectID int64, ev *sentry.Event, u
 		var load func(context.Context) ([]byte, error)
 		if upload {
 			id := file.ID
-			load = func(ctx context.Context) ([]byte, error) { return s.Store.SymbolFileData(ctx, id) }
+			load = func(ctx context.Context) ([]byte, error) { return s.symbolFileBytes(ctx, id) }
 		}
 		results, err := s.DSYM.Resolve(ctx, SymbolKey(file.ID, file.UploadedAt), load, addrs)
 		if err != nil {

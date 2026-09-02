@@ -214,9 +214,11 @@ CREATE TABLE symbol_files (
     debug_id    TEXT,
     filename    TEXT NOT NULL,
     size        BIGINT NOT NULL,
-    data        BYTEA NOT NULL,
+    data        BYTEA,
+    blob_key    TEXT,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename)
+    UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename),
+    CHECK ((data IS NULL) <> (blob_key IS NULL))
 );
 
 CREATE TABLE upload_chunks (

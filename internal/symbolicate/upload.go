@@ -181,10 +181,10 @@ func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, na
 	if release == "" && kind == KindDSYM && debugID != nil && !strings.Contains(name, *debugID) {
 		name = name + "." + *debugID
 	}
-	return s.Store.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
+	return s.putSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
 		ProjectID: projectID, Kind: sqlc.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: debugID,
-		Filename: name, Size: int64(len(data)), Data: data,
-	})
+		Filename: name, Size: int64(len(data)),
+	}, data)
 }
 
 // DebugIDFor derives the debug id of a symbol file: the Mach-O LC_UUID for

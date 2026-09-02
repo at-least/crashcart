@@ -312,7 +312,7 @@ func TestSweepDoesNotChurnPartitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := Partitions(ctx, st, "events")
-	if err := Sweep(ctx, st, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+	if err := Sweep(ctx, st, cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := Partitions(ctx, st, "events")
@@ -419,7 +419,7 @@ func TestSweepExpiresOldUserReports(t *testing.T) {
 	}
 	add("old", now.Add(-15*24*time.Hour))
 	add("recent", now.Add(-time.Hour))
-	if err := Sweep(ctx, st, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+	if err := Sweep(ctx, st, cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatal(err)
 	}
 	var left int

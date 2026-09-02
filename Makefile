@@ -26,12 +26,14 @@ test:
 	go run ./cmd/gendocs -check
 	go test ./...
 
-# DB-backed tests need a Postgres (16+). If TEST_DATABASE_URL isn't already
-# set, cmd/testpg provisions one via Docker (a reusable named container,
-# "crashcart-testpg" — docker rm -f it to reset).
+# DB-backed tests need a Postgres (16+), and the S3 blob-store tests a
+# MinIO. If TEST_DATABASE_URL / TEST_S3_ENDPOINT aren't already set,
+# cmd/testpg and cmd/testminio provision them via Docker (reusable named
+# containers "crashcart-testpg" / "crashcart-testminio" — docker rm -f to
+# reset).
 test-db:
 	go vet ./...
-	TEST_DATABASE_URL="$${TEST_DATABASE_URL:-$$(go run ./cmd/testpg)}" go test ./...
+	TEST_DATABASE_URL="$${TEST_DATABASE_URL:-$$(go run ./cmd/testpg)}" TEST_S3_ENDPOINT="$${TEST_S3_ENDPOINT:-$$(go run ./cmd/testminio)}" go test ./...
 
 # Mutation testing (go-gremlins/gremlins: go install
 # github.com/go-gremlins/gremlins/cmd/gremlins@latest). Runs the covering
@@ -41,7 +43,7 @@ test-db:
 # too-fast baseline test time and time out almost every mutant against it.
 mutate:
 	go clean -testcache
-	TEST_DATABASE_URL="$${TEST_DATABASE_URL:-$$(go run ./cmd/testpg)}" gremlins unleash --timeout-coefficient 8 .
+	TEST_DATABASE_URL="$${TEST_DATABASE_URL:-$$(go run ./cmd/testpg)}" TEST_S3_ENDPOINT="$${TEST_S3_ENDPOINT:-$$(go run ./cmd/testminio)}" gremlins unleash --timeout-coefficient 8 .
 
 # Rebuilds the committed CSS artifact with the locally installed Tailwind
 # (`npm install` first; no npx, so nothing is fetched at build time).

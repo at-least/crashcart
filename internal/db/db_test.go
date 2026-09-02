@@ -58,10 +58,15 @@ func TestInitFreshDatabase(t *testing.T) {
 		t.Fatalf("crashcart_schema should not exist on a fresh database: exists=%v err=%v", hasLegacy, err)
 	}
 	var v int64
-	if err := pool.QueryRow(ctx, "SELECT max(version_id) FROM goose_db_version WHERE is_applied").Scan(&v); err != nil || v != 1 {
-		t.Fatalf("goose_db_version after Init: %d %v", v, err)
+	if err := pool.QueryRow(ctx, "SELECT max(version_id) FROM goose_db_version WHERE is_applied").Scan(&v); err != nil || v != latestMigration {
+		t.Fatalf("goose_db_version after Init: %d %v (want %d)", v, err, latestMigration)
 	}
 }
+
+// latestMigration is the highest file in internal/db/migrations; bump it
+// with every new migration so the fresh and legacy tests keep proving Init
+// reaches the end.
+const latestMigration = 2
 
 func TestInitBootstrapsLegacyDatabase(t *testing.T) {
 	pool := legacyDatabase(t, 15)
@@ -74,9 +79,15 @@ func TestInitBootstrapsLegacyDatabase(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT to_regclass('crashcart_schema') IS NOT NULL").Scan(&exists); err != nil || exists {
 		t.Fatalf("crashcart_schema should be dropped after bootstrap: exists=%v err=%v", exists, err)
 	}
+	// The baseline is marked applied without running; everything after it
+	// (00002 …) is applied as pending on the same start.
 	var v int64
-	if err := pool.QueryRow(ctx, "SELECT max(version_id) FROM goose_db_version WHERE is_applied").Scan(&v); err != nil || v != 1 {
-		t.Fatalf("goose_db_version after bootstrap: %d %v", v, err)
+	if err := pool.QueryRow(ctx, "SELECT max(version_id) FROM goose_db_version WHERE is_applied").Scan(&v); err != nil || v != latestMigration {
+		t.Fatalf("goose_db_version after bootstrap: %d %v (want %d)", v, err, latestMigration)
+	}
+	var nullable bool
+	if err := pool.QueryRow(ctx, "SELECT NOT attnotnull FROM pg_attribute WHERE attrelid = 'symbol_files'::regclass AND attname = 'data'").Scan(&nullable); err != nil || !nullable {
+		t.Fatalf("00002 not applied on the bootstrapped database: data nullable=%v %v", nullable, err)
 	}
 	// Calling Init again is a no-op — the bootstrap doesn't re-run.
 	if created, err := db.Init(ctx, pool); err != nil || created {

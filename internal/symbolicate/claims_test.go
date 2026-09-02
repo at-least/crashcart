@@ -220,7 +220,8 @@ func TestSymbolFileReuploadIsOneRowNewKey(t *testing.T) {
 	if SymbolKey(first.ID, firstAt) == SymbolKey(second.ID, second.UploadedAt) {
 		t.Fatal("re-upload kept the sidecar key")
 	}
-	data, _ := st.SymbolFileData(ctx, second.ID)
+	row, _ := st.SymbolFileData(ctx, second.ID)
+	data := row.Data
 	if string(data) != "bb" {
 		t.Fatalf("data = %q", data)
 	}

@@ -3,7 +3,9 @@
 CrashCart needs **Postgres 15 or newer**, any build, and nothing else:
 projects, issues, events with their raw payloads (gzipped), sessions,
 statistics, symbol files and users all live in the one database. No
-extensions, nothing to install in it, one thing to back up.
+extensions, nothing to install in it, one thing to back up. (Symbol files
+alone can be moved to an S3 bucket or a directory with `BLOB_STORE` — see
+[Symbolication](/guide/symbolication#where-symbol-files-are-stored).)
 
 | | |
 |---|---|

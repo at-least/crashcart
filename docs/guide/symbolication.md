@@ -85,6 +85,34 @@ unsymbolicated for a moment and is fixed up in the background.
 Without the sidecar, iOS crashes are still collected and grouped — the
 frames just stay as addresses.
 
+## Where symbol files are stored
+
+In the database, by default — nothing else to run, one thing to back up.
+A ProGuard mapping from a large app can run to hundreds of MB (uploads
+are accepted up to 500 MB), and a file that size is a poor fit for a
+database row: it costs write-ahead log on every upload and makes every
+backup as heavy as the largest file. So symbol files alone can go
+elsewhere:
+
+| `BLOB_STORE` | Where | When |
+|---|---|---|
+| `postgres` (default) | the `symbol_files` table | small mappings, nothing extra to run |
+| `s3` | an S3-compatible bucket (`S3_BUCKET`, `S3_ENDPOINT` for MinIO / R2 / Backblaze, `S3_ACCESS_KEY` + `S3_SECRET_KEY` or the usual AWS credential chain) | large mappings, or more than one replica |
+| `fs` | a directory (`BLOB_DIR`) | one instance on one machine |
+
+Variables: [Configuration](/deploy/configuration). The bucket must exist;
+CrashCart checks it can reach it at startup and refuses to start
+otherwise, rather than failing at the first upload.
+
+Switching is safe at any time: each file is read from wherever it was
+written, so files uploaded before the change stay where they are and new
+ones go to the new place. To move the existing ones, `crashcart export`
+then `crashcart import` into the new backend — the export file always
+carries the bytes inline ([Operations](/deploy/operations#backups)).
+Deleting a symbol file, a project, or expiring old files removes the
+object with the row. Events, attachments and everything else stay in
+Postgres whatever `BLOB_STORE` says.
+
 ## Already-collected events
 
 Uploading a symbol file also symbolicates the release's most recent

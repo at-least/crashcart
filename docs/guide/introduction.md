@@ -36,8 +36,10 @@ full picture is in [Compared to Sentry](./compared-to-sentry).
 ## Where it runs
 
 Any Postgres 15+ — a container, your distro's package, RDS, Neon,
-Supabase — and nothing else. Docker Compose on a VPS, a binary under
-systemd, or Kubernetes. See [The database](/deploy/postgres).
+Supabase — and nothing else; symbol files can optionally go to an S3
+bucket or a directory instead ([Symbolication](./symbolication#where-symbol-files-are-stored)).
+Docker Compose on a VPS, a binary under systemd, or Kubernetes. See
+[The database](/deploy/postgres).
 
 ## Next
 

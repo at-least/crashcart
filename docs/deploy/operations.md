@@ -8,7 +8,11 @@ crashcart export shop-ios > shop-ios.ndjson         # one project
 ```
 
 The file is plain newline-delimited JSON — payloads and symbol files
-included — and restores into **any** CrashCart, on a different Postgres:
+included, whether the symbol files live in the database or in the bucket
+/ directory `BLOB_STORE` names — and restores into **any** CrashCart, on a
+different Postgres or a different symbol-file backend (importing writes
+them the destination's way, which is also how you move an instance from
+`postgres` to `s3`):
 
 ```sh
 crashcart import < backup.ndjson

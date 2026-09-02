@@ -21,7 +21,8 @@ tests, do not "update the docs" with a second copy.
 
 Go 1.27+ (std `net/http` mux, pgx/v5, sqlc, templ, goose for migrations),
 plain Postgres 15+ (no extensions; the one store — payloads, symbol files
-included), htmx + Tailwind v4 + shadless for the viewer. Optional: dSYM
+included by default), htmx + Tailwind v4 + shadless for the viewer.
+Optional: symbol files in S3 / a directory (`BLOB_STORE`, minio-go), dSYM
 symbolication sidecar (`container/symbolicate`).
 
 ## Commands
@@ -41,6 +42,7 @@ crashcart          subcommands: the `usage` text in cmd/crashcart/main.go
 ```
 cmd/crashcart/        main.go: subcommands, the `serve` wiring (schedulers, shutdown order)
 internal/
+  blob/               optional object store for symbol files: Store (Memory, FS, S3 via minio-go)
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, Culprit, ID
   db/                 migrations/*.sql (goose, applied on every start; 00001_baseline.sql is
@@ -87,9 +89,14 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   its body (a plpgsql function). An export-format change bumps the format
   in `internal/export` and its spec `docs/reference/export-format.md`
   together — independent of schema versioning.
-- There is one store — Postgres. Do not add an object store, a cache
-  server or a second queue; per-issue sampling is what bounds the database
-  (ARCHITECTURE.md).
+- There is one store by default — Postgres. Symbol files may live in
+  object storage (`BLOB_STORE`, `internal/blob`), nothing else does: no
+  cache server, no second queue, no other table in a bucket; per-issue
+  sampling is what bounds the database (ARCHITECTURE.md). A symbol row's
+  location is its own (`data` xor `blob_key`) — read rows the way they
+  were written (`symbolicate.Service` helpers in `files.go`), write
+  objects before rows and delete them after, never rely on bucket
+  lifecycle rules.
 - Never rewrite `events.payload`. Symbolication writes the small columns only.
 - Never write the `*_rolled` stats tables from anywhere but
   `retention.Rollup`; every write to `events` / `sessions` (and every

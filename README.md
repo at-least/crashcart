@@ -5,7 +5,8 @@ Open-source error tracking for mobile and web apps. Works with the
 and release health show up here instead. Keep the client libraries you
 already ship; swap only the backend.
 
-One binary, one Postgres, nothing else.
+One binary, one Postgres, nothing else — an S3 bucket for large symbol
+files is optional.
 
 **Documentation: [crashcart.app](https://crashcart.app)**
 

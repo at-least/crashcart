@@ -52,12 +52,12 @@ func (h *Handler) deleteSymbol(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid symbol file id")
 		return
 	}
-	n, err := h.Store.DeleteSymbolFile(r.Context(), sqlc.DeleteSymbolFileParams{ProjectID: p.ID, ID: id})
+	found, err := h.Symbols.DeleteSymbolFile(r.Context(), p.ID, id)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	if n == 0 {
+	if !found {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}

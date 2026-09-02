@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/store"
 )
@@ -202,7 +203,7 @@ func dropExpiredPartitions(ctx context.Context, st *store.Store, cfg config.Conf
 // Sweep runs hourly: partitions (create ahead, drop expired), then the
 // row-level expiries — issues, jobs, usage counters, user sessions, upload
 // chunks, symbol files and rollup history past AggregateRetentionDays.
-func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
+func Sweep(ctx context.Context, st *store.Store, cfg config.Config, blobs blob.Store, log *slog.Logger) error {
 	now := time.Now()
 	retention := cfg.Retention()
 	if err := EnsurePartitions(ctx, st, cfg, now); err != nil {
@@ -228,9 +229,25 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	if _, err := st.ExpireUploadChunks(ctx, now.Add(-24*time.Hour)); err != nil {
 		return fmt.Errorf("expire upload chunks: %w", err)
 	}
-	symbols, err := st.ExpireSymbolFiles(ctx, now.Add(-2*retention))
+	symbolKeys, err := st.ExpireSymbolFiles(ctx, now.Add(-2*retention))
 	if err != nil {
 		return fmt.Errorf("expire symbol files: %w", err)
+	}
+	symbols := len(symbolKeys)
+	// The rows are gone; now the objects they pointed at (nil: the row's
+	// bytes were in the data column). Best effort — an orphaned object is
+	// logged, never a reason to fail the sweep.
+	for _, k := range symbolKeys {
+		if k == nil {
+			continue
+		}
+		if blobs == nil {
+			log.Warn("retention: symbol file expired but BLOB_STORE is not configured; object left behind", "key", *k)
+			continue
+		}
+		if err := blobs.Delete(ctx, *k); err != nil {
+			log.Warn("retention: delete symbol blob", "key", *k, "err", err)
+		}
 	}
 	// user_reports has no partition of its own to ride out with events (see
 	// schema.sql): its own cutoff, on the same retention window.

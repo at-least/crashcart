@@ -101,3 +101,39 @@ func TestRetention(t *testing.T) {
 		t.Errorf("RETENTION_DAYS=45: %v %v", c.Retention(), err)
 	}
 }
+
+// TestLoadBlobStore: BLOB_STORE is validated with what it needs.
+func TestLoadBlobStore(t *testing.T) {
+	for _, c := range []struct {
+		env  map[string]string
+		want string // "" = ok
+	}{
+		{nil, ""},
+		{map[string]string{"BLOB_STORE": "postgres"}, ""},
+		{map[string]string{"BLOB_STORE": "fs"}, "BLOB_DIR"},
+		{map[string]string{"BLOB_STORE": "fs", "BLOB_DIR": "/tmp/x"}, ""},
+		{map[string]string{"BLOB_STORE": "s3"}, "S3_BUCKET"},
+		{map[string]string{"BLOB_STORE": "s3", "S3_BUCKET": "b"}, ""},
+		{map[string]string{"BLOB_STORE": "s3", "S3_BUCKET": "b", "S3_ACCESS_KEY": "a"}, "set together"},
+		{map[string]string{"BLOB_STORE": "minio"}, "postgres, s3 or fs"},
+	} {
+		for k, v := range c.env {
+			t.Setenv(k, v)
+		}
+		cfg, err := Load()
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%v: %v", c.env, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%v: err = %v, want %q", c.env, err, c.want)
+		case c.want == "" && c.env["BLOB_STORE"] == "s3" && cfg.S3.Bucket != "b":
+			t.Errorf("%v: S3 config not read: %+v", c.env, cfg.S3)
+		}
+		for k := range c.env {
+			t.Setenv(k, "")
+		}
+	}
+	if cfg, err := Load(); err != nil || cfg.BlobStore != "postgres" {
+		t.Fatalf("default: %+v %v", cfg.BlobStore, err)
+	}
+}

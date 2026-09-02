@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -185,9 +186,20 @@ func (h *Handler) deleteProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The rows go with the project (ON DELETE CASCADE); the objects its
+	// symbol files point at do not, so their keys are read first and
+	// deleted after.
+	keys, err := h.Store.SymbolFileBlobKeys(r.Context(), p.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	if err := h.Store.DeleteProject(r.Context(), p.ID); err != nil {
 		h.fail(w, err)
 		return
+	}
+	if err := h.Symbols.DeleteBlobs(context.WithoutCancel(r.Context()), keys); err != nil {
+		h.Log.Warn("project delete: symbol blobs left behind", "project", p.Slug, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

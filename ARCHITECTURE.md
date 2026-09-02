@@ -1,7 +1,8 @@
 # CrashCart — Architecture
 
 Sentry-SDK-compatible crash tracking for self-hosters. One Go binary, any
-Postgres; nothing else required.
+Postgres; nothing else required — an S3 bucket or a directory for symbol
+files is optional (`BLOB_STORE`), not assumed.
 
 ```
 Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres 15+ (no extensions)
@@ -93,15 +94,35 @@ single machine cover a project of any volume. Knobs and the decision:
 **The payload lives with the row.** `events.payload` is the event JSON as
 the SDK sent it, gzipped once at ingest and never rewritten; everything
 filterable is a column or a `tags` key extracted at ingest, so nothing
-queries inside it. Symbol files, sentry-cli upload chunks and envelope
-attachments (screenshots …) are `BYTEA` rows too — attachments keyed by
-their event and partitioned with it, kept only when the event is stored,
-bounded at ingest (`sentry.MaxAttachments`, `MaxAttachmentSize`).
-Everything is in the one database: one backup, one retention mechanism,
-nothing to keep consistent with anything else. An object store for
-payloads was considered and rejected: sampling already bounds the volume,
-and a second store buys only a second thing to run, back up and keep
-consistent.
+queries inside it. sentry-cli upload chunks and envelope attachments
+(screenshots …) are `BYTEA` rows too — attachments keyed by their event
+and partitioned with it, kept only when the event is stored, bounded at
+ingest (`sentry.MaxAttachments`, `MaxAttachmentSize`). Everything is in
+the one database by default: one backup, one retention mechanism, nothing
+to keep consistent with anything else. An object store for payloads was
+considered and rejected: sampling already bounds the volume, and a second
+store buys only a second thing to run, back up and keep consistent.
+
+**Symbol files are the one exception, and only when asked.** A ProGuard
+mapping from a large multi-module Android app runs to hundreds of MB
+(`symbolicate.MaxUpload` is 500 MB): written once, read rarely, never
+queried by content — the shape object storage exists for, and what
+Sentry itself does (its debug files live in a filestore, never in
+Postgres). In Postgres such a row costs WAL on every upload and makes
+every backup and `crashcart export` as heavy as the largest file. So
+`BLOB_STORE` chooses where symbol bytes go — `postgres` (default, nothing
+else to run), `s3` (large mappings, several replicas) or `fs` (a
+directory; one replica) — and the choice is **per row**, not per
+process: `symbol_files` carries either `data` or `blob_key`, a row is read
+the way it was written, and nothing is migrated when the backend
+changes; `export` inlines the bytes whichever way they are held and
+`import` writes them the destination's way, so the export file is also
+the move between backends. Objects are written before their row and
+deleted after it under a per-row advisory lock, so a failed upload leaves
+no row, a re-upload frees exactly the object it replaced, and nothing
+relies on bucket lifecycle rules (the previous object store expired
+still-referenced files that way). `internal/blob`,
+`internal/symbolicate/files.go`.
 
 **Symbolicate at ingest, fall back to a job.** ProGuard and source maps
 resolve in-process (mappings cached from the database); dSYM goes through
@@ -191,9 +212,9 @@ before this change, both refuse with instructions. `export` / `import`
 remain for backup and moving a database between environments — that was
 already decoupled from schema versioning before this change.
 
-**Why plain Postgres, and only Postgres.** Postgres without extensions
-runs anywhere — a container, a package, RDS, Cloud SQL, Neon, Supabase —
-and `pg_dump` / `pg_upgrade` stay ordinary. What an extension would have
+**Why plain Postgres, and only Postgres (plus, optionally, a bucket).**
+Postgres without extensions runs anywhere — a container, a package, RDS,
+Cloud SQL, Neon, Supabase — and `pg_dump` / `pg_upgrade` stay ordinary. What an extension would have
 added (compression, chunk-drop retention, continuous aggregates) is
 covered by gzipped payloads, weekly partitions and the dirty-key rollups
 (which are exact for late data by construction — a policy that only
@@ -201,5 +222,15 @@ refreshes a recent window is not).
 
 ## Plans (not implemented)
 
-None recorded. A plan goes here until it is built; once built, its
-definition is the code and the entry is deleted.
+A plan goes here until it is built; once built, its definition is the
+code and the entry is deleted.
+
+**`crashcart blob-gc`.** The blob store accepts two bounded orphan
+windows rather than risking a row without its bytes: a crash between a
+row's commit and the post-commit delete of the object it replaced, and an
+`import` into a `postgres`-mode instance over rows that held a
+`blob_key` (nothing there can delete the object). A `List(prefix)` on
+`blob.Store` plus a command that removes objects under `symbols/` no row
+references would close both. Not built: neither window has been seen in
+practice, and the previous object store's lifecycle-rule shortcut is the
+thing this design exists to avoid.

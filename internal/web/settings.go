@@ -1,7 +1,6 @@
 package web
 
 import (
-	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -12,8 +11,6 @@ import (
 	"github.com/at-least/crashcart/internal/auth"
 
 	"github.com/a-h/templ"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
@@ -309,7 +306,7 @@ func (w *Web) settingsSymbolDelete(rw http.ResponseWriter, r *http.Request) {
 		http.NotFound(rw, r)
 		return
 	}
-	if _, err := w.Store.DeleteSymbolFile(r.Context(), sqlc.DeleteSymbolFileParams{ProjectID: p.ID, ID: id}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := w.Symbols.DeleteSymbolFile(r.Context(), p.ID, id); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

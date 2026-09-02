@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -42,6 +43,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/auth"
+	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
@@ -57,7 +59,9 @@ var Tables = []string{"users", "api_keys", "projects", "project_keys", "releases
 
 // Options narrows an export.
 type Options struct {
-	Project string // slug; "" = all
+	Project string       // slug; "" = all
+	Blobs   blob.Store   // where symbol files with a blob_key are read from (nil: none may have one)
+	Log     *slog.Logger // nil = slog.Default
 }
 
 // maxLine is the longest NDJSON line import accepts: a symbol file, the
@@ -338,7 +342,7 @@ const (
 	FROM monitor_checkins WHERE project_id = $1 ORDER BY monitor_slug, started_at, check_in_id`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectReleases    = `SELECT project_id, release, platforms, first_seen FROM releases WHERE project_id = $1 ORDER BY release`
-	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at
+	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, blob_key, uploaded_at
 	FROM symbol_files WHERE project_id = $1 ORDER BY kind, release, filename`
 	selectAlertRules    = `SELECT project_id, type, enabled, cooldown_minutes, last_triggered FROM alert_rules WHERE project_id = $1 ORDER BY type`
 	selectAlertChannels = `SELECT id, project_id, kind, config, created_at FROM alert_channels WHERE project_id = $1 ORDER BY id`
@@ -492,9 +496,16 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	}
 	for _, p := range projects {
 		if err := stream(ctx, tx, selectSymbolFiles, func(r sqlc.SymbolFile) error {
+			data, ok, err := exportSymbolBytes(ctx, st, opt, r)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
 			return enc.Encode(symbolFileRow{
 				T: "symbol_files", Project: p.Slug, Kind: string(r.Kind), Release: strOr(r.Release), DebugID: r.DebugID,
-				Filename: r.Filename, Size: r.Size, Data: r.Data, UploadedAt: at(r.UploadedAt),
+				Filename: r.Filename, Size: r.Size, Data: data, UploadedAt: at(r.UploadedAt),
 			})
 		}, p.ID); err != nil {
 			return fmt.Errorf("export symbol_files: %w", err)
@@ -572,6 +583,39 @@ func exportAccounts(ctx context.Context, tx pgx.Tx, enc *json.Encoder) error {
 		return fmt.Errorf("export api_keys: %w", err)
 	}
 	return nil
+}
+
+// exportSymbolBytes is a symbol file's bytes for the file: the data column,
+// or the object blob_key names — the export inlines them either way, so
+// the file stands on its own and imports into any backend. The snapshot
+// transaction does not cover the blob store: an object a re-upload
+// replaced meanwhile is re-read through the row's current key once, and a
+// file still missing is skipped with a warning rather than failing an
+// export a long way in.
+func exportSymbolBytes(ctx context.Context, st *store.Store, opt Options, r sqlc.SymbolFile) (data []byte, ok bool, err error) {
+	if r.BlobKey == nil {
+		return r.Data, true, nil
+	}
+	if opt.Blobs == nil {
+		return nil, false, fmt.Errorf("symbol file %d is in the blob store, but BLOB_STORE is not configured", r.ID)
+	}
+	data, err = opt.Blobs.Get(ctx, *r.BlobKey)
+	if errors.Is(err, blob.ErrNotFound) {
+		if row, rerr := st.SymbolFileData(ctx, r.ID); rerr == nil && row.BlobKey != nil {
+			data, err = opt.Blobs.Get(ctx, *row.BlobKey)
+		} else if rerr == nil {
+			data, err = row.Data, nil
+		}
+	}
+	if errors.Is(err, blob.ErrNotFound) {
+		log := opt.Log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("export: symbol file skipped, its object is gone", "id", r.ID, "filename", r.Filename)
+		return nil, false, nil
+	}
+	return data, err == nil, err
 }
 
 // querier is what stream reads from: the export's snapshot transaction.
@@ -660,10 +704,10 @@ const (
 	    first_seen = LEAST(releases.first_seen, EXCLUDED.first_seen)`
 	insertSession = `INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count) VALUES ($1,$2,$3,$4,$5,$6,$7)
 	ON CONFLICT (project_id, sid, started_at) DO NOTHING`
-	upsertSymbolFile = `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, uploaded_at)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	upsertSymbolFile = `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, uploaded_at, blob_key)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET debug_id = EXCLUDED.debug_id, size = EXCLUDED.size,
-	    data = EXCLUDED.data, uploaded_at = EXCLUDED.uploaded_at`
+	    data = EXCLUDED.data, blob_key = EXCLUDED.blob_key, uploaded_at = EXCLUDED.uploaded_at`
 	upsertAlertRule = `INSERT INTO alert_rules (project_id, type, enabled, cooldown_minutes, last_triggered) VALUES ($1,$2,$3,$4,$5)
 	ON CONFLICT (project_id, type) DO UPDATE SET enabled = EXCLUDED.enabled, cooldown_minutes = EXCLUDED.cooldown_minutes,
 	    last_triggered = EXCLUDED.last_triggered`
@@ -684,6 +728,31 @@ type importer struct {
 	batch    *pgx.Batch                   // sessions / issues / alert rows
 	dirtyS   map[int64]map[time.Time]bool // project → hours of sessions written (stats rollup)
 	report   Report
+
+	// Symbol files go to the blob store when one is configured: the
+	// object is written before its row is queued, so a chunk that fails
+	// deletes what it wrote (pending), and a committed chunk deletes the
+	// objects the rows it replaced pointed at (replaced).
+	blobs    blob.Store
+	pending  []string
+	replaced []*string
+}
+
+// endChunk settles the chunk's objects after its transaction.
+func (im *importer) endChunk(committed bool) {
+	ctx := context.WithoutCancel(im.ctx)
+	if committed {
+		for _, k := range im.replaced {
+			if k != nil && im.blobs != nil {
+				im.blobs.Delete(ctx, *k)
+			}
+		}
+	} else {
+		for _, k := range im.pending {
+			im.blobs.Delete(ctx, k)
+		}
+	}
+	im.pending, im.replaced = nil, nil
 }
 
 // CommitEvery is how many lines an import writes per transaction: a
@@ -698,8 +767,8 @@ var CommitEvery = 20000
 // fresh public key). The hours written are marked dirty at each commit,
 // so the stats are exact as soon as the rows are and rolled up by the
 // next rollup run.
-func Import(ctx context.Context, st *store.Store, r io.Reader) (Report, error) {
-	im := &importer{ctx: ctx, st: st, projects: map[string]int64{}, batch: &pgx.Batch{},
+func Import(ctx context.Context, st *store.Store, r io.Reader, blobs blob.Store) (Report, error) {
+	im := &importer{ctx: ctx, st: st, projects: map[string]int64{}, batch: &pgx.Batch{}, blobs: blobs,
 		dirtyS: map[int64]map[time.Time]bool{}, report: Report{Rows: map[string]int64{}}}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), maxLine)
@@ -729,6 +798,7 @@ func Import(ctx context.Context, st *store.Store, r io.Reader) (Report, error) {
 			}
 			return im.flush()
 		})
+		im.endChunk(err == nil)
 		if err != nil {
 			if committed > 0 {
 				err = fmt.Errorf("%w (lines 1-%d were committed; import is idempotent, re-run the file)", err, committed)
@@ -1019,7 +1089,33 @@ func (im *importer) line(b []byte) error {
 		if r.Size == 0 {
 			r.Size = int64(len(r.Data))
 		}
-		im.batch.Queue(upsertSymbolFile, pid, r.Kind, nilIfEmptyStr(r.Release), r.DebugID, r.Filename, r.Size, r.Data, tsOrNow(r.UploadedAt))
+		// The same write order as an upload (internal/symbolicate/files.go):
+		// object first, then the row under the row's lock, which also
+		// pins down the key of the row this one replaces.
+		release := nilIfEmptyStr(r.Release)
+		var data []byte
+		var key *string
+		if im.blobs != nil {
+			k := blob.SymbolKey(pid)
+			if err := im.blobs.Put(im.ctx, k, r.Data); err != nil {
+				return fmt.Errorf("blob store: %w", err)
+			}
+			im.pending = append(im.pending, k)
+			key = &k
+		} else {
+			data = r.Data
+		}
+		if err := im.q.LockSymbolFile(im.ctx, symbolicate.LockKey(pid, r.Kind, release, r.Filename)); err != nil {
+			return err
+		}
+		prev, err := im.q.SymbolFileBlobKey(im.ctx, sqlc.SymbolFileBlobKeyParams{ProjectID: pid, Kind: sqlc.SymbolKind(r.Kind), Release: release, Filename: r.Filename})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if prev != nil {
+			im.replaced = append(im.replaced, prev)
+		}
+		im.batch.Queue(upsertSymbolFile, pid, r.Kind, release, r.DebugID, r.Filename, r.Size, data, tsOrNow(r.UploadedAt), key)
 	case "alert_rules":
 		var r alertRuleRow
 		if err := json.Unmarshal(b, &r); err != nil {

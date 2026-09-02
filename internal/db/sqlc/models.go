@@ -414,11 +414,6 @@ type ClientReportCount struct {
 	Quantity  int64     `json:"quantity"`
 }
 
-type CrashcartSchema struct {
-	Version   int32     `json:"version"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 type Event struct {
 	OccurredAt   time.Time       `json:"occurred_at"`
 	ProjectID    int64           `json:"project_id"`
@@ -631,6 +626,7 @@ type SymbolFile struct {
 	Filename   string     `json:"filename"`
 	Size       int64      `json:"size"`
 	Data       []byte     `json:"data"`
+	BlobKey    *string    `json:"blob_key"`
 	UploadedAt time.Time  `json:"uploaded_at"`
 }
 
