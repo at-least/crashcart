@@ -22,11 +22,41 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.RateLimit != 6000 {
-		t.Errorf("RATE_LIMIT default = %d, want 6000 (100/s: a burst of cached unhandled must fit)", c.RateLimit)
-	}
+	// The other defaults are whatever Vars declares (the reference is
+	// generated from the same table); these two are security claims.
 	if c.TrustProxy || c.WebhookAllowPrivate {
 		t.Error("TRUST_PROXY and WEBHOOK_ALLOW_PRIVATE default off")
+	}
+	if c.RateLimit == 0 {
+		t.Error("RATE_LIMIT defaults on")
+	}
+}
+
+// TestVarsDeclareEveryRead: Load reads only declared variables (def panics
+// otherwise) and every declared default parses.
+func TestVarsDeclareEveryRead(t *testing.T) {
+	seen := map[string]bool{}
+	for _, v := range Vars {
+		if seen[v.Name] {
+			t.Errorf("%s declared twice", v.Name)
+		}
+		seen[v.Name] = true
+		ok := false
+		for _, g := range Groups {
+			ok = ok || g.Name == v.Group
+		}
+		if !ok {
+			t.Errorf("%s: unknown group %q", v.Name, v.Group)
+		}
+		if v.Doc == "" {
+			t.Errorf("%s: no doc", v.Name)
+		}
+	}
+	for _, v := range Vars {
+		t.Setenv(v.Name, "")
+	}
+	if _, err := Load(); err != nil {
+		t.Fatalf("declared defaults must load: %v", err)
 	}
 }
 

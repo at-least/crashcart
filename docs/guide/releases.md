@@ -30,6 +30,8 @@ That's the quickest answer after a rollout.
 
 ## Regressions
 
-Resolving an issue records the release. If the issue is seen again on a
-*different* release, it comes back as a [regression](./issues#status) and,
-if enabled, triggers a [regression alert](./alerts).
+Resolving an issue records the releases it had been seen on. If the
+issue is seen again on a release *outside* that set — one that should
+have carried the fix — it comes back as a [regression](./issues#status)
+and, if enabled, triggers a [regression alert](./alerts). Old builds
+still crashing on a known release are not a regression.

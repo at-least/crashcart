@@ -332,3 +332,75 @@ func TestImportFormat1Names(t *testing.T) {
 		t.Fatalf("alert rule: enabled=%v %v", enabled, err)
 	}
 }
+
+// TestExportShapeAndImportMarksDirty: the file carries times as RFC3339
+// UTC and payloads as decoded JSON (not gzip, not base64), never the rollup
+// or dirty tables; importing marks the written hours dirty so the stats
+// views are right before any rollup runs.
+func TestExportShapeAndImportMarksDirty(t *testing.T) {
+	src := testdb.New(t)
+	dst := testdb.New(t)
+	ctx := context.Background()
+	fill(t, src)
+	var buf bytes.Buffer
+	if err := Export(ctx, src, &buf, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	events := 0
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var row map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(l), &row); err != nil {
+			t.Fatal(err)
+		}
+		var tbl string
+		json.Unmarshal(row["t"], &tbl)
+		if strings.Contains(tbl, "rolled") || strings.Contains(tbl, "dirty") || strings.Contains(tbl, "usage") || strings.Contains(tbl, "jobs") {
+			t.Errorf("derived table exported: %s", tbl)
+		}
+		for _, k := range []string{"occurred_at", "started_at", "first_seen", "last_seen", "created_at"} {
+			if v, ok := row[k]; ok {
+				var s string
+				if json.Unmarshal(v, &s) != nil || !strings.HasSuffix(s, "Z") {
+					t.Errorf("%s.%s = %s, want RFC3339 UTC", tbl, k, v)
+				} else if _, err := time.Parse(time.RFC3339Nano, s); err != nil {
+					t.Errorf("%s.%s = %s: %v", tbl, k, s, err)
+				}
+			}
+		}
+		if tbl == "events" {
+			events++
+			pl, ok := row["payload"]
+			if !ok || !bytes.HasPrefix(pl, []byte("{")) || !bytes.Contains(pl, []byte(`"event_id"`)) {
+				t.Errorf("events.payload must be the decoded event JSON: %.80s", pl)
+			}
+			if !bytes.Contains(row["event_id"], []byte(`"`)) || bytes.Contains(row["event_id"], []byte("-")) {
+				t.Errorf("event_id = %s, want 32-hex", row["event_id"])
+			}
+		}
+	}
+	if events != 3 {
+		t.Fatalf("events exported = %d", events)
+	}
+
+	if _, err := Import(ctx, dst, bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	var dirtyE, dirtyS, rolled int
+	if err := dst.Pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM event_stats_dirty), (SELECT count(*) FROM session_stats_dirty), (SELECT count(*) FROM event_stats_hourly_rolled)").Scan(&dirtyE, &dirtyS, &rolled); err != nil {
+		t.Fatal(err)
+	}
+	// Events at 09:57–09:59 → one hour; sessions at 09:00 → one hour.
+	if dirtyE != 1 || dirtyS != 1 || rolled != 0 {
+		t.Errorf("after import: event dirty hours = %d, session dirty hours = %d, rolled rows = %d (want 1, 1, 0)", dirtyE, dirtyS, rolled)
+	}
+	var evs, unhandled, total, crashed int64
+	if err := dst.Pool.QueryRow(ctx, "SELECT COALESCE(sum(events),0), COALESCE(sum(unhandled),0) FROM event_stats_hourly").Scan(&evs, &unhandled); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.Pool.QueryRow(ctx, "SELECT COALESCE(sum(total),0), COALESCE(sum(crashed),0) FROM release_health_hourly").Scan(&total, &crashed); err != nil {
+		t.Fatal(err)
+	}
+	if evs != 3 || unhandled != 1 || total != 93 || crashed != 1 {
+		t.Errorf("stats before rollup: events %d unhandled %d sessions %d crashed %d (want 3, 1, 93, 1)", evs, unhandled, total, crashed)
+	}
+}

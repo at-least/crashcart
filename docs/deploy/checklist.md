@@ -16,8 +16,8 @@ apps at it.
       (`POSTGRES_PASSWORD` in `.env` for Docker Compose).
 - [ ] **Backups.** Schedule `crashcart export > backup.ndjson` (or
       `pg_dump`). See [Operations](./operations#backups).
-- [ ] **Retention** (`RETENTION_DAYS`, default 30) matches how long you
-      want to keep raw events.
+- [ ] **Retention** ([`RETENTION_DAYS`](./configuration)) matches how
+      long you want to keep raw events.
 - [ ] Health check `GET /health` is wired into your monitoring.
 
 Details for every setting: [Configuration](./configuration). What is

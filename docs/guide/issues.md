@@ -5,10 +5,9 @@ what you triage; the events underneath are the evidence.
 
 ## How events become issues
 
-Events are grouped by their exception chain — the types of every
-exception in it, and the frames of the one thrown last from your own
-code, ignoring SDK and system frames. Events without a stack trace
-(messages) group by type and text. An SDK-set `fingerprint` wins.
+Events are grouped by their exception chain and the stack frames from
+your own code, ignoring SDK and system frames. Events without a stack
+trace (messages) group by type and text. An SDK-set `fingerprint` wins.
 
 Obfuscated and readable stacks look different, so an issue can be split in
 two until a [symbol file](./symbolication) arrives. CrashCart
@@ -39,14 +38,13 @@ Change status on the issue page, in bulk from the list, or with the
 ### Ignoring with a condition
 
 Ignoring hides an issue; the condition says when it should come back to
-**Unresolved** on its own (checked every minute), like Sentry's "Archive
-until …":
+**Unresolved** on its own, like Sentry's "Archive until …":
 
 | Ignore … | Comes back when |
 |---|---|
-| **until escalating** (the default) | its events in the last hour are 3× its usual hourly rate — the rate of the 24 hours before you ignored it — and at least 10. That also sends an [*escalating* alert](./alerts) |
-| **for 7 / 30 days** | the time has passed |
-| **until 100 / 1000 more events** | that many more events have arrived (counting sampled-out ones) |
+| **until escalating** (the default) | its rate in the last hour is well above what it was in the day before you ignored it — the same rule as the [unhandled-error spike](./alerts), applied to this one issue. That also sends an [*escalating* alert](./alerts) |
+| **for a number of days** | the time has passed |
+| **until N more events** | that many more events have arrived (counting sampled-out ones) |
 | **forever** | never |
 
 Pick it in the status control on the issue page ("Ignored until
@@ -72,7 +70,7 @@ in the list. The condition is shown under the status; from the
 
 ## How long issues are kept
 
-Raw events are deleted after [`RETENTION_DAYS`](/deploy/configuration)
-(30 by default). The issue itself — its status, counts and history — is
-kept, so an old resolved issue can still be detected as a regression
-months later.
+Raw events are deleted after [`RETENTION_DAYS`](/deploy/configuration).
+The issue itself — its status, counts and history — is kept longer, so
+an old resolved issue can still be detected as a regression months
+later.

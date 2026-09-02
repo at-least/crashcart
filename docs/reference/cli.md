@@ -5,21 +5,22 @@ subcommand reads [`DATABASE_URL`](/deploy/configuration) and the other
 environment variables; most connect to the database and exit.
 
 ```
-crashcart serve                              HTTP server + job worker + schedulers (default)
-crashcart init                               create the schema and exit
-crashcart retention                          reconcile policies and run one sweep
-crashcart alerts                             run one crash-spike check
-crashcart seed [slug]                        write a week of demo data (default project "demo")
-crashcart export [slug]                      stream NDJSON to stdout (all projects, or one)
-crashcart import                             load NDJSON from stdin (idempotent)
-crashcart project <slug> <name> [platform]   create a project and print its DSN
-crashcart rotate-key <slug>                  replace the project's DSN key and print the new DSN
-crashcart user add <email> [name]            create a viewer account (password: CRASHCART_PASSWORD or prompt)
-crashcart user passwd <email>                change an account's password
-crashcart apikey create <name>               create an API key; prints the secret once
-crashcart apikey list                        list API keys with last use
-crashcart apikey revoke <id>                 revoke an API key
-crashcart symbolicate                        dSYM symbolication sidecar (needs llvm-symbolizer, no database)
+crashcart serve                             HTTP server + job worker + schedulers (default)
+crashcart init                              create the schema and exit
+crashcart retention                         create partitions, run one sweep and roll the stats up
+crashcart alerts                            run one unhandled-spike check
+crashcart seed [slug]                       write a week of demo data (default project "demo")
+crashcart export [slug]                     stream NDJSON to stdout (all projects, or one)
+crashcart import                            load NDJSON from stdin (idempotent)
+crashcart project <slug> <name> [platform]  create a project and print its DSN
+crashcart rotate-key <slug>                 issue a new DSN key (the old one stops within seconds)
+crashcart user add <email> [name]           create a viewer account (password from CRASHCART_PASSWORD, else prompted)
+crashcart user passwd <email>               set a viewer account's password (same source)
+crashcart apikey create <name>              create an API key and print its secret (shown once)
+crashcart apikey list                       list API keys with their state and last use
+crashcart apikey revoke <id>                revoke an API key
+crashcart symbolicate                       dSYM symbolication sidecar (needs llvm-symbolizer, no database)
+crashcart version                           print the version and exit
 ```
 
 With Docker Compose, prefix with `docker compose exec crashcart /crashcart`.
@@ -27,34 +28,27 @@ With Docker Compose, prefix with `docker compose exec crashcart /crashcart`.
 ## `serve`
 
 Runs everything in one process: HTTP on `LISTEN_ADDR`, `WORKERS` job
-goroutines, the stats rollup (every minute), the retention sweep (hourly)
-and the crash-spike scheduler (`ALERT_INTERVAL`). The schema is created
-first. This is the default when no subcommand is given.
+goroutines, and the schedulers — the stats rollup and the ignored-issue
+check every minute, the retention sweep hourly, the unhandled-spike check
+every `ALERT_INTERVAL` (each on one replica at a time). The schema is
+created first. This is the default when no subcommand is given.
 
 ## `init`
 
-Creates the schema in an empty database and exits (every command does
-this on start; `init` is for a deploy pipeline step, or to prepare a
-database before `import`). On a database that already has a schema it
-checks the schema version and exits non-zero on a mismatch (see
+Creates the schema in an empty database and exits (every command does this
+on start; `init` is for a deploy pipeline step, or to prepare a database
+before `import`). On a database that already has a schema it checks the
+schema version and exits non-zero on a mismatch (see
 [Upgrading](/deploy/operations#upgrading)).
-
-## `symbolicate`
-
-Runs the dSYM symbolication sidecar: HTTP on `LISTEN_ADDR`, `llvm-symbolizer`
-from `PATH`, a disk cache of the dSYMs it has used (`SYMBOLICATE_CACHE_DIR`,
-`SYMBOLICATE_CACHE_MAX_MB`). The only subcommand that does not read
-`DATABASE_URL`; the server reaches it through `SYMBOLICATE_URL`. See
-[Symbolication](/guide/symbolication#ios-macos).
 
 ## `retention`
 
-Creates the coming weeks' partitions, runs one retention sweep and rolls
-the statistics up. Exits when done — for cron.
+Creates the coming weeks' partitions, runs one retention sweep and rolls the
+statistics up. Exits when done — for cron.
 
 ## `alerts`
 
-Evaluates the crash-spike rule once for every project and queues alerts.
+Evaluates the unhandled-spike rule once for every project and queues alerts.
 Exits when done — for cron.
 
 ## `seed [slug]`
@@ -64,9 +58,8 @@ releases) into the project `slug`, creating it if needed. Default `demo`.
 
 ## `export [slug]`
 
-Writes everything to stdout as NDJSON in the
-[export format](./export-format): all projects, or just `slug`. Per-table
-row counts go to stderr.
+Writes everything to stdout as NDJSON in the [export
+format](./export-format): all projects, or just `slug`.
 
 ```sh
 crashcart export > backup.ndjson
@@ -76,8 +69,9 @@ crashcart export shop-ios | gzip > shop-ios.ndjson.gz
 ## `import`
 
 Reads NDJSON from stdin and upserts. Safe to run twice or against a live
-database; unknown project slugs are created; lines with an unknown `"t"`
-are counted as `skipped`. Counts go to stderr.
+database; unknown project slugs are created; lines with an unknown `"t"` are
+counted as `skipped`. The report (rows per table, lines committed) goes to
+stderr as JSON.
 
 ```sh
 crashcart import < backup.ndjson
@@ -86,12 +80,21 @@ crashcart import < backup.ndjson
 ## `project <slug> <name> [platform]`
 
 Creates a project and prints its id and DSN (using `PUBLIC_URL` when set).
-`platform`, if given, must be one of the SDK families: `ios`, `android`,
-`flutter`, `react-native`, `web`, `backend`, `other`.
+`platform`, if given, must be one of the SDK families listed under
+[Glossary](./glossary#core-concepts).
 
 ## `rotate-key <slug>`
 
-Generates a new DSN key. The old one is rejected immediately.
+Generates a new DSN key and prints the new DSN. The old key keeps working
+for the few seconds the server caches project keys, then is refused.
+
+## `symbolicate`
+
+Runs the dSYM symbolication sidecar: HTTP on `LISTEN_ADDR`,
+`llvm-symbolizer` from `PATH`, a disk cache of the dSYMs it has used
+(`SYMBOLICATE_CACHE_DIR`, `SYMBOLICATE_CACHE_MAX_MB`). The only subcommand
+that does not read `DATABASE_URL`; the server reaches it through
+`SYMBOLICATE_URL`. See [Symbolication](/guide/symbolication#ios-macos).
 
 ## Exit status
 

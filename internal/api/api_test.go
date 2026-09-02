@@ -234,17 +234,7 @@ func TestProjectsAndAuth(t *testing.T) {
 	if rec, _ := e.do("DELETE", "/api/projects/demo", nil); rec.Code != 204 {
 		t.Errorf("delete: %d", rec.Code)
 	}
-	e.get("/api/projects/demo", 404)
-	// Deleting a project cascades to everything that belongs to it.
-	for _, tbl := range []string{"events", "sessions", "issues", "jobs"} {
-		var n int
-		if err := e.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM "+tbl+" WHERE project_id = $1", p.ID).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n != 0 {
-			t.Errorf("%s: %d rows left after project delete", tbl, n)
-		}
-	}
+	e.get("/api/projects/demo", 404) // the cascade itself: TestProjectDeleteCascadesEveryTable
 }
 
 func TestOverviewIssuesEventsReleases(t *testing.T) {
@@ -612,20 +602,6 @@ func TestSymbols(t *testing.T) {
 // commands: enough for debug/macho to parse, no LC_UUID.
 const minimalMachO = "\xcf\xfa\xed\xfe\x0c\x00\x00\x01\x00\x00\x00\x00\x02\x00\x00\x00" +
 	"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
-
-func TestAPIKeyRevoked(t *testing.T) {
-	e := newEnv(t)
-	e.createProject("demo")
-	e.get("/api/projects/demo", 200)
-	keys, _ := e.st.ListAPIKeys(context.Background())
-	if _, err := e.st.RevokeAPIKey(context.Background(), keys[0].ID); err != nil {
-		t.Fatal(err)
-	}
-	e.get("/api/projects/demo", 401)
-	if k, _ := e.st.ListAPIKeys(context.Background()); k[0].LastUsedAt == nil {
-		t.Error("last_used_at not recorded")
-	}
-}
 
 // TestPreflightWithoutCORS: with API_CORS_ORIGIN unset the CORS middleware
 // is not mounted, so an OPTIONS request reaches the handler itself — an

@@ -1,4 +1,4 @@
-.PHONY: build run generate sqlc templ test test-db css docker
+.PHONY: build run generate sqlc templ gendocs test test-db css docker
 
 BIN     := bin/crashcart
 PKG     := ./cmd/crashcart
@@ -10,7 +10,7 @@ build: generate
 run: generate
 	go run $(PKG) serve
 
-generate: sqlc templ
+generate: sqlc templ gendocs
 
 sqlc:
 	sqlc generate
@@ -18,8 +18,12 @@ sqlc:
 templ:
 	templ generate
 
+gendocs:
+	go run ./cmd/gendocs
+
 test:
 	go vet ./...
+	go run ./cmd/gendocs -check
 	go test ./...
 
 # DB-backed tests need a Postgres (16+), e.g.

@@ -7,11 +7,11 @@ should go.
 |---|---|
 | **New issue** | An issue is seen for the first time |
 | **Regression** | A resolved issue comes back on a different release |
-| **Unhandled error spike** | At least 10 unhandled errors (`exception.mechanism.handled = false`) in the last hour, and 3× the usual hourly rate of the previous day |
-| **Escalating** | An issue you [ignored until escalating](./issues#ignoring-with-a-condition) is back: at least 10 of its events in the last hour, and 3× its hourly rate of the day before you ignored it |
+| **Unhandled error spike** | Unhandled errors (`exception.mechanism.handled = false`) in the last hour are well above the project's usual hourly rate of the previous day — and not just a handful |
+| **Escalating** | An issue you [ignored until escalating](./issues#ignoring-with-a-condition) is back: the same spike rule applied to that issue's own events, against its rate in the day before you ignored it |
 
-Each alert type has a **cooldown** (minutes) so a noisy hour doesn't
-produce a message every minute.
+Each alert type has a **cooldown** (minutes, set under Settings → Alerts)
+so a noisy hour doesn't produce a message after message.
 
 The cooldown is per project and alert type, so a deploy that breaks
 several things produces one *new issue* alert; that alert carries
@@ -45,7 +45,8 @@ An escalating alert (`"type": "escalating"`) carries the issue fields plus
 `recent` (the issue's events in the last hour) and `baseline` (its events
 in the 24 hours before it was ignored).
 `url` links straight to the issue or project, using
-[`PUBLIC_URL`](/deploy/configuration).
+[`PUBLIC_URL`](/deploy/configuration). The exact fields are in the
+[API reference](/reference/api#alerts).
 
 Slack, Discord and most chat tools accept incoming webhooks; put a small
 relay in between if they need a specific message shape.
@@ -54,8 +55,9 @@ relay in between if they need a specific message shape.
 `TELEGRAM_BOT_TOKEN` on the server, add the bot to a group, and enter that
 group's chat id as the channel. Messages are plain text with a link.
 
-Every enabled alert goes to every channel of the project. Failed
-deliveries are retried automatically.
+Every enabled alert goes to every channel of the project. A delivery
+that fails is not retried; if no channel took the alert at all, the
+cooldown is not used up, so the next occurrence alerts again.
 
 ## Adding channels from the API
 

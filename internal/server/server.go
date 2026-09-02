@@ -24,18 +24,25 @@ type Deps struct {
 	Stopping <-chan struct{} // optional: closed at shutdown, ends the SSE streams
 }
 
+// IngestPatterns are the Sentry SDK endpoints (the trailing slash is
+// optional); HealthPattern answers load balancers. The API reference
+// (cmd/gendocs) is checked against them.
+var (
+	IngestPatterns = []string{"POST /api/{project}/envelope/{$}", "POST /api/{project}/envelope", "POST /api/{project}/store/{$}", "POST /api/{project}/store"}
+	HealthPattern  = "GET /health"
+)
+
 // New builds the root handler.
 func New(d Deps) http.Handler {
 	mux := http.NewServeMux()
 	in := &ingest.Ingester{Store: d.Store, Cfg: d.Cfg, Symbols: d.Symbols, Log: d.Log}
-	mux.Handle("POST /api/{project}/envelope/{$}", in.Handler())
-	mux.Handle("POST /api/{project}/envelope", in.Handler())
-	mux.Handle("POST /api/{project}/store/{$}", in.Handler())
-	mux.Handle("POST /api/{project}/store", in.Handler())
+	for _, p := range IngestPatterns {
+		mux.Handle(p, in.Handler())
+	}
 
 	(&api.Handler{Store: d.Store, Cfg: d.Cfg, Symbols: d.Symbols, Log: d.Log}).Register(mux)
 	(&web.Web{Store: d.Store, Cfg: d.Cfg, Log: d.Log, Symbols: d.Symbols, Listener: d.Listener, Stopping: d.Stopping}).Register(mux)
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(HealthPattern, func(w http.ResponseWriter, r *http.Request) {
 		if err := d.Store.Pool.Ping(r.Context()); err != nil {
 			http.Error(w, `{"status":"db unavailable"}`, http.StatusServiceUnavailable)
 			return

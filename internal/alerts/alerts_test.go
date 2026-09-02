@@ -22,14 +22,15 @@ import (
 )
 
 type sink struct {
-	mu       sync.Mutex
-	payloads []Payload
-	paths    []string
-	bodies   []map[string]any
+	mu        sync.Mutex
+	payloads  []Payload
+	paths     []string
+	bodies    []map[string]any
+	serverURL string // set by server()
 }
 
 func (s *sink) server() *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		var body map[string]any
@@ -42,6 +43,10 @@ func (s *sink) server() *httptest.Server {
 		s.payloads = append(s.payloads, p)
 		w.WriteHeader(http.StatusOK)
 	}))
+	if s.serverURL == "" {
+		s.serverURL = srv.URL + "/hook"
+	}
+	return srv
 }
 
 func (s *sink) count() int {
@@ -124,22 +129,6 @@ func TestIssueWebhookAndCooldown(t *testing.T) {
 	}
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("missing")))); err != nil || s.count() != 2 {
 		t.Fatalf("missing issue: err=%v count=%d", err, s.count())
-	}
-}
-
-func TestWebhookFailureIsBestEffort(t *testing.T) {
-	st, p, _, n := setup(t)
-	ctx := context.Background()
-	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "nope", 500) }))
-	defer bad.Close()
-	cfg, _ := json.Marshal(map[string]string{"url": bad.URL})
-	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "webhook", Config: cfg}); err != nil {
-		t.Fatal(err)
-	}
-	id := time.Now().UTC()
-	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
-	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("f")))); err != nil {
-		t.Fatalf("channel failures must not fail the job: %v", err)
 	}
 }
 

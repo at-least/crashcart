@@ -1,11 +1,12 @@
 // Package export streams every table as NDJSON and loads it back.
 //
-// The format is specified in docs/reference/export-format.md; change it
-// first.
+// This code is the format: docs/reference/export-format.md is hand-written
+// but checked against Format and Tables (cmd/gendocs), so a change here
+// that isn't matched there is caught, not silently drifted.
 //
 // Format (one JSON object per line):
 //
-//	{"t":"_meta","format":1,"exported_at":"<RFC3339>","app":"crashcart"}
+//	{"t":"_meta","format":<Format>,"exported_at":"<RFC3339>","app":"crashcart"}
 //	{"t":"projects", ...}   then issues, events, attachments, sessions,
 //	                        symbol_files, alert_rules, alert_channels (see Tables)
 //

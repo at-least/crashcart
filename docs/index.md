@@ -34,7 +34,7 @@ features:
     details: ProGuard / R8 and source maps resolve in-process. dSYMs through an optional sidecar. Upload with curl or sentry-cli.
   - icon: 🔔
     title: Alerts
-    details: New issue, regression and crash-spike detectors per project, delivered to webhooks or Telegram.
+    details: New issue, regression, unhandled-error spike and escalating-issue alerts per project, delivered to webhooks or Telegram.
   - icon: 🔒
     title: Your data, your server
     details: Events stay in your Postgres. No telemetry, no outbound calls. Optional PII scrubbing, retention you set, and a plain-text export that restores into any CrashCart.

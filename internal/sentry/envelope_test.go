@@ -366,3 +366,20 @@ func TestParseAttachments(t *testing.T) {
 		t.Errorf("no header id: %q %d", env.EventID, len(env.Attachments))
 	}
 }
+
+// TestTruncateRunes: Truncate bounds by characters, never splitting a
+// multi-byte one, and leaves a string of few characters but many bytes alone.
+func TestTruncateRunes(t *testing.T) {
+	if got := Truncate("ééé", 2); got != "éé" {
+		t.Errorf("Truncate(ééé, 2) = %q", got)
+	}
+	if got := Truncate("日本語", 5); got != "日本語" {
+		t.Errorf("Truncate(日本語, 5) = %q (6 bytes, 3 runes: must be kept)", got)
+	}
+	if got := Truncate("abc", 3); got != "abc" {
+		t.Errorf("Truncate(abc, 3) = %q", got)
+	}
+	if got := Truncate("abcd", 3); got != "abc" {
+		t.Errorf("Truncate(abcd, 3) = %q", got)
+	}
+}

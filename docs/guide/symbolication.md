@@ -77,16 +77,15 @@ that image next to CrashCart and set `SYMBOLICATE_URL` to its address.
 Then upload dSYMs with `sentry-cli debug-files upload`.
 
 The sidecar keeps the dSYMs it has used on disk (`SYMBOLICATE_CACHE_DIR`,
-bounded by `SYMBOLICATE_CACHE_MAX_MB`, 4096 by default), so a dSYM is
-fetched from the database once, not per crash. The first crash of a build
-is symbolicated by the job worker a moment after it is stored; later ones
-at ingest.
+bounded by `SYMBOLICATE_CACHE_MAX_MB` — see
+[Configuration](/deploy/configuration)), so a dSYM is fetched from the
+database once, not per crash. The first crash of a build may show up
+unsymbolicated for a moment and is fixed up in the background.
 
 Without the sidecar, iOS crashes are still collected and grouped — the
 frames just stay as addresses.
 
 ## Already-collected events
 
-Uploading a symbol file also symbolicates the release's events already
-stored (the newest 2000, within `RETENTION_DAYS`), which may regroup them
-into the right issue.
+Uploading a symbol file also symbolicates the release's most recent
+stored events, which may regroup them into the right issue.

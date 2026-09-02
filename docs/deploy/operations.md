@@ -22,11 +22,14 @@ faster for like-for-like restores; the export file is the portable one.
 
 ## Retention
 
-- Raw events and sessions are deleted after `RETENTION_DAYS` (30): a
-  week's partition is dropped once it is older than that.
-- Symbol files are kept twice as long.
+- Raw events and sessions are deleted after
+  [`RETENTION_DAYS`](./configuration); deletion runs in bulk, so a row
+  can outlive the cutoff by a little.
+- Symbol files are kept longer than events, so late crashes of an old
+  build still symbolicate.
 - Issues keep their status, counts and history after their events are gone.
-- Timelines, sparklines and release health are kept for about a year.
+- Timelines, sparklines and release health are kept for much longer
+  than the raw events.
 
 Change `RETENTION_DAYS` and restart; it applies to existing data.
 
@@ -57,7 +60,7 @@ a schedule instead:
 
 ```
 crashcart retention     partitions, expired data, stats rollup  (every few minutes)
-crashcart alerts        check for unhandled-error spikes  (every 10 minutes)
+crashcart alerts        check for unhandled-error spikes  (as often as you would set ALERT_INTERVAL)
 ```
 
 ## Health check
@@ -67,9 +70,9 @@ otherwise. Use it for container and load-balancer health checks.
 
 ## Rate limiting
 
-Each DSN key and each API key may make `RATE_LIMIT` requests per minute
-(600). Beyond that, requests get `429`; Sentry SDKs back off and resend
-crashes later, so nothing is lost for a short burst.
+Each DSN key and each API key may make [`RATE_LIMIT`](./configuration)
+requests per minute. Beyond that, requests get `429`; Sentry SDKs back
+off and resend crashes later, so nothing is lost for a short burst.
 
 ## Moving to another database
 

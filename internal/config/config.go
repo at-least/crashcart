@@ -1,4 +1,8 @@
 // Package config reads the process configuration from the environment.
+//
+// Vars is the one definition of every variable — name, default and
+// meaning; Load reads the defaults from it and docs/deploy/configuration.md
+// is generated from it (cmd/gendocs), so the two cannot drift.
 package config
 
 import (
@@ -33,40 +37,116 @@ type Config struct {
 	CustomTags          []string // tag keys the viewer shows as filters
 }
 
+// Group is a section of the configuration reference.
+type Group struct {
+	Name  string // heading
+	Intro string // one paragraph after the group's table ("" = none)
+}
+
+// Groups in the order the reference lists them.
+var Groups = []Group{
+	{"Required", "See [The database](./postgres).\n\nAccess is not configured here: the viewer uses user accounts and the API\nuses API keys, both managed in the viewer (**Account**) or with\n`crashcart user` / `crashcart apikey` — see [Security](./security)."},
+	{"Recommended", ""},
+	{"Data", "Changing a data setting and restarting is enough — it applies to existing data too."},
+	{"Optional features", ""},
+	{"Tuning", ""},
+}
+
+// Var is one environment variable.
+type Var struct {
+	Name    string
+	Group   string // one of Groups
+	Default string // what Load uses when the variable is unset or blank
+	Shown   string // how the reference shows the default when Default is not literal ("" = show Default, or "—" when empty)
+	Doc     string // meaning, one sentence or two
+}
+
+// Vars is every variable the binary reads, in reference order.
+var Vars = []Var{
+	{Name: "DATABASE_URL", Group: "Required", Doc: "Postgres connection URL"},
+
+	{Name: "PUBLIC_URL", Group: "Recommended", Shown: "derived from the request",
+		Doc: "The address your apps use. Shown in DSNs, used in alert links and by `sentry-cli`. Set it when CrashCart is behind a proxy or domain"},
+	{Name: "CORS_ORIGIN", Group: "Recommended", Default: "*",
+		Doc: "Which web origins may send events (the SDK endpoints). Set to your site for browser SDKs"},
+	{Name: "API_CORS_ORIGIN", Group: "Recommended", Shown: "empty (no CORS)",
+		Doc: "Web origin allowed to call `/api/*` from a browser. Leave empty unless a browser app talks to the JSON API"},
+
+	{Name: "RETENTION_DAYS", Group: "Data", Default: "30",
+		Doc: "Days to keep raw events and sessions (whole weekly partitions are dropped, so up to a week longer). Symbol files are kept twice as long; issues and statistics longer still"},
+	{Name: "PII_REDACT", Group: "Data", Default: "false",
+		Doc: "Scrub emails, phone numbers, tokens and user ids before storing events"},
+
+	{Name: "SYMBOLICATE_URL", Group: "Optional features", Shown: "off",
+		Doc: "Address of the dSYM sidecar, e.g. `http://symbolicate:8080`"},
+	{Name: "SYMBOLICATE_CACHE_DIR", Group: "Optional features", Shown: "`$TMPDIR/crashcart-symbols`",
+		Doc: "`crashcart symbolicate` only: where the sidecar keeps the dSYMs it has used"},
+	{Name: "SYMBOLICATE_CACHE_MAX_MB", Group: "Optional features", Default: "4096",
+		Doc: "`crashcart symbolicate` only: bound of that cache; least recently used dSYMs are dropped"},
+	{Name: "TELEGRAM_BOT_TOKEN", Group: "Optional features", Doc: "Bot token for Telegram alerts"},
+	{Name: "WEBHOOK_ALLOW_PRIVATE", Group: "Optional features", Default: "false",
+		Doc: "Let webhooks target private addresses (10/8, 172.16/12, 192.168/16, fc00::/7) — a service on your LAN. Loopback, link-local (cloud metadata) and redirects are always refused"},
+	{Name: "CUSTOM_TAGS", Group: "Optional features",
+		Doc: "Comma-separated tag keys to offer as filters in the viewer, e.g. `tenant,feature_flag`"},
+
+	{Name: "LISTEN_ADDR", Group: "Tuning", Default: ":8080", Doc: "Port to listen on"},
+	{Name: "TRUST_PROXY", Group: "Tuning", Default: "false",
+		Doc: "Behind a reverse proxy: take the client address from `X-Forwarded-For` (rate limits per IP on the sign-in pages). Leave off when clients reach CrashCart directly — the header is then theirs to forge"},
+	{Name: "RATE_LIMIT", Group: "Tuning", Default: "6000",
+		Doc: "Requests per minute allowed per DSN key or API key (100/s — a burst of cached crashes after an outage fits), counted in memory per process (each replica enforces it on its own traffic). `0` disables"},
+	{Name: "ALERT_INTERVAL", Group: "Tuning", Default: "10m", Doc: "How often to check for unhandled-error spikes"},
+	{Name: "WORKERS", Group: "Tuning", Default: "4", Doc: "Parallelism for symbolication and alert delivery"},
+}
+
+// def is the declared default of a variable; unknown names panic (a
+// variable read by Load must be declared in Vars, or the reference would
+// not list it).
+func def(name string) string {
+	for _, v := range Vars {
+		if v.Name == name {
+			return v.Default
+		}
+	}
+	panic("config: undeclared variable " + name)
+}
+
 // Load reads the environment. It fails only on unparseable values; missing
 // values fall back to defaults and DATABASE_URL is validated by the caller.
 func Load() (Config, error) {
 	c := Config{
-		Addr:                get("LISTEN_ADDR", ":8080"),
-		DatabaseURL:         get("DATABASE_URL", ""),
-		PublicURL:           strings.TrimSuffix(get("PUBLIC_URL", ""), "/"),
-		CORSOrigin:          get("CORS_ORIGIN", "*"),
-		APICORSOrigin:       get("API_CORS_ORIGIN", ""),
-		SymbolicateURL:      strings.TrimSuffix(get("SYMBOLICATE_URL", ""), "/"),
-		SymbolicateCacheDir: get("SYMBOLICATE_CACHE_DIR", filepath.Join(os.TempDir(), "crashcart-symbols")),
-		TelegramBotToken:    get("TELEGRAM_BOT_TOKEN", ""),
-		PIIRedact:           get("PII_REDACT", "false") == "true",
-		TrustProxy:          get("TRUST_PROXY", "false") == "true",
-		WebhookAllowPrivate: get("WEBHOOK_ALLOW_PRIVATE", "false") == "true",
-		CustomTags:          SplitCSV(get("CUSTOM_TAGS", "")),
+		Addr:                get("LISTEN_ADDR"),
+		DatabaseURL:         get("DATABASE_URL"),
+		PublicURL:           strings.TrimSuffix(get("PUBLIC_URL"), "/"),
+		CORSOrigin:          get("CORS_ORIGIN"),
+		APICORSOrigin:       get("API_CORS_ORIGIN"),
+		SymbolicateURL:      strings.TrimSuffix(get("SYMBOLICATE_URL"), "/"),
+		SymbolicateCacheDir: get("SYMBOLICATE_CACHE_DIR"),
+		TelegramBotToken:    get("TELEGRAM_BOT_TOKEN"),
+		PIIRedact:           get("PII_REDACT") == "true",
+		TrustProxy:          get("TRUST_PROXY") == "true",
+		WebhookAllowPrivate: get("WEBHOOK_ALLOW_PRIVATE") == "true",
+		CustomTags:          SplitCSV(get("CUSTOM_TAGS")),
+	}
+	if c.SymbolicateCacheDir == "" {
+		c.SymbolicateCacheDir = filepath.Join(os.TempDir(), "crashcart-symbols")
 	}
 	var err error
-	if c.RateLimit, err = intEnv("RATE_LIMIT", 6000); err != nil {
+	if c.RateLimit, err = intEnv("RATE_LIMIT"); err != nil {
 		return c, err
 	}
-	if c.RetentionDays, err = intEnv("RETENTION_DAYS", 30); err != nil {
+	if c.RetentionDays, err = intEnv("RETENTION_DAYS"); err != nil {
 		return c, err
 	}
-	if c.SymbolicateCacheMB, err = intEnv("SYMBOLICATE_CACHE_MAX_MB", 4096); err != nil {
+	if c.SymbolicateCacheMB, err = intEnv("SYMBOLICATE_CACHE_MAX_MB"); err != nil {
 		return c, err
 	}
 	if c.SymbolicateCacheMB < 1 {
 		return c, fmt.Errorf("SYMBOLICATE_CACHE_MAX_MB must be >= 1")
 	}
-	if c.Workers, err = intEnv("WORKERS", 4); err != nil {
+	if c.Workers, err = intEnv("WORKERS"); err != nil {
 		return c, err
 	}
-	if c.AlertInterval, err = durEnv("ALERT_INTERVAL", 10*time.Minute); err != nil {
+	if c.AlertInterval, err = durEnv("ALERT_INTERVAL"); err != nil {
 		return c, err
 	}
 	if c.RetentionDays < 1 {
@@ -80,40 +160,33 @@ func Load() (Config, error) {
 
 // Retention is RETENTION_DAYS as a duration: the raw-row window, and what
 // ingest treats as the oldest plausible device clock. Load guarantees
-// RetentionDays >= 1; a zero Config (tests) means the 30-day default.
+// RetentionDays >= 1; a zero Config (tests) means the declared default.
 func (c Config) Retention() time.Duration {
 	d := c.RetentionDays
 	if d < 1 {
-		d = 30
+		d, _ = strconv.Atoi(def("RETENTION_DAYS"))
 	}
 	return time.Duration(d) * 24 * time.Hour
 }
 
-func get(k, def string) string {
+// get is the variable's value, or its declared default when unset or blank.
+func get(k string) string {
 	if v, ok := os.LookupEnv(k); ok && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
 	}
-	return def
+	return def(k)
 }
 
-func intEnv(k string, def int) (int, error) {
-	v := get(k, "")
-	if v == "" {
-		return def, nil
-	}
-	n, err := strconv.Atoi(v)
+func intEnv(k string) (int, error) {
+	n, err := strconv.Atoi(get(k))
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", k, err)
 	}
 	return n, nil
 }
 
-func durEnv(k string, def time.Duration) (time.Duration, error) {
-	v := get(k, "")
-	if v == "" {
-		return def, nil
-	}
-	d, err := time.ParseDuration(v)
+func durEnv(k string) (time.Duration, error) {
+	d, err := time.ParseDuration(get(k))
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", k, err)
 	}

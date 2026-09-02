@@ -7,8 +7,8 @@ CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
 CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike', 'escalating');
 CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
 
--- Time buckets of any width in seconds, epoch/UTC-aligned like Go's
--- t.Truncate(width): the chart queries fold the hourly aggregates with
+-- Time buckets of any width in seconds, Unix-epoch-aligned (equal to Go's t.Truncate(width) for widths
+-- that divide a day; a 7 d width would be Thursday-aligned): the chart queries fold the hourly aggregates with
 -- these (4 h / 1 d buckets for longer windows) and gap-fill with
 -- crashcart_buckets, so every bucket of a window comes back from SQL.
 CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPTZ

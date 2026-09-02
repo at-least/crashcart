@@ -9,7 +9,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -45,7 +47,20 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		mws = append([]func(http.Handler) http.Handler{auth.CORS(h.Cfg.APICORSOrigin)}, mws...)
 	}
 	wrap := func(fn http.HandlerFunc) http.Handler { return auth.Chain(fn, mws...) }
-	routes := map[string]http.HandlerFunc{
+	for pattern, fn := range h.routes() {
+		mux.Handle(pattern, wrap(fn))
+	}
+}
+
+// RoutePatterns lists every pattern Register mounts, sorted; the API
+// reference (cmd/gendocs) is checked against it.
+func RoutePatterns() []string {
+	return slices.Sorted(maps.Keys((*Handler)(nil).routes()))
+}
+
+// routes maps mux patterns to handlers.
+func (h *Handler) routes() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
 		// projects
 		"GET /api/projects":                    h.listProjects,
 		"POST /api/projects":                   h.createProject,
@@ -87,9 +102,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"OPTIONS /api/projects":  h.preflight,
 		"OPTIONS /api/projects/": h.preflight,
 		"OPTIONS /api/0/":        h.preflight,
-	}
-	for pattern, fn := range routes {
-		mux.Handle(pattern, wrap(fn))
 	}
 }
 

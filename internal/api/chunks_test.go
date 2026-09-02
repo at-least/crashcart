@@ -79,6 +79,14 @@ func TestChunkUpload(t *testing.T) {
 	if len(syms) != 1 || syms[0].(map[string]any)["debug_id"] != "564ca29d-9553-5cda-b46b-135303369724" {
 		t.Fatalf("stored = %v", syms)
 	}
+	// The assembled file is the chunks in the order the request named them.
+	var data []byte
+	if err := e.st.Pool.QueryRow(t.Context(), "SELECT data FROM symbol_files WHERE project_id = (SELECT id FROM projects WHERE slug = 'app')").Scan(&data); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, mapping) {
+		t.Fatalf("assembled bytes = %q, want the concatenated chunks %q", data, mapping)
+	}
 	var chunks int
 	e.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM upload_chunks").Scan(&chunks)
 	if chunks != 0 {

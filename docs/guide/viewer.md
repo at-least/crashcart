@@ -10,12 +10,13 @@ viewer is opened for the first time; more users and the API keys live on
 
 ## Home
 
-`/` lists projects with their event counts and lets you create one.
+`/` lists projects — unhandled errors in the last day, open issues, the
+latest release and its crash-free rate — and lets you create one.
 
 ## Overview
 
-`/p/{slug}` — totals for the selected window, an events timeline, the
-latest release with its crash-free rate, and the top issues.
+`/p/{slug}` — totals for the selected window, unhandled errors by
+release over time, and the newest issues and regressions.
 
 Every page carries the same filter bar: **time window**, **release**,
 **environment**, and any [`CUSTOM_TAGS`](/deploy/configuration) you
@@ -25,14 +26,14 @@ shareable link.
 ## Issues
 
 `/p/{slug}/issues` — the issue list. Columns: title (with the culprit under it),
-level, event count, affected users, first and last seen, a sparkline of the
-last 24 hours, and the first/last release.
+level, a sparkline of the last week, event count, first and last seen,
+and the release.
 
 Filter by **status** (`unresolved`, `resolved`, `regression`,
-`ignored`), release, and free-text search (`q=` matches title and
-culprit). Select rows to change status in bulk; the select next to
-**Ignore** says [until when](./issues#ignoring-with-a-condition) (until
-escalating by default).
+`ignored`), release, and free-text search (`q=` matches the title and
+the exception type). Select rows to change status in bulk; the select
+next to **Ignore** says [until when](./issues#ignoring-with-a-condition)
+(until escalating by default).
 
 ### Keyboard triage
 
@@ -54,9 +55,9 @@ not reload the list under you.
   available; in-app frames highlighted, SDK and system frames collapsed.
 - **Breakdown** by release, device model, OS version, environment.
 - **Events** belonging to the issue, paged, with the same filters.
-- **Status** control — Unresolved, Resolved, or Ignored until escalating /
-  for 7 or 30 days / until 100 or 1000 more events / for good — and, for
-  an ignored issue, when it comes back.
+- **Status** control — Unresolved, Resolved, or Ignored with a
+  [condition](./issues#ignoring-with-a-condition) — and, for an ignored
+  issue, when it comes back.
 - The latest event's **screenshot**, when the SDK attached one.
 
 Statuses and what they mean are in [Issues & grouping](./issues#lifecycle).
@@ -84,7 +85,7 @@ crash-free rate, new issues introduced, and first/last seen.
 
 - **DSN** and **Rotate key**
 - **Platform** label
-- **Sampling**: `sample_keep_first`, `sample_rate`, `daily_quota`
+- **Sampling**: keep first, sample rate, daily quota
 - **Alerts**: enable each detector, add webhook / Telegram channels
 - **Symbols**: upload and delete symbol files
 

@@ -32,7 +32,7 @@ and follow [Go binary + systemd](https://crashcart.app/deploy/binary).
 - **Release health** — crash-free rate per release, and what a release broke
 - **Readable stack traces** — upload ProGuard / R8 mappings, source maps or
   dSYMs with `curl` or `sentry-cli`
-- **Alerts** — new issue, regression, unhandled-error spike → webhook or Telegram
+- **Alerts** — new issue, regression, unhandled-error spike, escalating → webhook or Telegram
 - **Your data, portable** — one command exports everything to a plain file
   that restores into any CrashCart
 

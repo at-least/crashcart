@@ -313,7 +313,7 @@ func TestBulkAndMutations(t *testing.T) {
 }
 
 func TestStream(t *testing.T) {
-	w, p, mux := setup(t)
+	w, _, mux := setup(t)
 	streamPoll, streamKeepAlive = 20*time.Millisecond, 30*time.Millisecond
 	defer func() { streamPoll, streamKeepAlive = 5*time.Second, 15*time.Second }()
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
@@ -349,9 +349,6 @@ func TestStream(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("stream did not exit on Stopping")
 	}
-	_ = w
-	_ = p
-	_ = io.EOF
 }
 
 // TestAuthFlow: setup of the first account, sign in / out, API keys.

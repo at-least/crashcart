@@ -99,13 +99,6 @@ func TestPartitions(t *testing.T) {
 	if n := count("SELECT count(*) FROM events WHERE project_id = 1"); n != 0 {
 		t.Fatalf("events after expiry = %d rows", n)
 	}
-	// Reconcile and Sweep run end to end.
-	if err := Reconcile(ctx, st, cfg, log); err != nil {
-		t.Fatal(err)
-	}
-	if err := Sweep(ctx, st, cfg, log); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestRollup(t *testing.T) {

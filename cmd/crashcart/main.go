@@ -19,6 +19,7 @@ import (
 
 	"github.com/crashcartapp/crashcart/internal/alerts"
 	"github.com/crashcartapp/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/cli"
 	"github.com/crashcartapp/crashcart/internal/config"
 	"github.com/crashcartapp/crashcart/internal/db"
 	"github.com/crashcartapp/crashcart/internal/db/sqlc"
@@ -36,28 +37,6 @@ import (
 // version is set by the release build (-ldflags "-X main.version=v1.2.3").
 var version = "dev"
 
-const usage = `usage: crashcart <command>
-
-  serve            HTTP server + job worker + schedulers (default)
-  init             create the schema and exit
-  retention        create partitions, run one sweep and roll the stats up
-  alerts           run one unhandled-spike check
-  seed [slug]      write a week of demo data (default project "demo")
-  export [slug]    stream NDJSON to stdout (all projects, or one)
-  import           load NDJSON from stdin (idempotent)
-  project <slug> <name> [platform]   create a project and print its DSN
-  rotate-key <slug>                  issue a new DSN key (old one stops within seconds)
-                                     (platform: ios android flutter react-native web backend other) key
-  user add <email> [name]            create a viewer account (password from CRASHCART_PASSWORD, else prompted)
-  user passwd <email>                set a viewer account's password (same source)
-  apikey create <name>               create an API key and print its secret (shown once)
-  apikey list                        list API keys
-  apikey revoke <id>                 revoke an API key
-  symbolicate      dSYM symbolication sidecar (needs llvm-symbolizer, no database;
-                   LISTEN_ADDR, SYMBOLICATE_CACHE_DIR, SYMBOLICATE_CACHE_MAX_MB)
-  version          print the version and exit
-`
-
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	cmd := "serve"
@@ -65,7 +44,7 @@ func main() {
 		cmd = os.Args[1]
 	}
 	if cmd == "help" || cmd == "-h" || cmd == "--help" {
-		fmt.Print(usage)
+		fmt.Print(cli.Usage())
 		return
 	}
 	if cmd == "version" || cmd == "-v" || cmd == "--version" {
@@ -200,7 +179,7 @@ func main() {
 	case "serve":
 		serve(ctx, cfg, st, in, syms, notifier, log)
 	default:
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprint(os.Stderr, cli.Usage())
 		os.Exit(2)
 	}
 }

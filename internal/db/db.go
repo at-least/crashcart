@@ -17,6 +17,11 @@ import (
 //go:embed schema.sql
 var schema string
 
+// Schema is schema.sql as embedded; cmd/gendocs parses its `CREATE TYPE …
+// AS ENUM` declarations to check GLOSSARY.md's enum value lists against
+// them.
+func Schema() string { return schema }
+
 // SchemaVersion is the version of schema.sql this binary carries. Bump it
 // with every change to the schema; Init writes it into crashcart_schema on
 // creation and refuses a database at any other version.

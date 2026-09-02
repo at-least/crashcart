@@ -138,7 +138,7 @@ SentrySdk.Init(o => {
 | `environment` | `event.environment` | Filter |
 | `error_type` | the main exception's type — the one thrown last; its causes are listed under it | Issue title |
 | `transaction` | `event.transaction` | Transaction (issue subtitle, filter) |
-| `culprit` | computed: innermost in-app frame, `module-or-file in function` | `com.example.CartFragment in onCreateView` |
+| `culprit` | the innermost frame from your own code | `com.example.CartFragment in onCreateView` |
 | `device_model`, `os_version` | `contexts.device`, `contexts.os` | Breakdown |
 | `user.id` | `user.id` | Filter, affected users |
 | `handled` | `exception.mechanism.handled` | Unhandled / Handled badge (neither without a mechanism), `handled=false` filter |
@@ -157,13 +157,14 @@ event page. The mobile SDKs can attach a **screenshot** of the app at the
 moment of a crash — `options.attachScreenshot = true` on Android, iOS
 and Flutter (`SentryFlutter.init((o) => o.attachScreenshot = true)`),
 `attachViewHierarchy` for the view tree — and any SDK can add a file with
-`Sentry.addAttachment(...)`. Limits: 8 attachments per event, 8 MB each;
-an event that [sampling](./projects#sampling-and-daily-quota) drops
-loses its attachments too. Attachments are not scrubbed by
+`Sentry.addAttachment(...)`. The number and size of attachments per
+event are bounded — extra or oversize ones are dropped, the event is
+kept — and an event that [sampling](./projects#sampling-and-daily-quota)
+drops loses its attachments too. Attachments are not scrubbed by
 `PII_REDACT`.
 
 Set [`PII_REDACT=true`](/deploy/configuration) to scrub emails, phone
-numbers, tokens and user ids before events are stored.
+and card numbers and user ids before events are stored.
 
 ## Verifying the connection
 
@@ -172,8 +173,9 @@ numbers, tokens and user ids before events are stored.
 2. Open the project in the viewer. A message event shows up under
    **Events**; exceptions also appear under **Issues**.
 3. If nothing arrives, check the SDK's debug output for the HTTP status
-   from `/api/<id>/envelope/`: `401` is a wrong key, `404` a wrong project
-   id, `429` the [rate limit](/deploy/configuration).
+   from `/api/<id>/envelope/`: `401` is a wrong key or a project id that
+   does not belong to it, `429` the [rate limit](/deploy/configuration)
+   or the project's daily quota.
 
 The [compatibility matrix](/reference/sdks) lists the SDK versions
 exercised end to end with real clients.

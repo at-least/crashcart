@@ -11,8 +11,8 @@ Everything is set with environment variables.
 See [The database](./postgres).
 
 Access is not configured here: the viewer uses user accounts and the API
-uses API keys, both managed in the viewer (**Account**) or with
-`crashcart user` / `crashcart apikey` — see [Security](./security).
+uses API keys, both managed in the viewer (**Account**) or with `crashcart
+user` / `crashcart apikey` — see [Security](./security).
 
 ## Recommended
 

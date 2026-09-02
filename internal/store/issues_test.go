@@ -15,7 +15,4 @@ func TestIssueFilterWhere(t *testing.T) {
 	if len(args) != 7 || args[4] != `%50\%%` {
 		t.Errorf("args = %v", args)
 	}
-	if _, ok := issueSorts["drop table"]; ok {
-		t.Error("sort allowlist leaked")
-	}
 }

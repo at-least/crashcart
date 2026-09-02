@@ -35,8 +35,8 @@ behind a domain), set [`PUBLIC_URL`](/deploy/configuration).
 ### Rotating the key
 
 **Settings → Rotate key** in the viewer, or `crashcart rotate-key shop-ios`.
-The old key stops working immediately, so apps in the field keep failing
-until they ship a build with the new DSN.
+The old key stops working within seconds, so apps in the field keep
+failing until they ship a build with the new DSN.
 
 ## One project per platform
 
@@ -49,13 +49,13 @@ them blurs both numbers.
 ## Sampling and daily quota
 
 A single bug can produce millions of identical events. Three settings under
-**Settings → Sampling** keep storage under control without losing the count:
+**Settings → Sampling** keep storage under control without losing the
+count (the page shows the current values and the defaults):
 
-| Setting | Default | Effect |
-|---|---|---|
-| Keep first | 100 | The first 100 events of every issue are always stored (500 for unhandled errors) |
-| Sample rate | 1.0 | After that, this fraction of the issue's events is stored (`1` = everything); events with nothing to group by use it from the start. Lower it on a busy project: what is stored then grows with the number of issues, not events, and the counts stay exact |
-| Daily quota | 0 (unlimited) | Events accepted per day for the whole project. Sampling already bounds the database; set a quota when you want a hard cap on what a runaway client can send in a day |
+| Setting | Effect |
+|---|---|
+| Keep first | The first N events of every issue are always stored — more of them when they are unhandled (`exception.mechanism.handled = false`: crashes, uncaught exceptions) |
+| Sample rate | After that, this fraction of the issue's events is stored (`1` = everything); events with nothing to group by use it from the start. Lower it on a busy project: what is stored then grows with the number of issues, not events, and the counts stay exact |
+| Daily quota | Events accepted per day for the whole project; `0` is unlimited. Sampling already bounds the database; set a quota when you want a hard cap on what a runaway client can send in a day |
 
-The issue's event count stays exact whether or not an event was stored,
-and the first events of every issue are always stored — five times as many when they are unhandled (`exception.mechanism.handled = false`: crashes, uncaught exceptions).
+The issue's event count stays exact whether or not an event was stored.
