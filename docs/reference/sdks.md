@@ -40,7 +40,9 @@ If you run one of these, an issue or PR with what you saw is welcome.
 - Envelopes and the legacy `/store/` endpoint are both accepted.
 - `gzip` content encoding is supported.
 - Envelopes up to 20 MB.
-- Item types other than `event`, `session`, `sessions` are dropped without
-  error, so enabling tracing or replay in the SDK is harmless — the data
-  just isn't stored.
+- `event`, `session`/`sessions`, `attachment`, `user_report` (user
+  feedback) and `client_report` (client-side discard counters) are
+  stored. Everything else — transactions, profiles, replays, the newer
+  `feedback` item, logs, metrics — is dropped without error, so enabling
+  tracing or replay in the SDK is harmless: the data just isn't stored.
 - Rate limiting answers `429`; SDKs honour it and resend cached crashes.

@@ -70,7 +70,16 @@ level, release, environment, platform, `user_id`, tags.
 
 `/p/{slug}/events/{event_id}` — the full event: exception chain, symbolicated and
 original frames, attachments (screenshots inline, other files as
-downloads), breadcrumbs, tags, user, contexts, and the raw payload.
+downloads), breadcrumbs, tags, user, contexts, the raw payload, and a
+user feedback report if one was submitted.
+
+## Feedback
+
+`/p/{slug}/feedback` — user feedback reports (name, email, comments a
+person typed into the SDK's crash dialog), newest first, linking back
+to the event when it's still there. A report is kept even if its event
+was never stored — sampling, a daily quota, or the report simply
+arriving first — so this list can hold entries the event list can't.
 
 ## Releases
 
@@ -88,6 +97,10 @@ crash-free rate, new issues introduced, and first/last seen.
 - **Sampling**: keep first, sample rate, daily quota
 - **Alerts**: enable each detector, add webhook / Telegram channels
 - **Symbols**: upload and delete symbol files
+- **Discarded events**: what the project's SDKs reported dropping
+  client-side over the last week — by reason (sample rate, `before_send`,
+  a full offline queue, …) and category — so a lower-than-expected event
+  count has an answer other than "something is broken"
 
 Everything the viewer can do, the [API](/reference/api) can do too; the
 viewer is a client of the same store.

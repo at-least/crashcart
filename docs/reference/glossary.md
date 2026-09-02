@@ -15,6 +15,8 @@ The vocabulary used across the viewer, the API and this documentation.
 | **Project** | One DSN; the container for issues, events, releases and settings | |
 | **DSN** | `scheme://<key>@host/<project id>` — the address an SDK reports to | |
 | **Session** | One app run (mobile) or page load / request batch, as reported by the SDK for release health | |
+| **Attachment** | A file the SDK attached to an event — a screenshot, a view hierarchy, a log | upload, asset |
+| **User Feedback** | A name/email/comments report a person typed into the SDK's crash dialog, tied to one event | user report (wire name only) |
 | **Symbol file** | ProGuard / R8 mapping, source map or dSYM used to symbolicate frames | |
 | **Transaction** | `event.transaction`: the screen, route or request the event happened in | screen, page |
 | **Culprit** | Sentry's stack culprit: the innermost in-app frame as `module-or-file in function`, shown under the issue title | location |

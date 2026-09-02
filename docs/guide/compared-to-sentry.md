@@ -14,6 +14,11 @@ is it different from Sentry?" Honest answer below, in both directions.
 - **The core loop.** Errors are grouped into issues by stack trace, issues
   have a status and a lifecycle (resolved → regression), releases have a
   crash-free rate, and you get told when something new breaks.
+- **User feedback and discard visibility.** A crash dialog's user report
+  lands on the event and on its own **Feedback** page; an SDK's own
+  client-side discard counts (sample rate, `before_send`, a full offline
+  queue, …) show up under **Settings**, so a lower event count than
+  expected has an answer.
 
 ## What's different
 

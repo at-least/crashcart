@@ -351,10 +351,10 @@ SDK as `X-Sentry-Auth` or the `sentry_key` query parameter. Accepts gzip.
 | `413` | Envelope over 20 MB, or too many events in one envelope |
 | `429` | Rate limit, or the project's daily quota exceeded |
 
-Envelope items handled: `event`, `session`, `sessions`. Others
-(`transaction`, `profile`, `replay_event`, `client_report`, …) are accepted
-and dropped so SDKs never see an error. CORS preflight is answered with
-`CORS_ORIGIN`.
+Envelope items handled: `event`, `session`, `sessions`, `attachment`,
+`user_report`, `client_report`. Others (`transaction`, `profile`,
+`replay_event`, `feedback`, …) are accepted and dropped so SDKs never see
+an error. CORS preflight is answered with `CORS_ORIGIN`.
 
 ## sentry-cli compatibility
 
