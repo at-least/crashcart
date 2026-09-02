@@ -73,7 +73,6 @@ func main() {
 	if err != nil {
 		fatal(log, err)
 	}
-	defer pool.Close()
 	created, err := db.Init(ctx, pool)
 	if err != nil {
 		fatal(log, err)
@@ -81,7 +80,11 @@ func main() {
 	if created {
 		log.Info("schema created")
 	}
-	st := store.New(pool)
+	st, err := store.New(ctx, pool)
+	if err != nil {
+		fatal(log, err)
+	}
+	defer st.Close()
 	syms := &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient(cfg.SymbolicateURL)}
 	in := &ingest.Ingester{Store: st, Cfg: cfg, Symbols: syms, Log: log}
 	notifier := &alerts.Notifier{Store: st, Cfg: cfg, Log: log} // HTTP left nil: the hardened client (post-DNS address check, no redirects)

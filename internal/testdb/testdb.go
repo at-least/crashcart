@@ -31,6 +31,15 @@ import (
 // unset.
 func New(t testing.TB) *store.Store {
 	t.Helper()
+	return NewWithMaxConns(t, 0)
+}
+
+// NewWithMaxConns is New with Pool's MaxConns pinned to n (pgxpool's own
+// default when n is 0) — for tests that need to constrain the *query* pool
+// specifically, such as proving RunAsLeader can't starve it regardless of
+// how small it is (github.com/at-least/crashcart/issues/1).
+func NewWithMaxConns(t testing.TB, n int32) *store.Store {
+	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("TEST_DATABASE_URL not set")
@@ -41,12 +50,23 @@ func New(t testing.TB) *store.Store {
 	}
 	inst := pgtestdb.Custom(t, admin, schemaMigrator{})
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, inst.URL())
+	cfg, err := pgxpool.ParseConfig(inst.URL())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
-	return store.New(pool)
+	if n > 0 {
+		cfg.MaxConns = n
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.New(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	return st
 }
 
 // adminConfig turns TEST_DATABASE_URL into the connection details pgtestdb

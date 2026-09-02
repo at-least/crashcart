@@ -16,11 +16,38 @@ import (
 type Store struct {
 	Pool *pgxpool.Pool
 	*sqlc.Queries
+
+	// lockPool is a small pool dedicated to RunAsLeader's session-scoped
+	// advisory locks, kept apart from Pool. A held lock pins a connection
+	// for the whole duration of the caller's fn, and fn does its own work
+	// through Pool/Queries — sharing one pool between the two would let
+	// enough concurrent leader locks (one per tick() key in cmd/crashcart)
+	// exhaust every connection on lock-holding alone, leaving none for fn
+	// to actually run: a self-inflicted deadlock, not a load problem. See
+	// https://github.com/at-least/crashcart/issues/1.
+	lockPool *pgxpool.Pool
 }
 
-// New builds a Store on an open pool.
-func New(pool *pgxpool.Pool) *Store {
-	return &Store{Pool: pool, Queries: sqlc.New(pool)}
+// maxLeaderLocks bounds lockPool: the number of distinct RunAsLeader keys
+// that can be held at once by a single process (one per tick() call in
+// cmd/crashcart/main.go — LeaderSpikeCheck, LeaderSweep, LeaderRollup,
+// LeaderIgnoreCheck, LeaderMonitorCheck; LeaderPartitions and LeaderSetup
+// are transaction-scoped and never reach RunAsLeader). Each key maps to
+// exactly one goroutine, so this can never be exceeded — sizing lockPool to
+// it means a lock holder can never itself be starved waiting for a lock
+// slot, whatever Pool's own size is.
+const maxLeaderLocks = 5
+
+// New builds a Store on an open pool, plus a small pool of its own for
+// RunAsLeader's advisory locks (see lockPool).
+func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
+	lockCfg := pool.Config()
+	lockCfg.MaxConns = maxLeaderLocks
+	lockPool, err := pgxpool.NewWithConfig(ctx, lockCfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{Pool: pool, lockPool: lockPool, Queries: sqlc.New(pool)}, nil
 }
 
 // Payload is an event's raw payload, decoded. nil, nil when the event has
@@ -80,7 +107,7 @@ func (s *Store) CreateFirstUser(ctx context.Context, u sqlc.CreateUserParams) (u
 // so scheduled work (sweeps, spike checks) runs once per
 // deployment, not once per replica.
 func (s *Store) RunAsLeader(ctx context.Context, key int64, fn func()) (bool, error) {
-	conn, err := s.Pool.Acquire(ctx)
+	conn, err := s.lockPool.Acquire(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -97,5 +124,8 @@ func (s *Store) RunAsLeader(ctx context.Context, key int64, fn func()) (bool, er
 	return true, nil
 }
 
-// Close closes the pool.
-func (s *Store) Close() { s.Pool.Close() }
+// Close closes both pools.
+func (s *Store) Close() {
+	s.lockPool.Close()
+	s.Pool.Close()
+}

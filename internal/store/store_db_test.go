@@ -150,6 +150,53 @@ func TestRunAsLeader(t *testing.T) {
 	}
 }
 
+// TestRunAsLeaderDoesNotStarveQueryPool: regression test for
+// https://github.com/at-least/crashcart/issues/1 — every distinct
+// RunAsLeader key that cmd/crashcart ticks concurrently used to Acquire its
+// advisory-lock connection from the same pool fn does its real work
+// through. With Pool pinned to a single connection here, the pre-fix
+// RunAsLeader deadlocks immediately: it holds the pool's only connection
+// for the lock, then fn's own query has nowhere to Acquire from. Post-fix,
+// RunAsLeader's lock lives on its own pool, so fn always gets Pool's one
+// connection regardless of how many keys are held at once.
+func TestRunAsLeaderDoesNotStarveQueryPool(t *testing.T) {
+	st := testdb.NewWithMaxConns(t, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	keys := []int64{store.LeaderSpikeCheck, store.LeaderSweep, store.LeaderRollup, store.LeaderIgnoreCheck, store.LeaderMonitorCheck}
+	var wg sync.WaitGroup
+	var ran atomic.Int32
+	for _, key := range keys {
+		wg.Add(1)
+		go func(key int64) {
+			defer wg.Done()
+			r, err := st.RunAsLeader(ctx, key, func() {
+				if _, err := st.Pool.Exec(ctx, "SELECT 1"); err != nil {
+					t.Errorf("fn's own query for key %d: %v", key, err)
+					return
+				}
+				ran.Add(1)
+			})
+			if err != nil {
+				t.Errorf("RunAsLeader(%d): %v", key, err)
+			} else if !r {
+				t.Errorf("RunAsLeader(%d): did not run — a distinct key must never contend with another", key)
+			}
+		}(key)
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timed out: RunAsLeader deadlocked the query pool (see issue #1)")
+	}
+	if n := ran.Load(); n != int32(len(keys)) {
+		t.Fatalf("only %d/%d fn ran", n, len(keys))
+	}
+}
+
 // TestCreateFirstUser: only one of many concurrent first-user creations
 // succeeds — the check and the insert are one serialized transaction.
 func TestCreateFirstUser(t *testing.T) {
