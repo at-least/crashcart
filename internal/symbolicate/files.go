@@ -13,10 +13,10 @@ import (
 
 // Where a symbol file's bytes live is a property of its row, not of the
 // process: data (Postgres, the default) or blob_key (Service.Blobs, when
-// BLOB_STORE is s3 or fs). A row is written the way the process is
-// configured; it is read the way it was written, so a database holds both
-// kinds after the backend changes and nothing has to be moved
-// (internal/db/migrations/00002_symbol_blob_key.sql).
+// BLOB_STORE=s3). A row is written the way the process is configured; it
+// is read the way it was written, so a database holds both kinds after
+// the backend changes and nothing has to be moved
+// (internal/db/migrations/00001_baseline.sql).
 
 // errNoBlobStore: a row points at the blob store, but this process has
 // none configured.

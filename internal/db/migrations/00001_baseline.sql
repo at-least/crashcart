@@ -1,5 +1,4 @@
--- CrashCart baseline schema (everything up to the last pre-migration
--- release, schema version 15). Plain Postgres 14+: no extensions. The
+-- CrashCart baseline schema. Plain Postgres 15+: no extensions. The
 -- time-series tables (events, sessions) are partitioned by week on their
 -- TIMESTAMPTZ time column (a time window is a range on it; their primary
 -- key includes it, as partitioning requires); internal/retention creates
@@ -7,7 +6,10 @@
 -- are rollup tables kept current by a dirty-key job (the stats section at
 -- the end of this file). Everything is here — event payloads (gzipped,
 -- bounded by per-issue sampling), symbol files, sentry-cli upload chunks;
--- the database is the one store.
+-- Postgres is the default store for all of them, with an S3-compatible
+-- bucket (BLOB_STORE=s3) optional for event payloads and symbol files —
+-- exactly one of a row's data / blob_key columns is set
+-- (internal/symbolicate/files.go, internal/store/packs.go).
 --
 -- +goose Up
 
@@ -142,6 +144,46 @@ CREATE INDEX events_project_user ON events (project_id, user_id, occurred_at DES
 CREATE INDEX events_project_unhandled ON events (project_id, occurred_at DESC) WHERE handled = false;
 CREATE INDEX events_tags ON events USING GIN (tags jsonb_path_ops); -- tag filters are `tags @> {k: v}`
 
+-- Event payloads in the blob store (BLOB_STORE=s3). Nothing changes on
+-- events itself: with a store configured, ingest writes payload = NULL and
+-- the gzipped bytes into payload_spool in the same transaction (durable in
+-- Postgres before any object exists); a background flusher packs the
+-- spool per (project, week) into ~8 MB objects — events/<project>/<week>/<id>
+-- — and records each event's place in event_packs. Reads go column →
+-- spool → ranged GET (internal/store/packs.go). A week's packs are deleted
+-- when its partition is dropped (internal/retention).
+CREATE TABLE payload_spool (
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id    UUID NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    data        BYTEA NOT NULL,                      -- the raw event, gzipped (as events.payload is)
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, event_id, occurred_at)
+);
+ALTER TABLE payload_spool ALTER COLUMN data SET STORAGE EXTERNAL;
+-- The flusher's read order, which is also export's stream order, so a
+-- pack's events are contiguous in an export.
+CREATE INDEX payload_spool_order ON payload_spool (project_id, occurred_at, event_id);
+
+CREATE TABLE packs (
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    week       DATE NOT NULL,                        -- retention's week (Monday, UTC) of its events
+    bytes      BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX packs_week ON packs (week);
+
+CREATE TABLE event_packs (
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id    UUID NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    pack_id     BIGINT NOT NULL REFERENCES packs ON DELETE CASCADE,
+    pack_offset INTEGER NOT NULL,
+    pack_len    INTEGER NOT NULL,
+    PRIMARY KEY (project_id, event_id, occurred_at)
+);
+CREATE INDEX event_packs_pack ON event_packs (pack_id);
 
 -- ── attachments ────────────────────────────────────────────────────────
 -- The envelope's attachment items (a crash screenshot, a view hierarchy,
@@ -332,6 +374,9 @@ CREATE INDEX issues_project_first_release ON issues (project_id, first_release);
 CREATE INDEX issues_project_last_release ON issues (project_id, last_release);
 
 -- ── symbol files ───────────────────────────────────────────────────────
+-- May live in a blob store (BLOB_STORE=s3) instead of the data column:
+-- exactly one of data / blob_key is set per row — a row's location is its
+-- own (internal/symbolicate/files.go).
 
 CREATE TABLE symbol_files (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -341,9 +386,11 @@ CREATE TABLE symbol_files (
     debug_id    TEXT,                                -- dSYM UUID / proguard mapping uuid
     filename    TEXT NOT NULL,
     size        BIGINT NOT NULL,
-    data        BYTEA NOT NULL,
+    data        BYTEA,
+    blob_key    TEXT,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename)
+    UNIQUE NULLS NOT DISTINCT (project_id, kind, release, filename),
+    CONSTRAINT symbol_files_location CHECK ((data IS NULL) <> (blob_key IS NULL))
 );
 CREATE INDEX symbol_files_debug_id ON symbol_files (project_id, debug_id) WHERE debug_id IS NOT NULL;
 

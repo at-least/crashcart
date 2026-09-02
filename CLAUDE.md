@@ -47,7 +47,7 @@ internal/
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, Culprit, ID
   db/                 migrations/*.sql (goose, applied on every start; 00001_baseline.sql is
-                      everything through the last pre-migration release), sqlc_schema.sql
+                      the whole schema), sqlc_schema.sql
                       (mirror for sqlc; the stats views appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
   store/              Store = pool + sqlc.Queries + Blobs; dynamic event listing/breakdown (only hand-written SQL);
                       packs.go (payload spool → packs, Payload read path);

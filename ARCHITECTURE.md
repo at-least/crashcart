@@ -212,21 +212,19 @@ issues → issue → event; releases with crash-free rate; settings.
 
 **Versioned migrations (goose).** `internal/db/migrations/` is applied on
 every start, under an advisory lock so replicas start together;
-`00001_baseline.sql` is everything through the last pre-migration release,
-and a schema change from here on is a new migration file, not an edit to
-an existing one. Chosen over the earlier "one schema.sql + a version,
-moved with `crashcart export`/`import`" model for two costs that model
-had: a routine schema change forced operators through a full dump/reload
-instead of pull-and-restart, and — because the domain here is stored
-events/payloads — that reload's cost scales with data volume, so a
-deployment's upgrade cost only grew over its life instead of staying
-flat. `db.Init` still refuses to start rather than silently doing the
-wrong thing: a database ahead of the binary's known migrations, or a
-legacy (pre-migration) database at any version but the one immediately
-before this change, both refuse with instructions. `export` / `import`
+`00001_baseline.sql` is the whole schema, and a schema change from here on
+is a new migration file, not an edit to an existing one. Chosen over an
+earlier "one schema.sql + a version, moved with `crashcart export`/
+`import`" model for two costs that model had: a routine schema change
+forced operators through a full dump/reload instead of pull-and-restart,
+and — because the domain here is stored events/payloads — that reload's
+cost scales with data volume, so a deployment's upgrade cost only grew
+over its life instead of staying flat. `db.Init` still refuses to start
+rather than silently doing the wrong thing: a database ahead of the
+binary's known migrations refuses with instructions. `export` / `import`
 (`internal/export`, format spec in `docs/reference/export-format.md`)
-remain for backup and moving a database between environments — that was
-already decoupled from schema versioning before this change.
+remain for backup and moving a database between environments — that is
+decoupled from schema versioning.
 
 **Why plain Postgres, and only Postgres (plus, optionally, a bucket).**
 Postgres without extensions runs anywhere — a container, a package, RDS,
