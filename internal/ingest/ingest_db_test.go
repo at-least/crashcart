@@ -171,43 +171,65 @@ func TestIngestLifecycle(t *testing.T) {
 	}
 	p.Platform = nil
 
-	// Daily quota: the envelope that would cross it is rejected whole.
+	// Daily quota: uncounted while unlimited (nothing reads it), exact
+	// from the moment a quota is set, and the envelope that would cross
+	// it is rejected whole.
 	day := now.Truncate(24 * time.Hour)
-	usedBefore, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day})
-	if usedBefore == 0 {
-		t.Fatal("no usage counted")
+	if used, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); used != 0 {
+		t.Fatalf("usage counted while unlimited: %d", used)
 	}
-	p.DailyQuota = 4 // more than that is already counted today
-	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 8)), now), now)
+	p.DailyQuota = 4
+	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 20)), now), now)
+	if err != nil || res.Received != 1 {
+		t.Fatalf("first event against a fresh quota: res=%+v err=%v", res, err)
+	}
+	usedBefore, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day})
+	if usedBefore != 1 {
+		t.Fatalf("usage = %d, want 1 (counting starts when the quota is set, not the day's true total)", usedBefore)
+	}
+	items = []string{crash("1.1", now.Format(time.RFC3339), 21), crash("1.1", now.Format(time.RFC3339), 22),
+		crash("1.1", now.Format(time.RFC3339), 23), crash("1.1", now.Format(time.RFC3339), 24)} // 1 + 4 > quota of 4
+	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(items...), now), now)
 	if !errors.Is(err, ErrQuota) || res.Stored != 0 {
 		t.Fatalf("quota: res=%+v err=%v", res, err)
 	}
 	// The rollback left the day's count where it was, and the next
-	// envelope is refused usedBefore any work (the count does not move).
+	// envelope is refused before any work (the count does not move).
 	usedAfter, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day})
 	if usedAfter != usedBefore {
-		t.Fatalf("usage usedAfter rejected envelope = %d, want %d", usedAfter, usedBefore)
+		t.Fatalf("usage after rejected envelope = %d, want %d", usedAfter, usedBefore)
 	}
-	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 8)), now), now); !errors.Is(err, ErrQuota) {
+	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 25)), now), now); !errors.Is(err, ErrQuota) {
 		t.Fatalf("exhausted quota: %v", err)
 	}
 	if usedAfter, _ = st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); usedAfter != usedBefore {
-		t.Fatalf("usage usedAfter short-circuit = %d, want %d", usedAfter, usedBefore)
+		t.Fatalf("usage after short-circuit = %d, want %d", usedAfter, usedBefore)
 	}
+	// Lifting the quota stops counting again: accepted, usage untouched.
 	p.DailyQuota = 0
-	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 9)), now), now); err != nil {
+	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 26)), now), now); err != nil {
 		t.Fatalf("unlimited quota: %v", err)
 	}
-
-	// Every release the envelopes mentioned is on record, with its platforms.
-	rels, err := st.ListReleases(ctx, sqlc.ListReleasesParams{ProjectID: p.ID, Limit: 10})
-	if err != nil || len(rels) == 0 {
-		t.Fatalf("releases: %d %v", len(rels), err)
+	if usedAfter, _ = st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); usedAfter != usedBefore {
+		t.Fatalf("usage after unlimited accept = %d, want %d (writes skipped again)", usedAfter, usedBefore)
 	}
+
+	// Every release the envelopes mentioned is on record — those seen only
+	// through sessions (1.2) too — with the platforms of its events (a
+	// session names none) and the earliest time it was seen.
+	rels, err := st.ListReleases(ctx, sqlc.ListReleasesParams{ProjectID: p.ID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]sqlc.Release{}
 	for _, r := range rels {
-		if r.Release == "" || r.FirstSeen.IsZero() {
-			t.Errorf("release row %+v", r)
-		}
+		got[r.Release] = r
+	}
+	if len(got) != 4 || len(got["1.0"].Platforms) != 1 || got["1.0"].Platforms[0] != "android" || len(got["1.2"].Platforms) != 0 {
+		t.Fatalf("releases = %+v", rels)
+	}
+	if tsAt, _ := time.Parse(time.RFC3339, ts); !got["0.9"].FirstSeen.Equal(tsAt) || !got["1.0"].FirstSeen.Equal(tsAt) {
+		t.Fatalf("first_seen 0.9=%v 1.0=%v, want %v", got["0.9"].FirstSeen, got["1.0"].FirstSeen, tsAt)
 	}
 
 	// Hourly stats via the view (the hour is dirty, so computed live).
@@ -272,13 +294,17 @@ func TestIngestHTTP(t *testing.T) {
 	if rec.Code != 413 {
 		t.Fatalf("corrupt gzip → %d", rec.Code)
 	}
-	// Over the daily quota: 429 with Sentry's rate-limit header, so the SDK
-	// stops sending (all categories) until the next UTC day.
+	// Over the daily quota: counting starts fresh when the quota is set
+	// (nothing was counted while unlimited), so an envelope with more
+	// events than the quota crosses it right away. 429 with Sentry's
+	// rate-limit header, so the SDK stops sending (all categories) until
+	// the next UTC day.
 	if _, err := st.Pool.Exec(ctx, "UPDATE projects SET daily_quota = 1 WHERE id = $1", p.ID); err != nil {
 		t.Fatal(err)
 	}
 	in.byKey = nil // the DSN-key cache holds the project for a minute
-	req = newRequest("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), body)
+	over := envelope(crash("1.0", now, 2), crash("1.0", now, 3))
+	req = newRequest("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), over)
 	req.Header.Set("X-Sentry-Auth", "Sentry sentry_key=secretkey")
 	rec = newRecorder()
 	h.ServeHTTP(rec, req)
@@ -340,12 +366,10 @@ func TestIngestClampsFarPastClock(t *testing.T) {
 	if !iss.FirstSeen.Equal(late) {
 		t.Fatalf("first_seen = %v, want the late (in-window) event %v", iss.FirstSeen, late)
 	}
+	// (The events' exact clamped time is TestIngestClampedTimesAreNow's.)
 	var at time.Time
-	if err := st.Pool.QueryRow(ctx, `SELECT min(occurred_at) FROM events WHERE project_id = $1`, p.ID).Scan(&at); err != nil || at.Year() == 1970 {
-		t.Fatalf("oldest stored event = %v %v (1970 event stored as-is)", at, err)
-	}
-	if err := st.Pool.QueryRow(ctx, `SELECT started_at FROM sessions WHERE sid = 's1'`).Scan(&at); err != nil || at.Year() == 1970 {
-		t.Fatalf("session started_at = %v %v", at, err)
+	if err := st.Pool.QueryRow(ctx, `SELECT started_at FROM sessions WHERE sid = 's1'`).Scan(&at); err != nil || !at.Equal(now.Truncate(time.Microsecond)) {
+		t.Fatalf("session started_at = %v %v, want now %v", at, err, now)
 	}
 	if err := st.Pool.QueryRow(ctx, `SELECT first_seen FROM releases WHERE project_id = $1 AND release = '1.0'`, p.ID).Scan(&at); err != nil || !at.Equal(late) {
 		t.Fatalf("releases.first_seen = %v %v, want %v", at, err, late)
@@ -508,14 +532,14 @@ func TestIngestSentrySemantics(t *testing.T) {
 		 "exception":{"values":[{"type":"E","value":"x","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id, ts, level)
 	}
 	older, newer := now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-time.Minute).Format(time.RFC3339)
-	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(ev("a", "fatal", older)), now), now)
+	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(ev(hexID("a"), "fatal", older)), now), now)
 	if err != nil || len(res.NewIssues) != 1 {
 		t.Fatalf("first: %+v %v", res, err)
 	}
 	fp := res.NewIssues[0]
 	// A later event at warning: the issue shows warning. An even older
 	// fatal one arriving afterwards does not change it back.
-	for _, e := range []string{ev("b", "warning", newer), ev("c", "fatal", now.Add(-3*time.Hour).Format(time.RFC3339))} {
+	for _, e := range []string{ev(hexID("b"), "warning", newer), ev(hexID("c"), "fatal", now.Add(-3*time.Hour).Format(time.RFC3339))} {
 		if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(e), now), now); err != nil {
 			t.Fatal(err)
 		}
@@ -525,8 +549,8 @@ func TestIngestSentrySemantics(t *testing.T) {
 		t.Fatalf("issue level = %q (want the latest event's), err %v", issue.Level, err)
 	}
 	var handled *bool
-	if err := st.Pool.QueryRow(ctx, "SELECT handled FROM events WHERE event_id = $1", sentry.DerivedID([]byte("a"))).Scan(&handled); err == nil && handled != nil {
-		t.Fatalf("no mechanism: handled should be NULL, got %v", *handled)
+	if err := st.Pool.QueryRow(ctx, "SELECT handled FROM events WHERE event_id = $1", sentry.DerivedID([]byte("a"))).Scan(&handled); err != nil || handled != nil {
+		t.Fatalf("no mechanism: handled should be NULL, got %v (err %v)", handled, err)
 	}
 	var n int
 	if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM events WHERE handled IS NULL").Scan(&n); err != nil || n != 3 {

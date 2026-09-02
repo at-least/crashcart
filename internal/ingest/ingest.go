@@ -108,23 +108,25 @@ func (in *Ingester) quotaExhausted(p sqlc.Project, now time.Time) bool {
 
 // checkQuota is the last statement of the ingest transaction: it counts n
 // events against the project's UTC day and fails with ErrQuota (rolling
-// everything back) when that crosses the daily quota (0 = unlimited). The
-// count lives in project_usage, so it is exact across replicas; being
-// last, the row lock — the one row every envelope of a project touches —
-// is held only until the commit, not across the whole write. Sessions
-// ride along with events, so a rejected envelope loses its sessions too —
-// acceptable for a project that is being flooded.
+// everything back) when that crosses the daily quota (0 = unlimited, and
+// nothing is counted — no reader looks at project_usage for such a
+// project, so the write would only cost every envelope a lock on the
+// project's row for no reason). The count lives in project_usage, so it
+// is exact across replicas; being last, the row lock — the one row every
+// envelope of a project touches — is held only until the commit, not
+// across the whole write. Turning a quota on starts its count from then,
+// not from the day's true total. Sessions ride along with events, so a
+// rejected envelope loses its sessions too — acceptable for a project
+// that is being flooded.
 func (in *Ingester) checkQuota(ctx context.Context, q *sqlc.Queries, p sqlc.Project, n int, now time.Time) error {
-	if n == 0 {
+	if n == 0 || p.DailyQuota <= 0 {
 		return nil
 	}
-	// Always counted (the overview shows events received today); only
-	// enforced when the project set a quota.
 	total, err := q.AddProjectUsage(ctx, sqlc.AddProjectUsageParams{ProjectID: p.ID, Day: now.UTC().Truncate(24 * time.Hour), Events: int64(n)})
 	if err != nil {
 		return fmt.Errorf("quota: %w", err)
 	}
-	if p.DailyQuota <= 0 || total <= int64(p.DailyQuota) {
+	if total <= int64(p.DailyQuota) {
 		return nil
 	}
 	in.mu.Lock()
