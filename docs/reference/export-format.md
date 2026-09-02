@@ -29,6 +29,7 @@ releases*            (per project in slug order; within a project by release)
 issues*              (per project in slug order; within a project by fingerprint)
 events*              (per project; by occurred_at, event_id ascending)
 attachments*         (per project; by occurred_at, event_id, n ascending)
+user_reports*        (per project; by event_id ascending)
 sessions*            (per project; by started_at, sid ascending)
 symbol_files*        (per project; by kind, release, filename)
 alert_rules*         (per project; by type)
@@ -58,6 +59,7 @@ so a dump loads into any database:
 
 - events: `(project, event_id, occurred_at)` — the SDK's event id and timestamp
 - attachments: `(project, event_id, occurred_at, n)` — the event's key plus the file's position
+- user_reports: `(project, event_id)` — no `occurred_at`: unlike attachments, a report is not tied to a stored event's row
 - sessions: `(project, sid, started_at)` — the SDK's session id (aggregate rows carry a generated `agg-…` sid)
 - releases: `(project, release)`
 - issues: `(project, fingerprint)`
@@ -223,6 +225,21 @@ Import: insert; conflict on `(project, event_id, occurred_at, n)` → skip.
 The event itself need not be in the file (a row without its event is
 never shown, and expires with the partition).
 
+### `user_reports`
+
+```
+project           str    slug
+event_id          str    required; 32 hex, the report's event (need not be in the file, or exist at all)
+name?             str
+email?            str
+comments          str
+received_at       ts
+```
+
+Import: upsert on `(project, event_id)`; all listed columns replaced
+(a resend overwrites, as ingest itself does). Sentry's `user_report`
+envelope item; the newer `feedback` item is not accepted or exported.
+
 ### `sessions`
 
 ```
@@ -295,8 +312,9 @@ up); the rest expire or belong to the target database.
    the second time (except `alert_channels` ordering and any `created_at`
    filled with *now* on rows that omitted it). Importing onto a live
    database **replaces** the listed columns of `projects`, `issues`
-   (except the counts, which never go down), `symbol_files` and
-   `alert_rules` with the file's values; events, attachments and sessions are never overwritten; users and API keys
+   (except the counts, which never go down), `symbol_files`,
+   `alert_rules` and `user_reports` with the file's values; events,
+   attachments and sessions are never overwritten; users and API keys
    are never overwritten.
 4. Report per-table row counts on completion (`{"rows":{"events":123,…}}`).
 5. Fail fast on the first malformed line, reporting its 1-based line number.
@@ -309,8 +327,9 @@ up); the rest expire or belong to the target database.
 - **3** — issue status `triaged` is gone (Sentry has no such state); a
   format-2 file's `triaged` imports as `unresolved`. Culprits are Sentry's
   `module-or-file in function`. Later, additively (format unchanged):
-  the `attachments` table and the issue ignore fields (`ignore_until`,
-  `ignore_until_count`, `ignore_until_escalating`, `ignore_baseline`).
+  the `attachments` table, the issue ignore fields (`ignore_until`,
+  `ignore_until_count`, `ignore_until_escalating`, `ignore_baseline`) and
+  the `user_reports` table.
 - **2** — Sentry vocabulary: `screen` → `transaction`, `error_location` →
   `culprit`, alert type `crash_spike` → `unhandled_spike`. A format-1 file
   still imports (the old names are read).

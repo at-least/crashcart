@@ -92,6 +92,21 @@ templ EventBody(pg Page, d EventData) {
 				</ul>
 			</section>
 		}
+		if d.UserReport != nil {
+			<section class="event-section">
+				<h2 class="sheet-h">User Feedback</h2>
+				<dl class="kv">
+					if d.UserReport.Name != nil {
+						<div><dt>Name</dt><dd>{ *d.UserReport.Name }</dd></div>
+					}
+					if d.UserReport.Email != nil {
+						<div><dt>Email</dt><dd>{ *d.UserReport.Email }</dd></div>
+					}
+					<div><dt>Received</dt><dd>{ formatDateTime(d.UserReport.ReceivedAt) }</dd></div>
+				</dl>
+				<p class="mt-2 whitespace-pre-wrap break-words">{ d.UserReport.Comments }</p>
+			</section>
+		}
 		if len(d.Crumbs) > 0 {
 			<section class="event-section">
 				<h2 class="sheet-h">Breadcrumbs <span class="font-normal normal-case tracking-normal">({ strconv.Itoa(len(d.Crumbs)) }, newest first)</span></h2>

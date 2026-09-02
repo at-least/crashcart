@@ -97,6 +97,16 @@ CREATE TABLE attachments (
     PRIMARY KEY (project_id, event_id, occurred_at, n)
 );
 
+CREATE TABLE user_reports (
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id    UUID NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    name        TEXT,
+    email       TEXT,
+    comments    TEXT NOT NULL,
+    PRIMARY KEY (project_id, event_id)
+);
+
 CREATE TABLE sessions (
     started_at  TIMESTAMPTZ NOT NULL,
     project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,

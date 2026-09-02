@@ -2,12 +2,16 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
@@ -125,18 +129,98 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(payload), Breadcrumbs: breadcrumbsOf(ev, payload), Attachments: atts})
+	ur, err := h.userReportOf(r, p.ID, ev.EventID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, eventDetail{Event: ev, Payload: json.RawMessage(payload), Breadcrumbs: breadcrumbsOf(ev, payload), Attachments: atts, UserReport: ur})
 }
 
 // eventDetail is the JSON API's event: the row, with the raw payload
 // embedded as JSON (null when it has none), the breadcrumbs (newest
-// last, at most 20) read from it, and its attachments (metadata; the
-// bytes are at each one's url).
+// last, at most 20) read from it, its attachments (metadata; the bytes
+// are at each one's url), and its user report, if any.
 type eventDetail struct {
 	sqlc.Event
 	Payload     json.RawMessage     `json:"payload"`
 	Breadcrumbs []sentry.Breadcrumb `json:"breadcrumbs"`
 	Attachments []attachmentOut     `json:"attachments"`
+	UserReport  *userReportOut      `json:"user_report,omitempty"`
+}
+
+// userReportOut is one user_report row (the Feedback list and an event's
+// single one).
+type userReportOut struct {
+	EventID    string    `json:"event_id"`
+	Name       string    `json:"name"`
+	Email      string    `json:"email"`
+	Comments   string    `json:"comments"`
+	ReceivedAt time.Time `json:"received_at"`
+}
+
+func toUserReportOut(ur sqlc.UserReport) userReportOut {
+	out := userReportOut{EventID: string(ur.EventID), Comments: ur.Comments, ReceivedAt: ur.ReceivedAt.UTC()}
+	if ur.Name != nil {
+		out.Name = *ur.Name
+	}
+	if ur.Email != nil {
+		out.Email = *ur.Email
+	}
+	return out
+}
+
+// userReportOf is an event's user report, or nil when it has none.
+func (h *Handler) userReportOf(r *http.Request, projectID int64, eventID sentry.ID) (*userReportOut, error) {
+	ur, err := h.Store.GetUserReport(r.Context(), sqlc.GetUserReportParams{ProjectID: projectID, EventID: eventID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := toUserReportOut(ur)
+	return &out, nil
+}
+
+// listUserReports is GET /api/projects/{slug}/user_reports: every report
+// of the project, newest first — including reports whose event was
+// sampled out or never arrived, which an event-scoped lookup would miss.
+func (h *Handler) listUserReports(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	limit, err := intParam(q, "limit", 50)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	offset, err := intParam(q, "offset", 0)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if offset > store.MaxOffset {
+		h.fail(w, badRequest(fmt.Sprintf("offset must be at most %d (narrow the window instead)", store.MaxOffset)))
+		return
+	}
+	rows, err := h.Store.ListUserReports(r.Context(), sqlc.ListUserReportsParams{ProjectID: p.ID, Limit: int32(limit), Offset: int32(offset)})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	total, err := h.Store.CountUserReports(r.Context(), p.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	out := make([]userReportOut, 0, len(rows))
+	for _, ur := range rows {
+		out = append(out, toUserReportOut(ur))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user_reports": out, "total": total})
 }
 
 type attachmentOut struct {

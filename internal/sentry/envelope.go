@@ -170,8 +170,9 @@ type Envelope struct {
 	Events      []*Event
 	Sessions    []Session
 	Attachments []Attachment
-	Dropped     int // items of types CrashCart does not store, and attachments over the limits
-	Invalid     int // event items that did not parse (logged and reported to the SDK)
+	UserReport  *UserReport // the envelope's `user_report` item, if any (the protocol allows at most one)
+	Dropped     int         // items of types CrashCart does not store, and attachments/user reports over the limits
+	Invalid     int         // event items that did not parse (logged and reported to the SDK)
 }
 
 // Attachment is one envelope `attachment` item: a file the SDK attached
@@ -183,6 +184,58 @@ type Attachment struct {
 	ContentType    string // item header `content_type`; application/octet-stream when absent
 	AttachmentType string // item header `attachment_type`; event.attachment when absent
 	Data           []byte
+}
+
+// UserReport is one envelope `user_report` item: Sentry's classic user
+// feedback (name/email/comments a user typed into the SDK's crash dialog),
+// tied to one event. The SDKs usually send it in its own envelope, after
+// the app restarts — there is normally no accompanying `event` item to
+// take a time or id from, so its own event_id is what matters.
+type UserReport struct {
+	EventID  ID
+	Name     string
+	Email    string
+	Comments string
+}
+
+type rawUserReport struct {
+	EventID  string `json:"event_id"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Comments string `json:"comments"`
+}
+
+// Field bounds for user_report: comments is Sentry's own documented limit;
+// name/email are sized like the other free-text columns in this file.
+const (
+	maxReportField    = 200
+	maxReportComments = 4096
+)
+
+// parseUserReport parses a `user_report` item body. nil when it has no
+// event_id that resolves (the item's own, or the envelope header's) or no
+// comments — nothing worth storing.
+func parseUserReport(headerEventID string, body []byte) *UserReport {
+	var raw rawUserReport
+	if json.Unmarshal(body, &raw) != nil {
+		return nil
+	}
+	id, ok := ParseID(raw.EventID)
+	if !ok {
+		if id, ok = ParseID(headerEventID); !ok {
+			return nil
+		}
+	}
+	comments := clean(raw.Comments, maxReportComments)
+	if comments == "" {
+		return nil
+	}
+	return &UserReport{
+		EventID:  id,
+		Name:     clean(raw.Name, maxReportField),
+		Email:    clean(raw.Email, maxReportField),
+		Comments: comments,
+	}
 }
 
 type itemHeader struct {
@@ -277,8 +330,14 @@ func Parse(body []byte, now time.Time) Envelope {
 				AttachmentType: cleanLower(ih.AttachmentType, maxContentType, "event.attachment"),
 				Data:           itemBody,
 			})
+		case "user_report":
+			if ur := parseUserReport(hdr.EventID, itemBody); ur != nil {
+				env.UserReport = ur
+			} else {
+				env.Dropped++
+			}
 		case "transaction", "profile", "replay_event", "replay_recording",
-			"client_report", "check_in", "log", "statsd", "feedback", "user_report", "span":
+			"client_report", "check_in", "log", "statsd", "feedback", "span":
 			env.Dropped++
 		default:
 			env.Dropped++

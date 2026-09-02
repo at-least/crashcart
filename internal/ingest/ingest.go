@@ -163,6 +163,7 @@ type Result struct {
 	Invalid     int         // event items that did not parse
 	Sessions    int         // session rows written
 	Attachments int         // attachment rows written (the header event's, when it was stored)
+	UserReports int         // user_report items written (kept regardless of sampling)
 	NewIssues   []sentry.ID // fingerprints created by this envelope
 	Regressions []sentry.ID // fingerprints flipped to 'regression'
 	Jobs        int
@@ -358,7 +359,7 @@ type prepared struct {
 func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envelope, now time.Time) (Result, error) {
 	var res Result
 	res.Received = len(env.Events)
-	if len(env.Events) == 0 && len(env.Sessions) == 0 {
+	if len(env.Events) == 0 && len(env.Sessions) == 0 && env.UserReport == nil {
 		return res, nil
 	}
 
@@ -659,6 +660,24 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				}
 				res.Attachments = len(atts)
 			}
+		}
+
+		// A user_report is kept regardless of what happened to its event —
+		// sampled out, quota-dropped, or (the usual case: the SDK sends it in
+		// its own envelope after the app restarts) not arrived at all. It does
+		// not touch the daily quota (a report is not an event).
+		if ur := env.UserReport; ur != nil {
+			name, email, comments := ur.Name, ur.Email, ur.Comments
+			if in.Cfg.PIIRedact {
+				name, email = "", "" // the user's own name/email are PII like any other; an operator's redaction setting is not opted out of by the user typing it in
+				comments = RedactText(comments)
+			}
+			if err := q.UpsertUserReport(ctx, sqlc.UpsertUserReportParams{
+				ProjectID: p.ID, EventID: ur.EventID, Name: nilIfEmpty(name), Email: nilIfEmpty(email), Comments: comments,
+			}); err != nil {
+				return fmt.Errorf("upsert user report: %w", err)
+			}
+			res.UserReports = 1
 		}
 
 		sessions := make([]store.SessionInsert, 0, len(env.Sessions))

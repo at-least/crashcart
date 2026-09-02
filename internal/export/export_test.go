@@ -29,13 +29,15 @@ const envelope = `{"event_id":"a1b2","sent_at":"2026-08-20T10:00:00Z"}
 {"aggregates":[{"started":"2026-08-20T09:00:00Z","exited":90,"crashed":1,"errored":2}],"attrs":{"release":"2.4.0","environment":"production"}}
 `
 
-// withAttachment is an event envelope carrying a (fake) PNG screenshot; the
-// header's event_id names the event the attachment belongs to.
+// withAttachment is an event envelope carrying a (fake) PNG screenshot and
+// a user_report; the header's event_id names the event both belong to.
 const withAttachment = `{"event_id":"e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3","sent_at":"2026-08-20T10:00:00Z"}
 {"type":"event"}
 {"event_id":"e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3","timestamp":"2026-08-20T09:57:00Z","level":"error","platform":"android","release":"2.4.0","exception":{"values":[{"type":"IllegalStateException","value":"closed","stacktrace":{"frames":[{"module":"com.example.Cart","function":"pay","in_app":true}]}}]}}
 {"type":"attachment","length":12,"filename":"screenshot.png","content_type":"image/png","attachment_type":"event.attachment"}
 PNGPNGPNGPNG
+{"type":"user_report"}
+{"event_id":"e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3","name":"Alex","email":"alex@example.com","comments":"payment closed unexpectedly"}
 `
 
 // fill writes a project with events, sessions, an issue, a symbol file,
@@ -63,7 +65,7 @@ func fill(t *testing.T, st *store.Store) sqlc.Project {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res2.Stored != 1 || res2.Attachments != 1 {
+	if res2.Stored != 1 || res2.Attachments != 1 || res2.UserReports != 1 {
 		t.Fatalf("ingest with attachment: %+v", res2)
 	}
 	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0], Status: "resolved"}); err != nil {
@@ -149,7 +151,7 @@ func TestRoundTrip(t *testing.T) {
 	if !slices.Equal(seq, Tables) {
 		t.Fatalf("table order %v, want %v", seq, Tables)
 	}
-	want := map[string]int{"users": 1, "api_keys": 1, "projects": 1, "releases": 1, "issues": 2, "events": 3, "attachments": 1, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
+	want := map[string]int{"users": 1, "api_keys": 1, "projects": 1, "releases": 1, "issues": 2, "events": 3, "attachments": 1, "user_reports": 1, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s: %d rows, want %d", k, got[k], v)

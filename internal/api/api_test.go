@@ -688,3 +688,47 @@ func TestIgnoreAndAttachments(t *testing.T) {
 		t.Errorf("missing = %d", rec.Code)
 	}
 }
+
+// TestUserReports: a report shows on its event's detail and in the
+// project-level Feedback list, including one whose event was never
+// ingested at all — the list does not depend on the event existing.
+func TestUserReports(t *testing.T) {
+	e := newEnv(t)
+	p := e.createProject("demo")
+	now := time.Now().UTC()
+
+	id := "e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6"
+	body := "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\"}\n" + event(id, now.Add(-time.Minute).Format(time.RFC3339), "fatal", "2.4.1", "user-001", "NullPointerException", false, 142, "") + "\n" +
+		fmt.Sprintf(`{"type":"user_report"}`+"\n"+`{"event_id":%q,"name":"Alex","email":"alex@example.com","comments":"it crashed adding to cart"}`+"\n", id)
+	if res, err := e.in.Ingest(context.Background(), p, sentry.Parse([]byte(body), now), now); err != nil || res.Stored != 1 || res.UserReports != 1 {
+		t.Fatalf("ingest: %+v %v", res, err)
+	}
+	detail := e.get("/api/projects/demo/events/"+id, 200)
+	ur, _ := detail["user_report"].(map[string]any)
+	if ur["name"] != "Alex" || ur["email"] != "alex@example.com" || ur["comments"] != "it crashed adding to cart" || ur["event_id"] != id {
+		t.Fatalf("event's user_report = %v", detail["user_report"])
+	}
+
+	// A report whose event was never ingested: no event detail, but it
+	// still appears in the project's Feedback list.
+	orphanID := "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7"
+	orphan := "{\"event_id\":\"" + orphanID + "\"}\n" + fmt.Sprintf(`{"type":"user_report"}`+"\n"+`{"event_id":%q,"comments":"no event for this one"}`+"\n", orphanID)
+	if res, err := e.in.Ingest(context.Background(), p, sentry.Parse([]byte(orphan), now), now); err != nil || res.UserReports != 1 {
+		t.Fatalf("orphan ingest: %+v %v", res, err)
+	}
+	if rec, _ := e.do("GET", "/api/projects/demo/events/"+orphanID, nil); rec.Code != 404 {
+		t.Errorf("orphan event lookup = %d, want 404", rec.Code)
+	}
+	list := e.get("/api/projects/demo/user_reports", 200)
+	if list["total"] != float64(2) {
+		t.Fatalf("total = %v", list["total"])
+	}
+	rows, _ := list["user_reports"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("user_reports = %v", rows)
+	}
+	// Newest first: the orphan report was ingested after the first.
+	if rows[0].(map[string]any)["event_id"] != orphanID || rows[1].(map[string]any)["event_id"] != id {
+		t.Errorf("order = %v", rows)
+	}
+}

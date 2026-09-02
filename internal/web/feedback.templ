@@ -1,0 +1,47 @@
+package web
+
+import "github.com/at-least/crashcart/internal/db/sqlc"
+
+func feedbackEventHref(pg Page, r sqlc.UserReport) string {
+	return pg.S.Persist().Href("/events/" + string(r.EventID))
+}
+
+func feedbackName(r sqlc.UserReport) string {
+	if r.Name != nil && *r.Name != "" {
+		return *r.Name
+	}
+	return "(no name)"
+}
+
+// Feedback: every user_report of the project, newest first — including
+// ones whose event was sampled out or never arrived (there is no join to
+// events), so the link may lead to a 404 for those.
+templ Feedback(pg Page, rows []sqlc.UserReport) {
+	<h1 class="page-title">Feedback</h1>
+	if len(rows) == 0 {
+		@Empty("No feedback", "No user reports (Sentry's user_report envelope item) received yet.")
+	} else {
+		<div class="log-frame" data-slot="table-container">
+			<table class="log-table">
+				<thead>
+					<tr>
+						<th>Received</th>
+						<th>Name</th>
+						<th>Email</th>
+						<th>Comments</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, r := range rows {
+						<tr data-href={ feedbackEventHref(pg, r) } tabindex="0">
+							<td class="cell-time">{ ago(r.ReceivedAt) }</td>
+							<td class="mono-cell">{ feedbackName(r) }</td>
+							<td class="mono-cell">{ deref(r.Email) }</td>
+							<td class="min-w-0 break-words"><a class="msg" href={ u(feedbackEventHref(pg, r)) }>{ r.Comments }</a></td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	}
+}

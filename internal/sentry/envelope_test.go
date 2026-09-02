@@ -367,6 +367,47 @@ func TestParseAttachments(t *testing.T) {
 	}
 }
 
+func TestParseUserReport(t *testing.T) {
+	// The item's own event_id wins, and unrelated envelope items still parse.
+	env := Parse(envelope(`{"type":"event"}`, crashEvent,
+		`{"type":"user_report"}`, `{"event_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","name":"Alex","email":"alex@example.com","comments":"App crashed while adding to cart"}`), now)
+	if len(env.Events) != 1 || env.Dropped != 0 {
+		t.Fatalf("events=%d dropped=%d", len(env.Events), env.Dropped)
+	}
+	if env.UserReport == nil {
+		t.Fatal("no user report parsed")
+	}
+	ur := env.UserReport
+	if ur.EventID != "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" || ur.Name != "Alex" || ur.Email != "alex@example.com" || ur.Comments != "App crashed while adding to cart" {
+		t.Errorf("user report = %+v", ur)
+	}
+
+	// No event_id in the body: falls back to the envelope header's.
+	env = Parse(envelope(`{"type":"user_report"}`, `{"comments":"it broke"}`), now)
+	if env.UserReport == nil || env.UserReport.EventID != "11111111111111111111111111111111" {
+		t.Errorf("header fallback: %+v", env.UserReport)
+	}
+
+	// No comments: nothing worth storing, dropped and counted.
+	env = Parse(envelope(`{"type":"user_report"}`, `{"event_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","name":"Alex"}`), now)
+	if env.UserReport != nil || env.Dropped != 1 {
+		t.Errorf("no comments: report=%+v dropped=%d", env.UserReport, env.Dropped)
+	}
+
+	// Neither a body event_id nor a usable header one: dropped.
+	env = Parse([]byte("{\"event_id\":\"h1\"}\n{\"type\":\"user_report\"}\n{\"comments\":\"x\"}\n"), now)
+	if env.UserReport != nil || env.Dropped != 1 {
+		t.Errorf("no usable event id: report=%+v dropped=%d", env.UserReport, env.Dropped)
+	}
+
+	// Bounds: comments over the limit is truncated, not dropped.
+	long := strings.Repeat("x", maxReportComments+50)
+	env = Parse(envelope(`{"type":"user_report"}`, fmt.Sprintf(`{"event_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","comments":%q}`, long)), now)
+	if env.UserReport == nil || len(env.UserReport.Comments) != maxReportComments {
+		t.Errorf("comments bound: len=%d", len(env.UserReport.Comments))
+	}
+}
+
 // TestTruncateRunes: Truncate bounds by characters, never splitting a
 // multi-byte one, and leaves a string of few characters but many bytes alone.
 func TestTruncateRunes(t *testing.T) {

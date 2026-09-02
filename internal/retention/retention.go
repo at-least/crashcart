@@ -232,6 +232,11 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	if err != nil {
 		return fmt.Errorf("expire symbol files: %w", err)
 	}
+	// user_reports has no partition of its own to ride out with events (see
+	// schema.sql): its own cutoff, on the same retention window.
+	if _, err := st.SweepUserReports(ctx, now.Add(-retention)); err != nil {
+		return fmt.Errorf("expire user reports: %w", err)
+	}
 	for _, t := range rolled {
 		if _, err := st.Pool.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE bucket < $1", t), now.Add(-AggregateRetentionDays*24*time.Hour)); err != nil {
 			return fmt.Errorf("expire %s: %w", t, err)

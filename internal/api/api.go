@@ -78,6 +78,8 @@ func (h *Handler) routes() map[string]http.HandlerFunc {
 		"GET /api/projects/{slug}/events":                      h.listEvents,
 		"GET /api/projects/{slug}/events/{id}":                 h.getEvent,
 		"GET /api/projects/{slug}/events/{id}/attachments/{n}": h.getAttachment,
+		// user reports (Sentry's user feedback)
+		"GET /api/projects/{slug}/user_reports": h.listUserReports,
 		// releases
 		"GET /api/projects/{slug}/releases":           h.listReleases,
 		"GET /api/projects/{slug}/releases/{version}": h.getRelease,

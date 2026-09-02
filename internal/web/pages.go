@@ -667,6 +667,7 @@ type EventData struct {
 	User        []KV
 	Tags        map[string]string
 	Attachments []sqlc.ListAttachmentsRow
+	UserReport  *sqlc.UserReport
 }
 
 // isImage: an attachment the page shows inline (the browser renders it;
@@ -726,6 +727,12 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 	d := EventData{E: e, Payload: payload, Stacks: stacksOf(e, ev), Crumbs: crumbsOf(ev), Tags: tagsMap(e.Tags)}
 	d.Contexts, d.User = payloadContexts(payload)
 	if d.Attachments, err = w.Store.ListAttachments(ctx, sqlc.ListAttachmentsParams{ProjectID: p.ID, EventID: e.EventID, OccurredAt: e.OccurredAt}); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	if ur, err := w.Store.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: e.EventID}); err == nil {
+		d.UserReport = &ur
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		w.fail(rw, r, err)
 		return
 	}
@@ -903,4 +910,25 @@ func (w *Web) releaseNames(ctx context.Context, projectID int64) []string {
 		out = append(out, r.Release)
 	}
 	return out
+}
+
+// ── feedback (user reports) ────────────────────────────────────
+
+// feedbackPageSize bounds the Feedback page: reports are low-volume by
+// nature (one per event, user-submitted), so a single page with no
+// offset control is enough.
+const feedbackPageSize = 100
+
+func (w *Web) feedback(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	rows, err := w.Store.ListUserReports(r.Context(), sqlc.ListUserReportsParams{ProjectID: p.ID, Limit: feedbackPageSize})
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	pg := Page{S: state(r), Project: &p, Section: "feedback"}
+	w.page(rw, r, pg, func(pg Page) templ.Component { return Feedback(pg, rows) })
 }

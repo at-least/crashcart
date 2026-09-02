@@ -66,7 +66,7 @@ type navItem struct{ Section, Label, Path string }
 
 var navItems = []navItem{
 	{"overview", "Overview", ""}, {"issues", "Issues", "/issues"}, {"events", "Events", "/events"},
-	{"releases", "Releases", "/releases"}, {"settings", "Settings", "/settings"},
+	{"releases", "Releases", "/releases"}, {"feedback", "Feedback", "/feedback"}, {"settings", "Settings", "/settings"},
 }
 
 func u(s string) templ.SafeURL { return templ.SafeURL(s) }

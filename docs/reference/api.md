@@ -206,6 +206,30 @@ row: the exception chain with original **and** symbolicated frames,
 breadcrumbs, tags, user, contexts, and the raw payload as received
 (`null` for an event imported without one).
 
+The event detail also carries `user_report`: the Sentry `user_report`
+envelope item associated with this event (`event_id`, `name`, `email`,
+`comments`, `received_at`), or absent (the field is omitted) when the
+event has none.
+
+
+## User reports
+
+```
+GET /api/projects/{slug}/user_reports
+```
+
+Every `user_report` envelope item received by the project, newest first —
+including reports whose event was dropped by per-issue sampling, is still
+in flight, or never arrives at all: this list has no join to `events`, so
+it is the only place such a report surfaces.
+
+| Parameter | Meaning |
+|---|---|
+| `limit` | Page size, default 50 |
+| `offset` | Rows to skip, capped at 10000 |
+
+Response: `{"user_reports": [{"event_id","name","email","comments","received_at"}, ...], "total": n}`.
+
 
 ## Releases
 

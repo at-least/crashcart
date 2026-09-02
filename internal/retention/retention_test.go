@@ -401,3 +401,32 @@ func TestAttachmentPartitions(t *testing.T) {
 		t.Fatalf("row in %q (%v)", in, err)
 	}
 }
+
+// TestSweepExpiresOldUserReports: user_reports has no partition to ride
+// out with events (schema.sql) — Sweep cuts it on its own received_at
+// against the retention window, independent of whether its event exists.
+func TestSweepExpiresOldUserReports(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	ctx := context.Background()
+	cfg := config.Config{RetentionDays: 14}
+	now := time.Now().UTC()
+	add := func(name string, receivedAt time.Time) {
+		id := sentry.DerivedID([]byte(name))
+		if _, err := st.Pool.Exec(ctx, `INSERT INTO user_reports (project_id, event_id, received_at, comments) VALUES (1, $1, $2, 'x')`, id, receivedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("old", now.Add(-15*24*time.Hour))
+	add("recent", now.Add(-time.Hour))
+	if err := Sweep(ctx, st, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM user_reports").Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 1 {
+		t.Fatalf("user_reports left = %d, want 1", left)
+	}
+}

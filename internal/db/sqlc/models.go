@@ -553,6 +553,15 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+type UserReport struct {
+	ProjectID  int64     `json:"project_id"`
+	EventID    sentry.ID `json:"event_id"`
+	ReceivedAt time.Time `json:"received_at"`
+	Name       *string   `json:"name"`
+	Email      *string   `json:"email"`
+	Comments   string    `json:"comments"`
+}
+
 type UserSession struct {
 	TokenHash []byte    `json:"token_hash"`
 	UserID    int64     `json:"user_id"`

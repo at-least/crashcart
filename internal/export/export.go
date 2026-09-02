@@ -7,8 +7,8 @@
 // Format (one JSON object per line):
 //
 //	{"t":"_meta","format":<Format>,"exported_at":"<RFC3339>","app":"crashcart"}
-//	{"t":"projects", ...}   then issues, events, attachments, sessions,
-//	                        symbol_files, alert_rules, alert_channels (see Tables)
+//	{"t":"projects", ...}   then issues, events, attachments, user_reports,
+//	                        sessions, symbol_files, alert_rules, alert_channels (see Tables)
 //
 // Rows refer to their project by "project": "<slug>" — never by id, so a
 // dump loads into any database. Events and sessions carry their natural
@@ -21,8 +21,9 @@
 //
 // Import is idempotent: events, attachments and sessions are inserted with
 // ON CONFLICT DO NOTHING, everything else is upserted on its natural key
-// (issue counts are replaced, not added), alert channels are inserted only
-// when no identical (project, kind, config) row exists.
+// (issue counts are replaced, not added; a user_reports row is replaced
+// wholesale, as ingest itself does on a resend), alert channels are
+// inserted only when no identical (project, kind, config) row exists.
 package export
 
 import (
@@ -50,7 +51,7 @@ const Format = 3 // 3: no triaged status; 2: transaction / culprit / unhandled_s
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
-var Tables = []string{"users", "api_keys", "projects", "releases", "issues", "events", "attachments", "sessions", "symbol_files", "alert_rules", "alert_channels"}
+var Tables = []string{"users", "api_keys", "projects", "releases", "issues", "events", "attachments", "user_reports", "sessions", "symbol_files", "alert_rules", "alert_channels"}
 
 // Options narrows an export.
 type Options struct {
@@ -186,6 +187,16 @@ type attachmentRow struct {
 	Data           []byte `json:"data"` // base64
 }
 
+type userReportRow struct {
+	T          string  `json:"t"`
+	Project    string  `json:"project"`
+	EventID    string  `json:"event_id"`
+	Name       *string `json:"name,omitempty"`
+	Email      *string `json:"email,omitempty"`
+	Comments   string  `json:"comments"`
+	ReceivedAt ts      `json:"received_at"`
+}
+
 type sessionRow struct {
 	T           string  `json:"t"`
 	Project     string  `json:"project"`
@@ -271,6 +282,7 @@ const (
 	os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
 	symbols, payload FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
 	selectAttachments = `SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data FROM attachments WHERE project_id = $1 ORDER BY occurred_at, event_id, n`
+	selectUserReports = `SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 ORDER BY event_id`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectReleases    = `SELECT project_id, release, platforms, first_seen FROM releases WHERE project_id = $1 ORDER BY release`
 	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at
@@ -366,6 +378,16 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 			})
 		}, p.ID); err != nil {
 			return fmt.Errorf("export attachments: %w", err)
+		}
+	}
+	for _, p := range projects {
+		if err := stream(ctx, tx, selectUserReports, func(r sqlc.UserReport) error {
+			return enc.Encode(userReportRow{
+				T: "user_reports", Project: p.Slug, EventID: string(r.EventID), Name: r.Name, Email: r.Email,
+				Comments: r.Comments, ReceivedAt: at(r.ReceivedAt),
+			})
+		}, p.ID); err != nil {
+			return fmt.Errorf("export user_reports: %w", err)
 		}
 	}
 	for _, p := range projects {
@@ -520,6 +542,10 @@ const (
 	    created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
 	insertAttachment = `INSERT INTO attachments (occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (project_id, event_id, occurred_at, n) DO NOTHING`
+	upsertUserReport = `INSERT INTO user_reports (project_id, event_id, received_at, name, email, comments)
+	VALUES ($1,$2,$3,$4,$5,$6)
+	ON CONFLICT (project_id, event_id) DO UPDATE SET
+	    received_at = EXCLUDED.received_at, name = EXCLUDED.name, email = EXCLUDED.email, comments = EXCLUDED.comments`
 	upsertRelease = `INSERT INTO releases (project_id, release, platforms, first_seen) VALUES ($1,$2,$3,$4)
 	ON CONFLICT (project_id, release) DO UPDATE SET
 	    platforms = (SELECT array_agg(DISTINCT x ORDER BY x) FROM unnest(releases.platforms || EXCLUDED.platforms) AS x),
@@ -786,6 +812,23 @@ func (im *importer) line(b []byte) error {
 		}
 		im.batch.Queue(insertAttachment, r.OccurredAt.Time, pid, eid, r.N, orStr(r.Filename, "attachment"), orStr(r.ContentType, "application/octet-stream"),
 			orStr(r.AttachmentType, "event.attachment"), r.Size, r.Data)
+	case "user_reports":
+		var r userReportRow
+		if err := json.Unmarshal(b, &r); err != nil {
+			return err
+		}
+		pid, err := im.project(r.Project)
+		if err != nil {
+			return err
+		}
+		if r.EventID == "" {
+			return errors.New("user_reports row needs event_id")
+		}
+		eid, ok := sentry.ParseID(r.EventID)
+		if !ok {
+			return fmt.Errorf("user_reports row: event_id %q is not a 32-hex id", r.EventID)
+		}
+		im.batch.Queue(upsertUserReport, pid, eid, tsOrNow(r.ReceivedAt), r.Name, r.Email, r.Comments)
 	case "sessions":
 		var r sessionRow
 		if err := json.Unmarshal(b, &r); err != nil {

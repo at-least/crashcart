@@ -25,6 +25,7 @@ in `internal/db/schema.sql`.
 | **Culprit** | Sentry's stack culprit, `module-or-file in function` (`sentry.Culprit`); shown under the title | ~~location~~ |
 | **Session** | One app run / page load reported for release health (`session` / `sessions` items) | |
 | **Attachment** | A file the SDK attached to an event (an envelope `attachment` item): a screenshot, a view hierarchy, a log | ~~upload~~ ~~asset~~ |
+| **User Feedback** | A user-typed name/email/comments about a crash (an envelope `user_report` item), tied to one event | ~~user report~~ (only as the wire item type) ~~feedback~~ (Sentry's newer, session-replay-linked item; not accepted) |
 
 ## Event: level and handled
 

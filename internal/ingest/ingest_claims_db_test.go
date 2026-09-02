@@ -489,3 +489,86 @@ func TestStoreEndpointMatchesEnvelope(t *testing.T) {
 		t.Fatalf("one issue with both events: %d", n)
 	}
 }
+
+// userReportBody builds a user_report envelope item.
+func userReportBody(eventID, comments string) string {
+	return fmt.Sprintf(`{"event_id":%q,"name":"Alex","email":"alex@example.com","comments":%q}`, eventID, comments)
+}
+
+// TestIngestUserReportKeptRegardlessOfEvent: a user_report is stored even
+// when it arrives alone (no event item at all — the usual case, sent
+// after the app restarts) or when its event was sampled out; a resend
+// overwrites the same row rather than duplicating it.
+func TestIngestUserReportKeptRegardlessOfEvent(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st, "ur1")
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+
+	// A report-only envelope: no event item, and this event was never
+	// ingested at all. It is still stored.
+	id := hexID("ur-event-1")
+	body := "{\"event_id\":\"" + id + "\"}\n{\"type\":\"user_report\"}\n" + userReportBody(id, "it crashed") + "\n"
+	res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now)
+	if err != nil || res.UserReports != 1 || res.Stored != 0 {
+		t.Fatalf("report-only envelope: %+v %v", res, err)
+	}
+	ur, err := st.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: sentry.ID(id)})
+	if err != nil || ur.Comments != "it crashed" || ur.Name == nil || *ur.Name != "Alex" || ur.Email == nil || *ur.Email != "alex@example.com" {
+		t.Fatalf("stored report = %+v %v", ur, err)
+	}
+
+	// A resend overwrites the same row, not a duplicate.
+	body = "{\"event_id\":\"" + id + "\"}\n{\"type\":\"user_report\"}\n" + userReportBody(id, "it crashed again") + "\n"
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.UserReports != 1 {
+		t.Fatalf("resend: %+v %v", res, err)
+	}
+	if n := count(t, st, "SELECT count(*) FROM user_reports WHERE project_id = $1", p.ID); n != 1 {
+		t.Fatalf("resend duplicated: %d rows", n)
+	}
+	if ur, err = st.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: sentry.ID(id)}); err != nil || ur.Comments != "it crashed again" {
+		t.Fatalf("resend did not overwrite: %+v %v", ur, err)
+	}
+
+	// An event that per-issue sampling drops: the report on it survives.
+	p.SampleKeepFirst, p.SampleRate = 0, 0
+	id2 := hexID("ur-event-2")
+	ts := now.Add(-time.Minute).Format(time.RFC3339)
+	ev := fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":"error","platform":"android","exception":{"values":[{"type":"E","value":"v","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id2, ts)
+	body = "{\"event_id\":\"" + id2 + "\"}\n{\"type\":\"event\"}\n" + ev + "\n{\"type\":\"user_report\"}\n" + userReportBody(id2, "sampled but keep the feedback") + "\n"
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Sampled != 1 || res.Stored != 0 || res.UserReports != 1 {
+		t.Fatalf("sampled-out event: %+v %v", res, err)
+	}
+	if ur, err = st.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: sentry.ID(id2)}); err != nil || ur.Comments != "sampled but keep the feedback" {
+		t.Fatalf("sampled-out report = %+v %v", ur, err)
+	}
+}
+
+// TestIngestUserReportPIIRedact: PII_REDACT nulls name/email and scrubs
+// comments, the same policy the rest of ingest applies — the user's own
+// free-text input is not exempt from an operator's redaction setting.
+func TestIngestUserReportPIIRedact(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st, "ur-pii")
+	in := &Ingester{Store: st, Cfg: config.Config{PIIRedact: true}, Log: slog.Default()}
+	now := time.Now().UTC()
+	id := hexID("ur-pii-event")
+	body := "{\"event_id\":\"" + id + "\"}\n{\"type\":\"user_report\"}\n" +
+		userReportBody(id, "contact me at dana@example.com about this") + "\n"
+	res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now)
+	if err != nil || res.UserReports != 1 {
+		t.Fatalf("ingest: %+v %v", res, err)
+	}
+	ur, err := st.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: sentry.ID(id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ur.Name != nil || ur.Email != nil {
+		t.Errorf("name/email not nulled: name=%v email=%v", ur.Name, ur.Email)
+	}
+	if strings.Contains(ur.Comments, "@example.com") {
+		t.Errorf("comments not redacted: %q", ur.Comments)
+	}
+}

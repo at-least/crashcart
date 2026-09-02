@@ -151,6 +151,27 @@ CREATE TABLE attachments (
 ALTER TABLE attachments ALTER COLUMN data SET STORAGE EXTERNAL;
 CREATE TABLE attachments_default PARTITION OF attachments DEFAULT;
 
+-- ── user reports (Sentry's user feedback) ───────────────────────────────
+-- The envelope's `user_report` item: a user-typed name/email/comments about
+-- the crash, tied to one event. Not partitioned and not keyed to the
+-- event's occurred_at: a report normally arrives in its own envelope after
+-- the app restarts, with no accompanying event item, so there is no
+-- occurred_at to partition by at ingest. Kept even when the referenced
+-- event was itself sampled out, is still in flight, or never arrives — at
+-- low sample rates that is exactly the feedback worth keeping — so it has
+-- its own expiry (SweepUserReports) rather than riding out with events.
+-- One report per event, as the protocol requires: a resend overwrites.
+CREATE TABLE user_reports (
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id    UUID NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(), -- ingest time; retention's own clock (no join to events)
+    name        TEXT,
+    email       TEXT,
+    comments    TEXT NOT NULL,
+    PRIMARY KEY (project_id, event_id)
+);
+CREATE INDEX user_reports_project_received ON user_reports (project_id, received_at DESC);
+
 -- ── sessions (release health) ──────────────────────────────────────────
 
 CREATE TABLE sessions (
