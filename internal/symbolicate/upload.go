@@ -17,11 +17,13 @@ import (
 	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
-// MaxUpload caps one symbol upload (and one zip entry); a zip may unpack
-// to MaxZipTotal over at most MaxZipEntries files (a 50 MB deflate of
-// thousands of 50 MB entries is not a symbol upload).
+// MaxUpload caps one symbol upload (and one zip entry) — large enough for
+// a proguard mapping.txt from a big multi-module Android app, which can
+// legitimately run into the hundreds of MB. A zip may unpack to
+// MaxZipTotal over at most MaxZipEntries files (a 500 MB deflate of
+// thousands of 500 MB entries is not a symbol upload).
 const (
-	MaxUpload     = 50 << 20
+	MaxUpload     = 500 << 20
 	MaxZipTotal   = 4 * MaxUpload
 	MaxZipEntries = 256
 )
@@ -64,7 +66,7 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 		return nil, UploadError("empty file")
 	}
 	if len(data) > MaxUpload {
-		return nil, UploadError("upload exceeds 50 MB")
+		return nil, UploadError(fmt.Sprintf("upload exceeds %d MB", MaxUpload>>20))
 	}
 	if kind != "" && !kinds[kind] {
 		return nil, UploadError("kind must be proguard, sourcemap or dsym")
@@ -86,7 +88,7 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 			declared += f.UncompressedSize64
 		}
 		if declared > MaxZipTotal {
-			return nil, UploadError("zip unpacks to more than 200 MB")
+			return nil, UploadError(fmt.Sprintf("zip unpacks to more than %d MB", MaxZipTotal>>20))
 		}
 		total := 0
 		for _, f := range zr.File {
@@ -110,7 +112,7 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 				return nil, UploadError("zip entry too large: " + name)
 			}
 			if total += len(content); total > MaxZipTotal {
-				return nil, UploadError("zip unpacks to more than 200 MB")
+				return nil, UploadError(fmt.Sprintf("zip unpacks to more than %d MB", MaxZipTotal>>20))
 			}
 			if len(content) == 0 {
 				continue
@@ -238,7 +240,7 @@ func ReadMultipartUpload(w http.ResponseWriter, r *http.Request) (name string, d
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			return "", nil, UploadError("upload exceeds 50 MB")
+			return "", nil, UploadError(fmt.Sprintf("upload exceeds %d MB", MaxUpload>>20))
 		}
 		return "", nil, UploadError("multipart form expected: " + err.Error())
 	}
@@ -252,7 +254,7 @@ func ReadMultipartUpload(w http.ResponseWriter, r *http.Request) (name string, d
 		return "", nil, err
 	}
 	if len(data) > MaxUpload {
-		return "", nil, UploadError("upload exceeds 50 MB")
+		return "", nil, UploadError(fmt.Sprintf("upload exceeds %d MB", MaxUpload>>20))
 	}
 	return fh.Filename, data, nil
 }

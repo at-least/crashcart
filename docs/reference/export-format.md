@@ -13,8 +13,8 @@ code.
   terminated. Blank lines are ignored.
 - Every object has a string field `"t"` naming its kind. The first line is
   `_meta`; the rest are table rows.
-- A reader must accept lines up to 96 MiB. Writers must not emit longer
-  ones (a symbol file is at most 50 MB, ~67 MB as base64 on one line; an
+- A reader must accept lines up to ~675 MiB. Writers must not emit longer
+  ones (a symbol file is at most 500 MB, ~667 MB as base64 on one line; an
   event payload is at most a 20 MB envelope).
 - Writers must not HTML-escape JSON (`<`, `>`, `&` are written verbatim).
 

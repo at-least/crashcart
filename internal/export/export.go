@@ -45,6 +45,7 @@ import (
 	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
+	"github.com/at-least/crashcart/internal/symbolicate"
 )
 
 // Format is the NDJSON format version written in the _meta line.
@@ -59,11 +60,14 @@ type Options struct {
 	Project string // slug; "" = all
 }
 
-// maxLine is the longest NDJSON line import accepts: a symbol file is at
-// most symbolicate.MaxUpload (50 MB) → ~67 MB of base64 on one line; an
-// event payload is at most a 20 MB envelope, an attachment
-// sentry.MaxAttachmentSize.
-const maxLine = 96 << 20
+// maxLine is the longest NDJSON line import accepts: a symbol file, the
+// largest row, is at most symbolicate.MaxUpload, and base64 (a ~4/3
+// expansion) is the biggest single field on its line — the fixed
+// remainder covers the row's other JSON fields (project slug, filename,
+// kind, release, debug_id, size, uploaded_at), never more than a few KB.
+// An event payload is at most a 20 MB envelope, an attachment
+// sentry.MaxAttachmentSize — both well under a symbol file's own bound.
+const maxLine = symbolicate.MaxUpload*4/3 + (8 << 20)
 
 // batchSize is how many events / sessions / upserts go in one round trip.
 const batchSize = 500
