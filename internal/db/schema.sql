@@ -76,6 +76,23 @@ CREATE TABLE projects (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- project_keys: DSN keys Rotate has retired but nobody has deleted yet.
+-- The current key stays the plain projects.public_key column (always
+-- exactly one, never removable) so a project can never be left without a
+-- working key; rotating pushes the outgoing key here instead of
+-- discarding it, and ingest accepts either the current key or a row here
+-- until it is explicitly deleted. Hard-deleted, not soft-revoked: these
+-- are not audited secrets (already cleartext, already living in shipped
+-- binaries) — last_used_at is what answers "is it safe to remove", not a
+-- revocation trail.
+CREATE TABLE project_keys (
+    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    project_id   BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    public_key   TEXT NOT NULL UNIQUE,
+    retired_at   TIMESTAMPTZ NOT NULL DEFAULT now(),  -- when Rotate pushed it here, not when it was first issued
+    last_used_at TIMESTAMPTZ
+);
+
 -- ── events ─────────────────────────────────────────────────────────────
 
 -- Partitioned by week of occurred_at (internal/retention creates the

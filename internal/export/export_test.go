@@ -82,6 +82,10 @@ func fill(t *testing.T, st *store.Store) sqlc.Project {
 	if res3.Monitors != 1 || res3.CheckIns != 1 {
 		t.Fatalf("ingest check-in: %+v", res3)
 	}
+	// A rotation, so the export carries one retired-but-still-valid key.
+	if _, err := st.RotateProjectKey(ctx, p.ID, "fedcba9876543210fedcba9876543210"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0], Status: "resolved"}); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +170,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("table order %v, want %v", seq, Tables)
 	}
 	want := map[string]int{
-		"users": 1, "api_keys": 1, "projects": 1, "releases": 1, "issues": 2, "events": 3, "attachments": 1, "user_reports": 1,
+		"users": 1, "api_keys": 1, "projects": 1, "project_keys": 1, "releases": 1, "issues": 2, "events": 3, "attachments": 1, "user_reports": 1,
 		"monitors": 1, "monitor_checkins": 1, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1,
 	}
 	for k, v := range want {

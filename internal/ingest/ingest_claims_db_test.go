@@ -802,3 +802,94 @@ func TestIngestMonitorFailureAndRecoveryFireOnce(t *testing.T) {
 		t.Fatalf("monitor_recovered jobs = %d, want 1", n)
 	}
 }
+
+// TestRetiredKeyKeepsAuthenticating: Rotate does not invalidate the
+// outgoing key — it keeps authenticating (touched, throttled) until its
+// project_keys row is explicitly deleted, at which point it stops within
+// the ingest cache TTL (a fresh Ingester per step sidesteps that cache).
+func TestRetiredKeyKeepsAuthenticating(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "rotate-app", Name: "App", PublicKey: "oldkey"})
+	now := time.Now().UTC().Format(time.RFC3339)
+	body := envelope(crash("1.0", now, 1))
+
+	do := func(key string) int {
+		in := &Ingester{Store: st, Cfg: config.Config{RateLimit: 0}, Log: slog.Default()}
+		req := newRequest("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), body)
+		req.Header.Set("X-Sentry-Auth", "Sentry sentry_key="+key+", sentry_version=7")
+		rec := newRecorder()
+		in.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	np, err := st.RotateProjectKey(ctx, p.ID, "newkey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if np.PublicKey != "newkey" {
+		t.Fatalf("current key = %q", np.PublicKey)
+	}
+	if c := do("newkey"); c != 200 {
+		t.Fatalf("new key → %d", c)
+	}
+	if c := do("oldkey"); c != 200 {
+		t.Fatalf("retired key should still authenticate: %d", c)
+	}
+
+	keys, err := st.ListProjectKeys(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].PublicKey != "oldkey" || keys[0].LastUsedAt == nil {
+		t.Fatalf("retired keys = %+v", keys)
+	}
+
+	if n, err := st.DeleteProjectKey(ctx, sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: keys[0].ID}); err != nil || n != 1 {
+		t.Fatalf("delete: n=%d err=%v", n, err)
+	}
+	if c := do("oldkey"); c != 401 {
+		t.Fatalf("deleted key should stop authenticating: %d", c)
+	}
+	if c := do("newkey"); c != 200 {
+		t.Fatalf("current key still works after old one deleted: %d", c)
+	}
+}
+
+// TestRotateTwiceListsBothRetiredKeys: two rotations produce two
+// independently listed and independently deletable retired rows.
+func TestRotateTwiceListsBothRetiredKeys(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "rotate-twice", Name: "App", PublicKey: "k0"})
+	if _, err := st.RotateProjectKey(ctx, p.ID, "k1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RotateProjectKey(ctx, p.ID, "k2"); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := st.ListProjectKeys(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("retired keys = %+v, want 2 (k0 and k1)", keys)
+	}
+	var got []string
+	for _, k := range keys {
+		got = append(got, k.PublicKey)
+	}
+	if !strings.Contains(strings.Join(got, ","), "k0") || !strings.Contains(strings.Join(got, ","), "k1") {
+		t.Fatalf("retired keys = %v, want k0 and k1", got)
+	}
+	if n, err := st.DeleteProjectKey(ctx, sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: keys[0].ID}); err != nil || n != 1 {
+		t.Fatalf("delete one: n=%d err=%v", n, err)
+	}
+	keys, err = st.ListProjectKeys(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("after deleting one, retired keys = %+v, want 1", keys)
+	}
+}

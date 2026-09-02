@@ -72,10 +72,28 @@ templ Settings(pg Page, d SettingsData) {
 						<div><div class="meta-k">Project id</div><code class="code-inline">{ i64(pg.Project.ID) }</code></div>
 					</div>
 					<div>
-						<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-post={ pg.S.Href("/settings/rotate-key") } hx-confirm="Rotate the DSN key? Apps still using the current key stop reporting within seconds." hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">Rotate key</button>
-						<span class="ml-2 text-xs text-muted-foreground">Use when the key leaked or the project is being flooded; ship the new DSN with the next release.</span>
+						<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-post={ pg.S.Href("/settings/rotate-key") } hx-confirm="Issue a new DSN key? The current key keeps working — it moves to Previous keys below until you delete it." hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">Rotate key</button>
+						<span class="ml-2 text-xs text-muted-foreground">Use when the key leaked or the project is being flooded; ship the new DSN with the next release, then delete the old one once nothing uses it.</span>
 					</div>
 				</section>
+			</div>
+		</section>
+		<section class="settings-section">
+			<h2 class="section-title">Previous keys</h2>
+			<p class="section-desc">DSN keys Rotate has retired — still valid until you delete them. "Last used" tells you whether anything still relies on one.</p>
+			<div class="mt-3 grid gap-2">
+				if len(d.RetiredKeys) == 0 {
+					<p class="card-empty">No retired keys. Rotate moves the current key here instead of discarding it.</p>
+				}
+				for _, k := range d.RetiredKeys {
+					<div data-slot="card" data-size="sm" class="settings-row flex-row">
+						<div class="min-w-0">
+							<p class="settings-title"><code class="code-inline break-all">{ k.PublicKey }</code></p>
+							<p class="settings-meta">{ "retired " + ago(k.RetiredAt) + " · " + keyUsed(k.LastUsedAt) }</p>
+						</div>
+						<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-delete={ pg.S.Href("/settings/keys/" + i64(k.ID)) } hx-confirm="Delete this key? It stops authenticating within a few seconds (the ingest cache), not instantly." hx-target="#settings" hx-select="#settings" hx-swap="outerHTML" hx-push-url="false">Delete</button>
+					</div>
+				}
 			</div>
 		</section>
 		<section class="settings-section">

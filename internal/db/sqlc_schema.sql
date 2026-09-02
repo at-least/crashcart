@@ -59,6 +59,14 @@ CREATE TABLE projects (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE project_keys (
+    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    project_id   BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    public_key   TEXT NOT NULL UNIQUE,
+    retired_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ
+);
+
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,

@@ -52,6 +52,23 @@ func (q *Queries) DeleteProject(ctx context.Context, id int64) error {
 	return err
 }
 
+const deleteProjectKey = `-- name: DeleteProjectKey :execrows
+DELETE FROM project_keys WHERE project_id = $1 AND id = $2
+`
+
+type DeleteProjectKeyParams struct {
+	ProjectID int64 `json:"project_id"`
+	ID        int64 `json:"id"`
+}
+
+func (q *Queries) DeleteProjectKey(ctx context.Context, arg DeleteProjectKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteProjectKey, arg.ProjectID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getProject = `-- name: GetProject :one
 SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects WHERE slug = $1
 `
@@ -115,6 +132,66 @@ func (q *Queries) GetProjectByKey(ctx context.Context, publicKey string) (Projec
 	return i, err
 }
 
+const getProjectByRetiredKey = `-- name: GetProjectByRetiredKey :one
+SELECT k.id AS key_id, p.id, p.slug, p.name, p.platform, p.public_key, p.sample_keep_first, p.sample_rate, p.daily_quota, p.created_at FROM project_keys k JOIN projects p ON p.id = k.project_id WHERE k.public_key = $1
+`
+
+type GetProjectByRetiredKeyRow struct {
+	KeyID   int64   `json:"key_id"`
+	Project Project `json:"project"`
+}
+
+// The ingest fallback when a key isn't the current one: still valid until
+// its project_keys row is deleted. key_id is what TouchProjectKey needs.
+func (q *Queries) GetProjectByRetiredKey(ctx context.Context, publicKey string) (GetProjectByRetiredKeyRow, error) {
+	row := q.db.QueryRow(ctx, getProjectByRetiredKey, publicKey)
+	var i GetProjectByRetiredKeyRow
+	err := row.Scan(
+		&i.KeyID,
+		&i.Project.ID,
+		&i.Project.Slug,
+		&i.Project.Name,
+		&i.Project.Platform,
+		&i.Project.PublicKey,
+		&i.Project.SampleKeepFirst,
+		&i.Project.SampleRate,
+		&i.Project.DailyQuota,
+		&i.Project.CreatedAt,
+	)
+	return i, err
+}
+
+const listProjectKeys = `-- name: ListProjectKeys :many
+SELECT id, project_id, public_key, retired_at, last_used_at FROM project_keys WHERE project_id = $1 ORDER BY retired_at DESC
+`
+
+// A project's retired-but-still-valid keys, newest retirement first.
+func (q *Queries) ListProjectKeys(ctx context.Context, projectID int64) ([]ProjectKey, error) {
+	rows, err := q.db.Query(ctx, listProjectKeys, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectKey{}
+	for rows.Next() {
+		var i ProjectKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.PublicKey,
+			&i.RetiredAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjects = `-- name: ListProjects :many
 SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at FROM projects ORDER BY name
 `
@@ -149,6 +226,18 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 	return items, nil
 }
 
+const retireProjectKey = `-- name: RetireProjectKey :exec
+INSERT INTO project_keys (project_id, public_key) SELECT p.id, p.public_key FROM projects p WHERE p.id = $1
+`
+
+// The current key of a project, pushed into project_keys before Rotate
+// overwrites it — it keeps authenticating (GetProjectByRetiredKey) until
+// someone deletes the row explicitly.
+func (q *Queries) RetireProjectKey(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, retireProjectKey, id)
+	return err
+}
+
 const rotateProjectKey = `-- name: RotateProjectKey :one
 UPDATE projects SET public_key = $2 WHERE id = $1 RETURNING id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at
 `
@@ -158,7 +247,8 @@ type RotateProjectKeyParams struct {
 	PublicKey string `json:"public_key"`
 }
 
-// A new DSN key: the old one stops authenticating within the ingest cache TTL.
+// The raw column update; store.RotateProjectKey wraps this in a
+// transaction that first retires the outgoing key into project_keys.
 func (q *Queries) RotateProjectKey(ctx context.Context, arg RotateProjectKeyParams) (Project, error) {
 	row := q.db.QueryRow(ctx, rotateProjectKey, arg.ID, arg.PublicKey)
 	var i Project
@@ -174,6 +264,19 @@ func (q *Queries) RotateProjectKey(ctx context.Context, arg RotateProjectKeyPara
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const touchProjectKey = `-- name: TouchProjectKey :exec
+UPDATE project_keys SET last_used_at = now()
+WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - INTERVAL '1 minute')
+`
+
+// Records use of a retired key at most once a minute (one write per key
+// per minute, not per request) — the fact that answers "is it safe to
+// delete this now".
+func (q *Queries) TouchProjectKey(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, touchProjectKey, id)
+	return err
 }
 
 const updateProject = `-- name: UpdateProject :one

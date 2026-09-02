@@ -13,7 +13,9 @@ crashcart seed [slug]                       write a week of demo data (default p
 crashcart export [slug]                     stream NDJSON to stdout (all projects, or one)
 crashcart import                            load NDJSON from stdin (idempotent)
 crashcart project <slug> <name> [platform]  create a project and print its DSN
-crashcart rotate-key <slug>                 issue a new DSN key (the old one stops within seconds)
+crashcart rotate-key <slug>                 issue a new DSN key (the old one keeps working until deleted)
+crashcart project-keys list <slug>          list a project's retired-but-still-valid DSN keys
+crashcart project-keys delete <slug> <id>   delete a retired DSN key (stops it within the ingest cache TTL)
 crashcart user add <email> [name]           create a viewer account (password from CRASHCART_PASSWORD, else prompted)
 crashcart user passwd <email>               set a viewer account's password (same source)
 crashcart apikey create <name>              create an API key and print its secret (shown once)
@@ -85,8 +87,9 @@ Creates a project and prints its id and DSN (using `PUBLIC_URL` when set).
 
 ## `rotate-key <slug>`
 
-Generates a new DSN key and prints the new DSN. The old key keeps working
-for the few seconds the server caches project keys, then is refused.
+Generates a new current DSN key and prints the new DSN. The old key is not
+invalidated — it keeps authenticating, listed under `project-keys list`,
+until explicitly deleted with `project-keys delete`.
 
 ## `symbolicate`
 

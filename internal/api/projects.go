@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -218,17 +219,66 @@ func isNumeric(s string) bool {
 	return true
 }
 
-// rotateKey issues a new DSN key. The old key stops authenticating within
-// the ingest cache TTL; ship the new DSN with the next app release.
+// rotateKey issues a new current DSN key; the old one keeps authenticating
+// (listed under GET .../keys) until explicitly deleted.
 func (h *Handler) rotateKey(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.project(w, r)
 	if !ok {
 		return
 	}
-	np, err := h.Store.RotateProjectKey(r.Context(), sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: auth.NewProjectKey()})
+	np, err := h.Store.RotateProjectKey(r.Context(), p.ID, auth.NewProjectKey())
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, h.projectOut(r, np))
+}
+
+// projectKeyOut is a retired-but-still-valid DSN key.
+type projectKeyOut struct {
+	ID         int64      `json:"id"`
+	DSN        string     `json:"dsn"`
+	RetiredAt  time.Time  `json:"retired_at"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+}
+
+func (h *Handler) listProjectKeys(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	keys, err := h.Store.ListProjectKeys(r.Context(), p.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	out := make([]projectKeyOut, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, projectKeyOut{ID: k.ID, DSN: DSN(h.Cfg, r, sqlc.Project{ID: p.ID, PublicKey: k.PublicKey}), RetiredAt: k.RetiredAt.UTC(), LastUsedAt: k.LastUsedAt})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
+}
+
+// deleteProjectKey deletes a retired key; it stops authenticating within
+// the ingest cache TTL, not instantly.
+func (h *Handler) deleteProjectKey(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.project(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid key id")
+		return
+	}
+	n, err := h.Store.DeleteProjectKey(r.Context(), sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: id})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if n == 0 {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

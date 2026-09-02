@@ -62,13 +62,15 @@ func RoutePatterns() []string {
 func (h *Handler) routes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		// projects
-		"GET /api/projects":                    h.listProjects,
-		"POST /api/projects":                   h.createProject,
-		"POST /api/projects/{slug}/rotate-key": h.rotateKey,
-		"GET /api/projects/{slug}":             h.getProject,
-		"PATCH /api/projects/{slug}":           h.updateProject,
-		"DELETE /api/projects/{slug}":          h.deleteProject,
-		"GET /api/projects/{slug}/overview":    h.overview,
+		"GET /api/projects":                     h.listProjects,
+		"POST /api/projects":                    h.createProject,
+		"POST /api/projects/{slug}/rotate-key":  h.rotateKey,
+		"GET /api/projects/{slug}/keys":         h.listProjectKeys,
+		"DELETE /api/projects/{slug}/keys/{id}": h.deleteProjectKey,
+		"GET /api/projects/{slug}":              h.getProject,
+		"PATCH /api/projects/{slug}":            h.updateProject,
+		"DELETE /api/projects/{slug}":           h.deleteProject,
+		"GET /api/projects/{slug}/overview":     h.overview,
 		// issues
 		"GET /api/projects/{slug}/issues":                 h.listIssues,
 		"POST /api/projects/{slug}/issues/bulk":           h.bulkIssues,

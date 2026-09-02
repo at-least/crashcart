@@ -35,8 +35,13 @@ behind a domain), set [`PUBLIC_URL`](/deploy/configuration).
 ### Rotating the key
 
 **Settings → Rotate key** in the viewer, or `crashcart rotate-key shop-ios`.
-The old key stops working within seconds, so apps in the field keep
-failing until they ship a build with the new DSN.
+This issues a new *current* key without invalidating the old one — the
+old key keeps authenticating, listed under **Previous keys** in
+Settings (`crashcart project-keys list shop-ios` on the CLI), until you
+delete it. Ship the new DSN with the next release, let old builds phase
+out, then delete the old key once its "last used" stops advancing —
+deletion itself takes effect within a few seconds (the ingest cache),
+not instantly.
 
 ## One project per platform
 

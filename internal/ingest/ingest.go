@@ -47,7 +47,7 @@ const (
 	MaxBody      = 20 << 20 // 20 MB envelope
 	MaxEvents    = sentry.MaxEvents
 	WriteTimeout = 30 * time.Second // the write outlives a client that hangs up
-	keyCacheTTL  = 10 * time.Second // a rotated DSN key stops working within this
+	keyCacheTTL  = 10 * time.Second // a deleted DSN key stops working within this (rotating no longer invalidates the old key)
 	// SymbolicateBudget is how long one envelope may spend in the
 	// Symbolicator (the dSYM sidecar) before the remaining native events
 	// are left to the job worker.
@@ -197,9 +197,21 @@ func (in *Ingester) Project(r *http.Request) (sqlc.Project, error) {
 	if !ok || time.Now().After(c.exp) {
 		p, err := in.Store.GetProjectByKey(r.Context(), key)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return sqlc.Project{}, errUnauthorized
-		}
-		if err != nil {
+			// Not the current key — a retired-but-not-yet-deleted one, kept
+			// alive since Rotate no longer discards the outgoing key. Nothing
+			// downstream reads .PublicKey off the cached project, so caching
+			// it under this request's key (not the project's current one) is
+			// safe regardless of which table supplied the row.
+			retired, rerr := in.Store.GetProjectByRetiredKey(r.Context(), key)
+			if errors.Is(rerr, pgx.ErrNoRows) {
+				return sqlc.Project{}, errUnauthorized
+			}
+			if rerr != nil {
+				return sqlc.Project{}, rerr
+			}
+			in.Store.TouchProjectKey(r.Context(), retired.KeyID) // best-effort, throttled to 1/minute
+			p = retired.Project
+		} else if err != nil {
 			return sqlc.Project{}, err
 		}
 		c = cachedProject{p: p, exp: time.Now().Add(keyCacheTTL)}

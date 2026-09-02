@@ -27,7 +27,9 @@ POST   /api/projects                        {"slug","name","platform"}          
 GET    /api/projects/{slug}
 PATCH  /api/projects/{slug}                 any of {"name","platform","sample_keep_first","sample_rate","daily_quota"}
 DELETE /api/projects/{slug}
-POST   /api/projects/{slug}/rotate-key      new DSN key → project object
+POST   /api/projects/{slug}/rotate-key      new current DSN key → project object (the old key keeps working, see below)
+GET    /api/projects/{slug}/keys            retired-but-still-valid DSN keys → {"keys": [...]}
+DELETE /api/projects/{slug}/keys/{id}       delete one retired key
 ```
 
 Validation: `slug` matches `^[a-z0-9][a-z0-9._-]{0,63}$` and is not
@@ -52,6 +54,17 @@ Project object:
 ```
 
 `DELETE` removes the project and everything under it.
+
+Rotating a key does not invalidate the old one — it keeps authenticating
+ingest until its `project_keys` row is explicitly deleted (within the
+ingest cache TTL, a few seconds, after the `DELETE`). A retired key:
+
+```json
+{ "id": 3, "dsn": "https://<old-key>@crashcart.example.com/1", "retired_at": "2026-08-20T11:00:00Z", "last_used_at": "2026-08-29T08:41:55Z" }
+```
+
+`last_used_at` is `null` until the key authenticates an ingest request
+after being retired; it is what tells you whether it's safe to delete.
 
 ## Overview
 

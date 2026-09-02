@@ -173,10 +173,14 @@ func main() {
 		if err != nil {
 			fatal(log, err)
 		}
-		if p, err = st.RotateProjectKey(ctx, sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: auth.NewProjectKey()}); err != nil {
+		if p, err = st.RotateProjectKey(ctx, p.ID, auth.NewProjectKey()); err != nil {
 			fatal(log, err)
 		}
-		fmt.Printf("project %s: new DSN %s\n", p.Slug, dsn(cfg, p))
+		fmt.Printf("project %s: new DSN %s (old DSN keeps working until removed - see `project-keys`)\n", p.Slug, dsn(cfg, p))
+	case "project-keys":
+		if err := projectKeysCmd(ctx, st, cfg, args); err != nil {
+			fatal(log, err)
+		}
 	case "serve":
 		serve(ctx, cfg, st, in, syms, notifier, log)
 	default:

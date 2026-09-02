@@ -31,6 +31,7 @@ type SettingsData struct {
 	Channels      []sqlc.AlertChannel
 	Symbols       []sqlc.ListSymbolFilesRow
 	ClientReports []sqlc.ListClientReportCountsRow // events the project's SDKs discarded client-side, last 7 days
+	RetiredKeys   []sqlc.ProjectKey                // DSN keys Rotate has retired but nobody has deleted yet
 }
 
 func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {
@@ -70,6 +71,10 @@ func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {
 	if d.ClientReports, err = w.Store.ListClientReportCounts(ctx, sqlc.ListClientReportCountsParams{
 		ProjectID: p.ID, Bucket: now.Add(-7 * day).Truncate(time.Hour), Bucket_2: now,
 	}); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	if d.RetiredKeys, err = w.Store.ListProjectKeys(ctx, p.ID); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -178,7 +183,24 @@ func (w *Web) settingsRotateKey(rw http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := w.Store.RotateProjectKey(r.Context(), sqlc.RotateProjectKeyParams{ID: p.ID, PublicKey: auth.NewProjectKey()}); err != nil {
+	if _, err := w.Store.RotateProjectKey(r.Context(), p.ID, auth.NewProjectKey()); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	redirect(rw, r, state(r).Href("/settings"))
+}
+
+func (w *Web) settingsKeyDelete(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(rw, r)
+		return
+	}
+	if _, err := w.Store.DeleteProjectKey(r.Context(), sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: id}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

@@ -52,7 +52,7 @@ const Format = 3 // 3: no triaged status; 2: transaction / culprit / unhandled_s
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
-var Tables = []string{"users", "api_keys", "projects", "releases", "issues", "events", "attachments", "user_reports", "monitors", "monitor_checkins", "sessions", "symbol_files", "alert_rules", "alert_channels"}
+var Tables = []string{"users", "api_keys", "projects", "project_keys", "releases", "issues", "events", "attachments", "user_reports", "monitors", "monitor_checkins", "sessions", "symbol_files", "alert_rules", "alert_channels"}
 
 // Options narrows an export.
 type Options struct {
@@ -198,6 +198,15 @@ type userReportRow struct {
 	ReceivedAt ts      `json:"received_at"`
 }
 
+// projectKeyRow: a DSN key Rotate has retired but nobody has deleted yet.
+type projectKeyRow struct {
+	T          string `json:"t"`
+	Project    string `json:"project"`
+	PublicKey  string `json:"public_key"`
+	RetiredAt  ts     `json:"retired_at"`
+	LastUsedAt *ts    `json:"last_used_at,omitempty"`
+}
+
 type monitorRow struct {
 	T                    string  `json:"t"`
 	Project              string  `json:"project"`
@@ -317,6 +326,7 @@ const (
 	symbols, payload FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
 	selectAttachments = `SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data FROM attachments WHERE project_id = $1 ORDER BY occurred_at, event_id, n`
 	selectUserReports = `SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 ORDER BY event_id`
+	selectProjectKeys = `SELECT id, project_id, public_key, retired_at, last_used_at FROM project_keys WHERE project_id = $1 ORDER BY retired_at`
 	selectMonitors    = `SELECT project_id, slug, schedule_type, schedule_value, schedule_unit, timezone, checkin_margin_min, max_runtime_min,
 	failure_threshold, recovery_threshold, last_status, consecutive_failures, consecutive_successes, alerting, next_expected_at, last_checkin_at, created_at
 	FROM monitors WHERE project_id = $1 ORDER BY slug`
@@ -370,6 +380,13 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 		}
 	}
 	// Per table, per project: the order of Tables is the order of the file.
+	for _, p := range projects {
+		if err := stream(ctx, tx, selectProjectKeys, func(r sqlc.ProjectKey) error {
+			return enc.Encode(projectKeyRow{T: "project_keys", Project: p.Slug, PublicKey: r.PublicKey, RetiredAt: at(r.RetiredAt), LastUsedAt: tsPtr(r.LastUsedAt)})
+		}, p.ID); err != nil {
+			return fmt.Errorf("export project_keys: %w", err)
+		}
+	}
 	for _, p := range projects {
 		if err := stream(ctx, tx, selectReleases, func(r sqlc.Release) error {
 			return enc.Encode(releaseRow{T: "releases", Project: p.Slug, Release: r.Release, Platforms: r.Platforms, FirstSeen: at(r.FirstSeen)})
@@ -614,6 +631,8 @@ const (
 	    created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
 	insertAttachment = `INSERT INTO attachments (occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (project_id, event_id, occurred_at, n) DO NOTHING`
+	insertProjectKey = `INSERT INTO project_keys (project_id, public_key, retired_at, last_used_at) VALUES ($1,$2,$3,$4)
+	ON CONFLICT (public_key) DO NOTHING`
 	upsertUserReport = `INSERT INTO user_reports (project_id, event_id, received_at, name, email, comments)
 	VALUES ($1,$2,$3,$4,$5,$6)
 	ON CONFLICT (project_id, event_id) DO UPDATE SET
@@ -914,6 +933,23 @@ func (im *importer) line(b []byte) error {
 			return fmt.Errorf("user_reports row: event_id %q is not a 32-hex id", r.EventID)
 		}
 		im.batch.Queue(upsertUserReport, pid, eid, tsOrNow(r.ReceivedAt), r.Name, r.Email, r.Comments)
+	case "project_keys":
+		var r projectKeyRow
+		if err := json.Unmarshal(b, &r); err != nil {
+			return err
+		}
+		pid, err := im.project(r.Project)
+		if err != nil {
+			return err
+		}
+		if r.PublicKey == "" {
+			return errors.New("project_keys row needs public_key")
+		}
+		var lastUsed *time.Time
+		if r.LastUsedAt != nil {
+			lastUsed = &r.LastUsedAt.Time
+		}
+		im.batch.Queue(insertProjectKey, pid, r.PublicKey, tsOrNow(r.RetiredAt), lastUsed)
 	case "monitors":
 		var r monitorRow
 		if err := json.Unmarshal(b, &r); err != nil {

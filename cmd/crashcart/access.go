@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/at-least/crashcart/internal/auth"
+	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 )
@@ -129,4 +130,48 @@ func apikeyCmd(ctx context.Context, st *store.Store, args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown apikey command %q", args[0])
+}
+
+// projectKeysCmd: `project-keys list <slug>`, `project-keys delete <slug> <id>` —
+// the DSN keys Rotate has retired but nobody has deleted yet.
+func projectKeysCmd(ctx context.Context, st *store.Store, cfg config.Config, args []string) error {
+	if len(args) < 2 {
+		return errors.New("usage: crashcart project-keys list <slug> | project-keys delete <slug> <id>")
+	}
+	p, err := st.GetProject(ctx, args[1])
+	if err != nil {
+		return fmt.Errorf("project %q: %w", args[1], err)
+	}
+	switch args[0] {
+	case "list":
+		keys, err := st.ListProjectKeys(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		for _, k := range keys {
+			used := "never used"
+			if k.LastUsedAt != nil {
+				used = "used " + k.LastUsedAt.Format("2006-01-02 15:04")
+			}
+			fmt.Printf("%d\t%s\tretired %s\t%s\n", k.ID, dsnFor(cfg, p.ID, k.PublicKey), k.RetiredAt.Format("2006-01-02"), used)
+		}
+		return nil
+	case "delete":
+		if len(args) < 3 {
+			return errors.New("usage: crashcart project-keys delete <slug> <id>")
+		}
+		id, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			return err
+		}
+		n, err := st.DeleteProjectKey(ctx, sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: id})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("no retired key with id %d", id)
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown project-keys command %q", args[0])
 }

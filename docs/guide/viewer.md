@@ -101,7 +101,8 @@ by hand.
 
 `/p/{slug}/settings`:
 
-- **DSN** and **Rotate key**
+- **DSN** and **Rotate key**; **Previous keys** — DSN keys a rotation
+  retired but nobody has deleted, with when each was last used
 - **Platform** label
 - **Sampling**: keep first, sample rate, daily quota
 - **Alerts**: enable each detector, add webhook / Slack / Telegram channels

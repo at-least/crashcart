@@ -217,6 +217,26 @@ func TestProjectsAndAuth(t *testing.T) {
 	if rec.Code != 200 || out["dsn"] == before || out["dsn"] == nil {
 		t.Errorf("rotate-key: %d %v (before %v)", rec.Code, out, before)
 	}
+	// The old DSN is not discarded — it's listed as a retired key, deletable on its own.
+	keysOut := e.get("/api/projects/demo/keys", 200)
+	keys, _ := keysOut["keys"].([]any)
+	if len(keys) != 1 {
+		t.Fatalf("keys after one rotate = %v", keysOut)
+	}
+	k0 := keys[0].(map[string]any)
+	if k0["dsn"] != before || k0["last_used_at"] != nil {
+		t.Errorf("retired key = %v (want dsn %v, last_used_at nil)", k0, before)
+	}
+	keyID := fmt.Sprintf("%v", k0["id"])
+	if rec, _ := e.do("DELETE", "/api/projects/demo/keys/"+keyID, nil); rec.Code != 204 {
+		t.Errorf("delete key: %d", rec.Code)
+	}
+	if rec, _ := e.do("DELETE", "/api/projects/demo/keys/"+keyID, nil); rec.Code != 404 {
+		t.Errorf("delete key again: %d", rec.Code)
+	}
+	if keysOut = e.get("/api/projects/demo/keys", 200); len(keysOut["keys"].([]any)) != 0 {
+		t.Errorf("keys after delete = %v", keysOut)
+	}
 	if rec, _ = e.do("PATCH", "/api/projects/demo", map[string]any{"sample_rate": 2}); rec.Code != 400 {
 		t.Errorf("bad sample_rate: %d", rec.Code)
 	}

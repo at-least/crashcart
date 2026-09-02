@@ -25,6 +25,7 @@ _meta
 users*               (full exports only; sorted by email)
 api_keys*            (full exports only; by id)
 projects*            (all projects, sorted by slug)
+project_keys*        (per project; by retired_at ascending)
 releases*            (per project in slug order; within a project by release)
 issues*              (per project in slug order; within a project by fingerprint)
 events*              (per project; by occurred_at, event_id ascending)
@@ -135,6 +136,22 @@ Import: upsert on `slug`; all listed columns are replaced. Missing
 `public_key` → a fresh random 32-hex key is generated. `sample_rate ≤ 0` →
 1. A project slug that first appears on a non-`projects` row is created with
 `name = slug` and a fresh key.
+
+### `project_keys`
+
+```
+project           str    slug
+public_key        str    natural key; unique per database
+retired_at        ts
+last_used_at?     ts
+```
+
+DSN keys `POST .../rotate-key` has retired but nobody has deleted yet —
+the current key stays on `projects.public_key`, above; this table holds
+only the outgoing ones, kept until explicitly deleted so a rotation
+can't invalidate a key still in use. Import: insert-only, deduped on
+`public_key` (globally unique already) — nothing to overwrite on a
+resend.
 
 ### `releases`
 
@@ -324,7 +341,7 @@ Import: upsert on `(project, kind, release, filename)`; `debug_id`, `size`,
 
 ```
 project           str    slug
-type              str    new_issue regression unhandled_spike (format 1: `crash_spike`; still read)
+type              str    new_issue regression unhandled_spike escalating monitor_failed monitor_recovered (format 1: `crash_spike`; still read)
 enabled           bool
 cooldown_minutes  int
 last_triggered?   ts
@@ -336,7 +353,7 @@ Import: upsert on `(project, type)`.
 
 ```
 project           str    slug
-kind              str    webhook telegram
+kind              str    webhook slack telegram
 config            json   object; kind-specific; default {}
 created_at        ts
 ```

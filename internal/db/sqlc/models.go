@@ -567,6 +567,14 @@ type Project struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+type ProjectKey struct {
+	ID         int64      `json:"id"`
+	ProjectID  int64      `json:"project_id"`
+	PublicKey  string     `json:"public_key"`
+	RetiredAt  time.Time  `json:"retired_at"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+}
+
 type ProjectUsage struct {
 	ProjectID int64     `json:"project_id"`
 	Day       time.Time `json:"day"`
