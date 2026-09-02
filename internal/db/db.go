@@ -1,41 +1,66 @@
-// Package db owns the schema: one embedded schema.sql, created on the first
-// start against an empty database. There is no migration history — the
-// schema is the file, and it carries a version (crashcart_schema) that
-// Init checks so a binary never runs against a database of another one.
+// Package db owns the schema: versioned goose migrations under
+// migrations/, applied on every start. internal/db/migrations/00001_baseline.sql
+// is everything up to the last pre-migration release (schema version 15);
+// every change after that is a new migration file.
 package db
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 )
 
-//go:embed schema.sql
-var schema string
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
-// Schema is schema.sql as embedded; cmd/gendocs parses its `CREATE TYPE …
-// AS ENUM` declarations to check GLOSSARY.md's enum value lists against
-// them.
-func Schema() string { return schema }
+// migrationsDir is migrationsFS rooted at its migrations/ subdirectory, so
+// goose sees plain "00001_baseline.sql"-style paths.
+var migrationsDir = mustSub(migrationsFS, "migrations")
 
-// SchemaVersion is the version of schema.sql this binary carries. Bump it
-// with every change to the schema; Init writes it into crashcart_schema on
-// creation and refuses a database at any other version.
-const SchemaVersion = 15
+func mustSub(fsys embed.FS, dir string) fs.FS {
+	sub, err := fs.Sub(fsys, dir)
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
 
-// ErrSchemaVersion: the database was created by a binary with another
-// schema. It wraps the message an operator needs.
-var ErrSchemaVersion = errors.New("schema version mismatch")
+// Migrations exposes the embedded migration files, rooted so goose-style
+// names appear directly ("00001_baseline.sql", not "migrations/…") — for
+// callers that read their raw content: cmd/gendocs (enum checks against
+// every migration, not just the baseline) and internal/testdb (hashing
+// them to key the pgtestdb template).
+func Migrations() fs.FS { return migrationsDir }
+
+// lastPreMigrationVersion is the schema version (crashcart_schema.version)
+// the last binary before goose migrations wrote. A database at this
+// version is bootstrapped in place: 00001_baseline.sql is exactly that
+// schema, so it is marked applied without being re-run.
+const lastPreMigrationVersion = 15
+
+// ErrLegacySchemaVersion: an existing database predates goose migrations
+// but isn't at the one version (lastPreMigrationVersion) this binary knows
+// how to bootstrap in place.
+var ErrLegacySchemaVersion = errors.New("legacy schema version mismatch")
+
+// ErrDatabaseAhead: the database has migrations applied that this binary's
+// embedded migrations/ doesn't know about — an older binary against a
+// newer database.
+var ErrDatabaseAhead = errors.New("database schema is ahead of this binary")
 
 // initLock is the advisory lock key so replicas can start together.
 const initLock = 0x6372617368 // "crash"
 
-// Init creates the schema when the database is empty (no projects table)
-// and reports whether it did. Safe to call from every replica at startup.
+// Init applies pending migrations, bootstrapping a legacy (pre-migration)
+// database in place first if needed, and reports whether the database was
+// empty beforehand. Safe to call from every replica at startup.
 func Init(ctx context.Context, pool *pgxpool.Pool) (created bool, err error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -48,47 +73,92 @@ func Init(ctx context.Context, pool *pgxpool.Pool) (created bool, err error) {
 	}
 	defer conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", initLock)
 
-	var exists bool
-	if err := conn.QueryRow(ctx, "SELECT to_regclass('projects') IS NOT NULL").Scan(&exists); err != nil {
+	var hasProjects bool
+	if err := conn.QueryRow(ctx, "SELECT to_regclass('projects') IS NOT NULL").Scan(&hasProjects); err != nil {
 		return false, err
 	}
-	if exists {
-		return false, checkVersion(ctx, conn.Conn())
+	created = !hasProjects
+
+	if hasProjects {
+		if err := bootstrapLegacy(ctx, conn.Conn()); err != nil {
+			return false, err
+		}
 	}
-	tx, err := conn.Begin(ctx)
+
+	// OpenDBFromPool, not sql.Open(pool.Config().ConnString()): the pool's
+	// ConnString() is the string it was originally parsed from and does not
+	// reflect RuntimeParams set on it afterward (e.g. testdb's per-test
+	// search_path) — OpenDBFromPool instead draws real connections from the
+	// pool itself, so it always sees the same database/schema Init just
+	// checked above.
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer sqlDB.Close()
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrationsDir)
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(context.WithoutCancel(ctx))
-	if _, err := tx.Exec(ctx, schema); err != nil {
-		return false, fmt.Errorf("create schema: %w", err)
-	}
-	if _, err := tx.Exec(ctx, "INSERT INTO crashcart_schema (version) VALUES ($1)", SchemaVersion); err != nil {
+	current, target, err := provider.GetVersions(ctx)
+	if err != nil {
 		return false, err
 	}
-	return true, tx.Commit(ctx)
+	if current > target {
+		return false, fmt.Errorf("%w: database is at migration %d, this binary only knows up to %d — upgrade the binary first",
+			ErrDatabaseAhead, current, target)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		return false, err
+	}
+	return created, nil
 }
 
-// checkVersion compares the database's schema version with SchemaVersion.
-// A database without the version table predates it and is treated as
-// version 0.
-func checkVersion(ctx context.Context, conn *pgx.Conn) error {
-	var have int
-	err := conn.QueryRow(ctx, "SELECT version FROM crashcart_schema LIMIT 1").Scan(&have)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) && !isUndefinedTable(err) {
+// bootstrapLegacy marks 00001_baseline.sql as already applied on a
+// database created by a pre-migration binary (crashcart_schema.version ==
+// lastPreMigrationVersion), instead of re-running its DDL against tables
+// that already exist. Refuses any other legacy version: this binary only
+// knows how to bootstrap from the one version immediately before it.
+func bootstrapLegacy(ctx context.Context, conn *pgx.Conn) error {
+	var isLegacy bool
+	if err := conn.QueryRow(ctx, "SELECT to_regclass('crashcart_schema') IS NOT NULL").Scan(&isLegacy); err != nil {
 		return err
 	}
-	if have == SchemaVersion {
-		return nil
+	if !isLegacy {
+		return nil // already on goose (or a from-scratch fresh database, handled by Up itself)
 	}
-	return fmt.Errorf("%w: database has schema version %d, this crashcart needs %d — there are no migrations: "+
-		"run `crashcart export` with the old version, `crashcart import` into an empty database with this one, then point DATABASE_URL at it",
-		ErrSchemaVersion, have, SchemaVersion)
-}
 
-func isUndefinedTable(err error) bool {
-	var pgErr interface{ SQLState() string }
-	return errors.As(err, &pgErr) && pgErr.SQLState() == "42P01"
+	var version int
+	if err := conn.QueryRow(ctx, "SELECT version FROM crashcart_schema LIMIT 1").Scan(&version); err != nil {
+		return fmt.Errorf("read legacy schema version: %w", err)
+	}
+	if version != lastPreMigrationVersion {
+		return fmt.Errorf("%w: database is at legacy schema version %d, this binary can only bootstrap from version %d — "+
+			"upgrade through the last pre-migration release first",
+			ErrLegacySchemaVersion, version, lastPreMigrationVersion)
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+
+	// The exact table goose itself creates (internal/dialects/postgres.go),
+	// so provider.GetVersions/Up see the baseline as already applied.
+	if _, err := tx.Exec(ctx, `CREATE TABLE goose_db_version (
+		id integer PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
+		version_id bigint NOT NULL,
+		is_applied boolean NOT NULL,
+		tstamp timestamp NOT NULL DEFAULT now()
+	)`); err != nil {
+		return fmt.Errorf("create goose_db_version: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO goose_db_version (version_id, is_applied) VALUES (0, true), (1, true)`); err != nil {
+		return fmt.Errorf("seed goose_db_version: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "DROP TABLE crashcart_schema"); err != nil {
+		return fmt.Errorf("drop crashcart_schema: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // Connect opens a pool and pings it.

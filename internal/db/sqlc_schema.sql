@@ -17,9 +17,11 @@ CREATE FUNCTION crashcart_bucket(t TIMESTAMPTZ, width BIGINT) RETURNS TIMESTAMPT
 CREATE FUNCTION crashcart_buckets(from_at TIMESTAMPTZ, to_at TIMESTAMPTZ, width BIGINT) RETURNS SETOF TIMESTAMPTZ
     LANGUAGE SQL IMMUTABLE AS $$ SELECT b FROM generate_series(from_at, to_at, make_interval(secs => width)) AS b WHERE b < to_at $$;
 
--- sqlc-only mirror of internal/db/schema.sql (no partitioning DDL). The
--- stats views appear here as plain tables so queries type-check. Keep in
--- sync with schema.sql.
+-- sqlc-only mirror of the migrations' cumulative result
+-- (internal/db/migrations/*.sql, no partitioning DDL). The stats views
+-- appear here as plain tables so queries type-check. Keep in sync by hand
+-- with every migration — sqlc can't parse partitioning DDL or the
+-- views-as-tables trick regardless of how the real schema is expressed.
 
 CREATE TABLE users (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -331,9 +333,4 @@ CREATE TABLE release_health_hourly (
     total      BIGINT NOT NULL,
     crashed    BIGINT NOT NULL,
     errored    BIGINT NOT NULL
-);
-
-CREATE TABLE crashcart_schema (
-    version    INTEGER NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

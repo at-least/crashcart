@@ -19,10 +19,10 @@ tests, do not "update the docs" with a second copy.
 
 ## Stack
 
-Go 1.25+ (std `net/http` mux, pgx/v5, sqlc, templ), plain Postgres 15+
-(no extensions; the one store — payloads, symbol files included), htmx +
-Tailwind v4 + shadless for the viewer. Optional: dSYM symbolication
-sidecar (`container/symbolicate`).
+Go 1.27+ (std `net/http` mux, pgx/v5, sqlc, templ, goose for migrations),
+plain Postgres 15+ (no extensions; the one store — payloads, symbol files
+included), htmx + Tailwind v4 + shadless for the viewer. Optional: dSYM
+symbolication sidecar (`container/symbolicate`).
 
 ## Commands
 
@@ -43,7 +43,8 @@ cmd/crashcart/        main.go: subcommands, the `serve` wiring (schedulers, shut
 internal/
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, Culprit, ID
-  db/                 schema.sql (the whole schema, created on first start — no migrations; carries a version Init checks), sqlc_schema.sql
+  db/                 migrations/*.sql (goose, applied on every start; 00001_baseline.sql is
+                      everything through the last pre-migration release), sqlc_schema.sql
                       (mirror for sqlc; the stats views appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
   store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out), RunAsLeader
@@ -71,14 +72,21 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   `cli.Commands` — rewrites `docs/deploy/configuration.md` /
   `docs/reference/cli.md`; also checks `docs/reference/api.md`,
   `docs/reference/export-format.md` and `GLOSSARY.md` against the code and
-  fails if they drifted). Keep `internal/db/sqlc_schema.sql` in sync with
-  `schema.sql` (it is the plain-SQL mirror sqlc parses; the stats views appear as tables).
-- Hand-written SQL only in: `schema.sql`, `internal/store` (dynamic filters),
-  `internal/export`, `internal/retention` (partitions, rollup). Everything
-  else goes through sqlc queries.
-- A schema change is an edit to `schema.sql` + a bump of its version (read
-  by `db.Init`); an export-format change bumps the format in
-  `internal/export` and its spec `docs/reference/export-format.md` together.
+  fails if they drifted). Keep `internal/db/sqlc_schema.sql` in sync by
+  hand with `internal/db/migrations/` (it is the plain-SQL mirror sqlc
+  parses — sqlc can't parse partitioning DDL or the stats-views-as-tables
+  trick; the stats views appear here as tables).
+- Hand-written SQL only in: `internal/db/migrations/`, `internal/store`
+  (dynamic filters), `internal/export`, `internal/retention` (partitions,
+  rollup). Everything else goes through sqlc queries.
+- A schema change is a new file in `internal/db/migrations/` (never an
+  edit to an existing one) — sequential 5-digit prefix, `-- +goose Up` /
+  `-- +goose Down` (forward-only: leave Down a no-op comment; this project
+  restores from `crashcart export` instead of rolling back), `-- +goose
+  StatementBegin`/`StatementEnd` around any statement with a `;` inside
+  its body (a plpgsql function). An export-format change bumps the format
+  in `internal/export` and its spec `docs/reference/export-format.md`
+  together — independent of schema versioning.
 - There is one store — Postgres. Do not add an object store, a cache
   server or a second queue; per-issue sampling is what bounds the database
   (ARCHITECTURE.md).
@@ -88,7 +96,7 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   fingerprint change) marks its hour dirty in the same transaction —
   use the existing `Mark*StatsDirty` queries.
 - Time is `TIMESTAMPTZ`, windows are `[from, to)`, buckets UTC-aligned
-  (`crashcart_bucket` in `schema.sql`; it agrees with Go `t.Truncate`
+  (`crashcart_bucket` in `internal/db/migrations/`; it agrees with Go `t.Truncate`
   only for widths that divide a day — do not use wider ones). Events are
   addressed by `event_id`; lists page with `store.Cursor`, never offset.
 - `sentry.ID` for event ids / fingerprints; parse untrusted input with

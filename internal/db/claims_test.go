@@ -197,11 +197,7 @@ func TestInitConcurrently(t *testing.T) {
 		t.Fatalf("schema created %d times, want 1", created)
 	}
 	var n int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM crashcart_schema").Scan(&n); err != nil || n != 1 {
-		t.Fatalf("version rows = %d %v", n, err)
-	}
-	var v int
-	if err := pool.QueryRow(ctx, "SELECT version FROM crashcart_schema").Scan(&v); err != nil || v != db.SchemaVersion {
-		t.Fatalf("version = %d %v", v, err)
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM goose_db_version WHERE version_id = 1 AND is_applied").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("baseline migration rows = %d %v", n, err)
 	}
 }

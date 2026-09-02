@@ -1,13 +1,15 @@
--- CrashCart schema, created whole on the first start against an empty
--- database (internal/db.Init); there is no migration history. Plain
--- Postgres 14+: no extensions. The time-series tables (events, sessions)
--- are partitioned by week on their TIMESTAMPTZ time column (a time window
--- is a range on it; their primary key includes it, as partitioning
--- requires); internal/retention creates the partitions ahead of time and
--- drops the expired ones. The statistics are rollup tables kept current by
--- a dirty-key job (the stats section at the end of this file). Everything
--- is here — event payloads (gzipped, bounded by per-issue sampling),
--- symbol files, sentry-cli upload chunks; the database is the one store.
+-- CrashCart baseline schema (everything up to the last pre-migration
+-- release, schema version 15). Plain Postgres 14+: no extensions. The
+-- time-series tables (events, sessions) are partitioned by week on their
+-- TIMESTAMPTZ time column (a time window is a range on it; their primary
+-- key includes it, as partitioning requires); internal/retention creates
+-- the partitions ahead of time and drops the expired ones. The statistics
+-- are rollup tables kept current by a dirty-key job (the stats section at
+-- the end of this file). Everything is here — event payloads (gzipped,
+-- bounded by per-issue sampling), symbol files, sentry-cli upload chunks;
+-- the database is the one store.
+--
+-- +goose Up
 
 -- Enumerations: one definition, sqlc generates the Go constants.
 CREATE TYPE event_level    AS ENUM ('fatal', 'error', 'warning', 'info', 'debug');
@@ -411,13 +413,17 @@ CREATE INDEX alert_channels_project ON alert_channels (project_id);
 -- viewer's SSE stream re-counts when a project gains an issue or a
 -- regression. Polling stays as the fallback on both sides.
 
+-- +goose StatementBegin
 CREATE FUNCTION crashcart_notify_job() RETURNS TRIGGER
     LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_notify('crashcart_jobs', ''); RETURN NULL; END $$;
+-- +goose StatementEnd
 CREATE TRIGGER jobs_notify AFTER INSERT ON jobs
     FOR EACH STATEMENT EXECUTE FUNCTION crashcart_notify_job();
 
+-- +goose StatementBegin
 CREATE FUNCTION crashcart_notify_issue() RETURNS TRIGGER
     LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_notify('crashcart_issues', NEW.project_id::text); RETURN NULL; END $$;
+-- +goose StatementEnd
 CREATE TRIGGER issues_notify_insert AFTER INSERT ON issues
     FOR EACH ROW EXECUTE FUNCTION crashcart_notify_issue();
 CREATE TRIGGER issues_notify_regression AFTER UPDATE OF status ON issues
@@ -536,11 +542,6 @@ LANGUAGE SQL STABLE AS $$
     WHERE project_id = pid AND bucket >= from_at AND bucket < to_at
 $$;
 
--- ── schema version ─────────────────────────────────────────────────────
--- One row, written by db.Init (db.SchemaVersion — bump it with every
--- change to this file). Init refuses to start on a mismatch: there are no
--- migrations, a database from another schema is moved with export / import.
-CREATE TABLE crashcart_schema (
-    version    INTEGER NOT NULL,                     -- written by db.Init from db.SchemaVersion
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- +goose Down
+-- No down: this project authors forward-only migrations. Restore an
+-- earlier schema from a `crashcart export` taken before upgrading.

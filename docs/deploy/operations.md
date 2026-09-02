@@ -62,22 +62,19 @@ Change `RETENTION_DAYS` and restart; it applies to existing data.
 
 ## Upgrading
 
-Pull the new image or binary and restart. There are no migrations: the
-schema carries a version, and a binary refuses to start against a
-database of another version, saying so in the log. When that happens the
-data moves by export / import:
+Pull the new image or binary and restart: any pending schema migration
+applies automatically before the server starts taking traffic (under a
+lock, so restarting several replicas at once is safe — only one applies
+it). A release note says whether an upgrade carries a migration; most
+don't, and an upgrade with none is exactly pull-and-restart.
 
-```
-crashcart export > backup.ndjson      # with the old binary, old DATABASE_URL
-createdb crashcart_new                 # (or any empty database)
-DATABASE_URL=… crashcart import < backup.ndjson   # with the new binary
-```
-
-then point `DATABASE_URL` at the new database and start. A full export
-carries everything — projects, events, symbol files, alert settings, the
-viewer accounts and the API keys (hashed, so existing keys keep working). A release note
-says whether an upgrade changes the schema; most do not. Back up first
-either way if you want to be able to roll back.
+Downgrading a binary against an already-migrated database is refused at
+startup rather than silently running against a schema it doesn't know —
+back up first (`crashcart export > backup.ndjson`) if you want a way
+back. Export / import remain how you move a database between
+environments or restore a backup; they carry everything — projects,
+events, symbol files, alert settings, the viewer accounts and the API
+keys (hashed, so existing keys keep working).
 
 ## Running without a long-lived server
 

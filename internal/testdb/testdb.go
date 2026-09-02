@@ -9,14 +9,17 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/peterldowns/pgtestdb"
+	"github.com/pressly/goose/v3"
 
 	"github.com/at-least/crashcart/internal/db"
 	"github.com/at-least/crashcart/internal/store"
@@ -69,34 +72,47 @@ func adminConfig(dsn string) (pgtestdb.Config, error) {
 	}, nil
 }
 
-// schemaMigrator provisions a pgtestdb template by running schema.sql
-// exactly as db.Init does on a fresh database, minus Init's advisory lock
-// (unneeded here: pgtestdb already serializes template creation, and this
-// runs against a database nothing else can see yet).
+// schemaMigrator provisions a pgtestdb template by running the same goose
+// migrations db.Init applies in production, against a database nothing
+// else can see yet (pgtestdb already serializes template creation, so
+// there's no need for db.Init's own advisory lock or legacy-bootstrap
+// logic here — every template starts empty).
 type schemaMigrator struct{}
 
-// Hash identifies the template by the schema and its version, so a schema
-// change (a new schema.sql, a version bump) gets a new template instead of
-// reusing a stale one.
+// Hash identifies the template by every migration file's content, so
+// adding or editing a migration gets a new template instead of reusing a
+// stale one.
 func (schemaMigrator) Hash() (string, error) {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", db.Schema(), db.SchemaVersion)))
-	return hex.EncodeToString(sum[:]), nil
+	var names []string
+	err := fs.WalkDir(db.Migrations(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		names = append(names, path)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		b, err := fs.ReadFile(db.Migrations(), name)
+		if err != nil {
+			return "", err
+		}
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (schemaMigrator) Migrate(ctx context.Context, sqlDB *sql.DB, _ pgtestdb.Config) error {
-	conn, err := sqlDB.Conn(ctx)
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, db.Migrations())
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	return conn.Raw(func(driverConn any) error {
-		pgxConn := driverConn.(*stdlib.Conn).Conn()
-		if _, err := pgxConn.Exec(ctx, db.Schema()); err != nil {
-			return fmt.Errorf("create schema: %w", err)
-		}
-		_, err := pgxConn.Exec(ctx, "INSERT INTO crashcart_schema (version) VALUES ($1)", db.SchemaVersion)
-		return err
-	})
+	_, err = provider.Up(ctx)
+	return err
 }
 
 // Projects creates placeholder projects with the given ids so rows that

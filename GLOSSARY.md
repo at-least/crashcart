@@ -9,7 +9,7 @@ This is a vocabulary, not a specification. How each value is computed
 from an envelope is defined in `internal/sentry` (`analyze.go`:
 `Fingerprint`, `Culprit`, the main-exception and level rules;
 `envelope.go`: the event / session / attachment fields), and the columns
-in `internal/db/schema.sql`.
+in `internal/db/migrations/`.
 
 ## Core concepts
 

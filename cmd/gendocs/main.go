@@ -21,6 +21,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"slices"
@@ -347,7 +348,46 @@ func orderTables(text string) []string {
 	return tables
 }
 
-var enumDecl = regexp.MustCompile(`(?m)^CREATE TYPE\s+(\w+)\s+AS ENUM \(([^)]*)\);`)
+var (
+	enumDecl  = regexp.MustCompile(`(?m)^CREATE TYPE\s+(\w+)\s+AS ENUM \(([^)]*)\);`)
+	enumAlter = regexp.MustCompile(`(?m)^ALTER TYPE\s+(\w+)\s+ADD VALUE\s+(?:IF NOT EXISTS\s+)?'([^']*)'`)
+)
+
+// enumValues walks every migration file in order (CREATE TYPE ... AS ENUM
+// declares a type's initial values; a later ALTER TYPE ... ADD VALUE
+// appends to it) and returns each enum's accumulated value list.
+func enumValues() (map[string][]string, error) {
+	var names []string
+	if err := fs.WalkDir(db.Migrations(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		names = append(names, path)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+
+	values := map[string][]string{}
+	for _, name := range names {
+		b, err := fs.ReadFile(db.Migrations(), name)
+		if err != nil {
+			return nil, err
+		}
+		text := string(b)
+		for _, m := range enumDecl.FindAllStringSubmatch(text, -1) {
+			enumName, rawValues := m[1], m[2]
+			for _, v := range strings.Split(rawValues, ",") {
+				values[enumName] = append(values[enumName], strings.Trim(strings.TrimSpace(v), "'"))
+			}
+		}
+		for _, m := range enumAlter.FindAllStringSubmatch(text, -1) {
+			values[m[1]] = append(values[m[1]], m[2])
+		}
+	}
+	return values, nil
+}
 
 // checkGlossaryEnums verifies that every value of an enum GLOSSARY.md
 // discusses by name is actually mentioned there — catches a renamed or
@@ -360,14 +400,16 @@ func checkGlossaryEnums() []string {
 		return []string{fmt.Sprintf("%s: %v", glossaryPath, err)}
 	}
 	text := string(doc)
+	values, err := enumValues()
+	if err != nil {
+		return []string{fmt.Sprintf("internal/db/migrations: %v", err)}
+	}
 	var fail []string
-	for _, m := range enumDecl.FindAllStringSubmatch(db.Schema(), -1) {
-		name, rawValues := m[1], m[2]
+	for name, vs := range values {
 		if !wordIn(text, name) {
 			continue
 		}
-		for _, v := range strings.Split(rawValues, ",") {
-			v = strings.Trim(strings.TrimSpace(v), "'")
+		for _, v := range vs {
 			if !wordIn(text, v) {
 				fail = append(fail, fmt.Sprintf("%s: %s enum value %q not mentioned", glossaryPath, name, v))
 			}

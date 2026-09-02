@@ -14,7 +14,7 @@ sentry-cli ──POST /api/0/…/files/dsyms/ ─▶   │         stats: rollup
 
 This file records the *decisions* and why they were taken. What the
 system actually does is defined by the code it points at — the schema
-(`internal/db/schema.sql`), the queries and the packages — and by the
+(`internal/db/migrations/`), the queries and the packages — and by the
 tests; nothing here is a second definition of it. When a pointer and the
 code disagree, the code is right and this file is wrong.
 
@@ -58,13 +58,13 @@ a scheduler recomputes dirty hours and clears a key only if no mark
 landed meanwhile, so ingest never waits on the rollup. The chart queries
 fold, gap-fill and rank in SQL so the API and the viewer share one query
 per chart. Definitions: the `*_dirty` / `*_rolled` tables, views and
-`crashcart_*` functions in `schema.sql`; `retention.Rollup`;
+`crashcart_*` functions in `internal/db/migrations/`; `retention.Rollup`;
 `internal/store` for the dynamic breakdowns.
 
 **Enumerations are Postgres types.** Levels, statuses and kinds are
-`CREATE TYPE … AS ENUM` in `schema.sql`; sqlc generates the Go constants,
-so the allowed values have one definition and the database rejects a bad
-one.
+`CREATE TYPE … AS ENUM` in `internal/db/migrations/`; sqlc generates the
+Go constants, so the allowed values have one definition and the database
+rejects a bad one.
 
 **Issues are the one stateful table.** Sentry's statuses (unresolved →
 resolved → regression / ignored), no substatuses and no "triaged"; exact
@@ -75,7 +75,7 @@ regression — symbolication moving an old event between issues is not new
 evidence. An ignored issue carries its own lifting condition (Sentry's
 "Archive until …") and a scheduler lifts it (`alerts.CheckIgnored`). An
 issue outlives its events and is expired by `retention` only once nothing
-could re-create it. Definitions: `issues` in `schema.sql`,
+could re-create it. Definitions: `issues` in `internal/db/migrations/`,
 `UpsertIssue` (`internal/db/queries/issues.sql`), `retention.ExpireIssues`.
 
 **Sampling is per issue, counts stay exact — and it is what bounds the
@@ -173,14 +173,23 @@ the standard header. `auth.RateLimit`, `ingest.Ingest` / `quotaExhausted`.
 adds keyboard triage, theme and the SSE banner. Issue-centric: overview →
 issues → issue → event; releases with crash-free rate; settings.
 
-**No migrations, but a version.** `schema.sql` is the whole schema,
-created on the first start against an empty database (under an advisory
-lock so replicas can start together) and carrying its version; a later
-start refuses a database of another version at startup, with
-instructions, not at the first query. A schema change is an edit to that
-file plus a version bump; a database moves between versions with
-`export` / `import` (`internal/export`, format spec in
-`docs/reference/export-format.md`).
+**Versioned migrations (goose).** `internal/db/migrations/` is applied on
+every start, under an advisory lock so replicas start together;
+`00001_baseline.sql` is everything through the last pre-migration release,
+and a schema change from here on is a new migration file, not an edit to
+an existing one. Chosen over the earlier "one schema.sql + a version,
+moved with `crashcart export`/`import`" model for two costs that model
+had: a routine schema change forced operators through a full dump/reload
+instead of pull-and-restart, and — because the domain here is stored
+events/payloads — that reload's cost scales with data volume, so a
+deployment's upgrade cost only grew over its life instead of staying
+flat. `db.Init` still refuses to start rather than silently doing the
+wrong thing: a database ahead of the binary's known migrations, or a
+legacy (pre-migration) database at any version but the one immediately
+before this change, both refuse with instructions. `export` / `import`
+(`internal/export`, format spec in `docs/reference/export-format.md`)
+remain for backup and moving a database between environments — that was
+already decoupled from schema versioning before this change.
 
 **Why plain Postgres, and only Postgres.** Postgres without extensions
 runs anywhere — a container, a package, RDS, Cloud SQL, Neon, Supabase —
