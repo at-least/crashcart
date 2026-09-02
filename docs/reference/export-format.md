@@ -30,6 +30,8 @@ issues*              (per project in slug order; within a project by fingerprint
 events*              (per project; by occurred_at, event_id ascending)
 attachments*         (per project; by occurred_at, event_id, n ascending)
 user_reports*        (per project; by event_id ascending)
+monitors*            (per project; by slug ascending)
+monitor_checkins*    (per project; by monitor_slug, started_at, check_in_id ascending)
 sessions*            (per project; by started_at, sid ascending)
 symbol_files*        (per project; by kind, release, filename)
 alert_rules*         (per project; by type)
@@ -60,6 +62,8 @@ so a dump loads into any database:
 - events: `(project, event_id, occurred_at)` — the SDK's event id and timestamp
 - attachments: `(project, event_id, occurred_at, n)` — the event's key plus the file's position
 - user_reports: `(project, event_id)` — no `occurred_at`: unlike attachments, a report is not tied to a stored event's row
+- monitors: `(project, slug)`
+- monitor_checkins: `(project, monitor_slug, check_in_id, started_at)` — the SDK's check_in_id plus the run's own time
 - sessions: `(project, sid, started_at)` — the SDK's session id (aggregate rows carry a generated `agg-…` sid)
 - releases: `(project, release)`
 - issues: `(project, fingerprint)`
@@ -239,6 +243,52 @@ received_at       ts
 Import: upsert on `(project, event_id)`; all listed columns replaced
 (a resend overwrites, as ingest itself does). Sentry's `user_report`
 envelope item; the newer `feedback` item is not accepted or exported.
+
+### `monitors`
+
+```
+project                str    slug
+slug                   str    required; natural key with project
+schedule_type          str    crontab interval
+schedule_value         str    crontab expression, or the interval count as text
+schedule_unit?         str    interval only: minute hour day week
+timezone               str    IANA zone
+checkin_margin_min     int
+max_runtime_min        int
+failure_threshold      int
+recovery_threshold     int
+last_status?           str    in_progress ok error missed timeout
+consecutive_failures   int
+consecutive_successes  int
+alerting               bool
+next_expected_at?      ts
+last_checkin_at?       ts
+created_at             ts
+```
+
+Import: upsert on `(project, slug)`; all listed columns replaced —
+unlike ingest's own upsert (which only ever touches the schedule
+columns, to keep a monitor's alerting history across a re-upload), a
+restore from a dump is a full replace, state included. This table is
+config CrashCart never derives from anything else, so — unlike
+`client_report_counts`, deliberately not exported — it is a durable
+fact worth round-tripping.
+
+### `monitor_checkins`
+
+```
+project           str    slug
+started_at        ts     required; the run's own time, fixed at its first check-in
+monitor_slug      str    required; natural key with project
+check_in_id       str    required; 32 hex — the SDK's, or a CrashCart-generated one for a missed check-in
+status            str    in_progress ok error missed timeout
+duration_s?       float  seconds
+release?          str
+environment?      str
+```
+
+Import: insert; conflict on `(project, monitor_slug, check_in_id, started_at)`
+→ skip. The monitor itself need not be in the file.
 
 ### `sessions`
 

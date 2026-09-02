@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/at-least/crashcart/internal/monitors"
 )
 
 // Breadcrumb is a normalized Sentry breadcrumb (the last 20 are kept).
@@ -172,6 +175,7 @@ type Envelope struct {
 	Attachments        []Attachment
 	UserReport         *UserReport         // the envelope's `user_report` item, if any (the protocol allows at most one)
 	ClientReportCounts []ClientReportCount // the envelope's `client_report` item's discarded_events, if any
+	CheckIn            *CheckIn            // the envelope's `check_in` item, if any (the protocol allows at most one)
 	Dropped            int                 // items of types CrashCart does not store, and attachments/user reports over the limits
 	Invalid            int                 // event items that did not parse (logged and reported to the SDK)
 }
@@ -293,6 +297,152 @@ func parseClientReport(body []byte) (counts []ClientReportCount, dropped int) {
 	return counts, dropped
 }
 
+// CheckIn is one envelope `check_in` item: one Sentry crons run report,
+// tied to a named monitor. CheckInID all-zero (32 hex zeros, still a
+// valid ID) means "update the monitor's latest in_progress check-in",
+// Sentry's shorthand SDKs use so they need not remember the id across a
+// run's in_progress and terminal check-ins.
+type CheckIn struct {
+	CheckInID   ID
+	MonitorSlug string
+	Status      string // in_progress | ok | error
+	DurationS   *float64
+	Release     string
+	Environment string
+	Config      *MonitorConfig // the item's monitor_config, when present and valid
+}
+
+// ZeroCheckInID is the all-zero id shorthand.
+const ZeroCheckInID ID = "00000000000000000000000000000000"
+
+// MonitorConfig is a check_in item's monitor_config: the monitor's
+// schedule and thresholds, upserted from the run's first (in_progress)
+// check-in. SDKs SHOULD send it only there, but a later one is accepted
+// too — it just re-upserts the same way a resend would.
+type MonitorConfig struct {
+	ScheduleType      string // crontab | interval
+	ScheduleValue     string
+	ScheduleUnit      string // interval only: minute | hour | day | week
+	Timezone          string
+	CheckinMarginMin  int32
+	MaxRuntimeMin     int32
+	FailureThreshold  int32
+	RecoveryThreshold int32
+}
+
+type rawMonitorConfig struct {
+	Schedule struct {
+		Type  string          `json:"type"`
+		Value json.RawMessage `json:"value"` // crontab: a string; interval: a number
+		Unit  string          `json:"unit"`
+	} `json:"schedule"`
+	CheckinMargin         *float64 `json:"checkin_margin"`
+	MaxRuntime            *float64 `json:"max_runtime"`
+	FailureIssueThreshold *int32   `json:"failure_issue_threshold"`
+	RecoveryThreshold     *int32   `json:"recovery_threshold"`
+	Timezone              string   `json:"timezone"`
+}
+
+type rawCheckIn struct {
+	CheckInID     string            `json:"check_in_id"`
+	MonitorSlug   string            `json:"monitor_slug"`
+	Status        string            `json:"status"`
+	Duration      *float64          `json:"duration"`
+	Release       string            `json:"release"`
+	Environment   string            `json:"environment"`
+	MonitorConfig *rawMonitorConfig `json:"monitor_config"`
+}
+
+// Field bounds for check_in: sized like the other free-text columns in
+// this file (maxSlug like maxRelease; schedule/timezone bounded against a
+// broken or hostile sender, the protocol has no documented limit on them).
+const (
+	maxSlug           = 200
+	maxScheduleValue  = 200
+	maxTimezone       = 64
+	defaultMargin     = 1
+	defaultMaxRuntime = 30
+	defaultThreshold  = 1
+)
+
+var validCheckInStatus = map[string]bool{"in_progress": true, "ok": true, "error": true}
+
+// parseCheckIn parses a `check_in` item body. nil when the status is not
+// one of the checkin_status enum's SDK-facing values (an unknown value
+// would fail the whole envelope, as with session status) or monitor_slug
+// is empty.
+func parseCheckIn(body []byte) *CheckIn {
+	var raw rawCheckIn
+	if json.Unmarshal(body, &raw) != nil {
+		return nil
+	}
+	slug := clean(raw.MonitorSlug, maxSlug)
+	if slug == "" || !validCheckInStatus[raw.Status] {
+		return nil
+	}
+	id, ok := ParseID(raw.CheckInID)
+	if !ok {
+		return nil
+	}
+	ci := &CheckIn{
+		CheckInID: id, MonitorSlug: slug, Status: raw.Status, DurationS: raw.Duration,
+		Release: clean(raw.Release, maxRelease), Environment: clean(raw.Environment, maxEnvironment),
+	}
+	if raw.MonitorConfig != nil {
+		ci.Config = parseMonitorConfig(raw.MonitorConfig)
+	}
+	return ci
+}
+
+// parseMonitorConfig validates the schedule (monitors.ParseSchedule is
+// the same parser Next() is later computed with, so what validates here
+// is exactly what will compute there) and bounds/defaults the rest. nil —
+// the config, and so the monitor upsert, is dropped — when the schedule
+// does not parse: a bad monitor_config must not create a half-configured
+// monitor.
+func parseMonitorConfig(raw *rawMonitorConfig) *MonitorConfig {
+	typ := strings.ToLower(strings.TrimSpace(raw.Schedule.Type))
+	var value, unit string
+	switch typ {
+	case "crontab":
+		json.Unmarshal(raw.Schedule.Value, &value)
+	case "interval":
+		var n float64
+		if json.Unmarshal(raw.Schedule.Value, &n) == nil {
+			value = strconv.Itoa(int(n))
+		}
+		unit = strings.ToLower(strings.TrimSpace(raw.Schedule.Unit))
+	}
+	value = clean(value, maxScheduleValue)
+	if _, err := monitors.ParseSchedule(typ, value, unit); err != nil {
+		return nil
+	}
+	tz := clean(raw.Timezone, maxTimezone)
+	if tz == "" {
+		tz = "UTC"
+	} else if _, err := time.LoadLocation(tz); err != nil {
+		return nil // an IANA zone this build cannot resolve is as unusable as a bad crontab expression
+	}
+	cfg := &MonitorConfig{
+		ScheduleType: typ, ScheduleValue: value, ScheduleUnit: unit,
+		Timezone: tz, CheckinMarginMin: defaultMargin, MaxRuntimeMin: defaultMaxRuntime,
+		FailureThreshold: defaultThreshold, RecoveryThreshold: defaultThreshold,
+	}
+	if raw.CheckinMargin != nil && *raw.CheckinMargin > 0 {
+		cfg.CheckinMarginMin = int32(*raw.CheckinMargin)
+	}
+	if raw.MaxRuntime != nil && *raw.MaxRuntime > 0 {
+		cfg.MaxRuntimeMin = int32(*raw.MaxRuntime)
+	}
+	if raw.FailureIssueThreshold != nil && *raw.FailureIssueThreshold > 0 {
+		cfg.FailureThreshold = *raw.FailureIssueThreshold
+	}
+	if raw.RecoveryThreshold != nil && *raw.RecoveryThreshold > 0 {
+		cfg.RecoveryThreshold = *raw.RecoveryThreshold
+	}
+	return cfg
+}
+
 type itemHeader struct {
 	Type           string `json:"type"`
 	Length         *int   `json:"length"`
@@ -395,8 +545,14 @@ func Parse(body []byte, now time.Time) Envelope {
 			counts, dropped := parseClientReport(itemBody)
 			env.ClientReportCounts = append(env.ClientReportCounts, counts...)
 			env.Dropped += dropped
+		case "check_in":
+			if ci := parseCheckIn(itemBody); ci != nil {
+				env.CheckIn = ci
+			} else {
+				env.Dropped++
+			}
 		case "transaction", "profile", "replay_event", "replay_recording",
-			"check_in", "log", "statsd", "feedback", "span":
+			"log", "statsd", "feedback", "span":
 			env.Dropped++
 		default:
 			env.Dropped++

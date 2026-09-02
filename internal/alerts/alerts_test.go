@@ -67,7 +67,7 @@ func setup(t *testing.T) (*store.Store, sqlc.Project, *sink, *Notifier) {
 		t.Fatal(err)
 	}
 	rules, _ := st.ListAlertRules(ctx, p.ID)
-	if len(rules) != 4 {
+	if len(rules) != 6 {
 		t.Fatalf("rules = %+v", rules)
 	}
 	if err := EnsureRules(ctx, st, p.ID); err != nil {

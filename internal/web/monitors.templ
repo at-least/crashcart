@@ -1,0 +1,125 @@
+package web
+
+import (
+	"strconv"
+
+	"github.com/at-least/crashcart/internal/db/sqlc"
+)
+
+func monitorHref(pg Page, m sqlc.Monitor) string {
+	return pg.S.Persist().Href("/monitors/" + m.Slug)
+}
+
+func monitorSchedule(m sqlc.Monitor) string {
+	if m.ScheduleType == "interval" {
+		return "every " + m.ScheduleValue + " " + deref(m.ScheduleUnit)
+	}
+	return m.ScheduleValue
+}
+
+func monitorStatusLabel(s sqlc.NullCheckinStatus) string {
+	if !s.Valid {
+		return "waiting for first check-in"
+	}
+	return string(s.CheckinStatus)
+}
+
+func monitorNextExpected(m sqlc.Monitor) string {
+	if m.NextExpectedAt == nil {
+		return "—"
+	}
+	return ago(*m.NextExpectedAt)
+}
+
+func checkInDuration(c sqlc.MonitorCheckin) string {
+	if c.DurationS == nil {
+		return "—"
+	}
+	return strconv.FormatFloat(float64(*c.DurationS), 'f', 1, 64) + "s"
+}
+
+// Monitors: every monitor the project's SDKs have upserted a schedule
+// for — created only that way, never by hand (Feedback's counterpart:
+// a list with no create form).
+templ Monitors(pg Page, rows []sqlc.Monitor) {
+	<h1 class="page-title">Monitors</h1>
+	if len(rows) == 0 {
+		@Empty("No monitors", "No check_in envelope items received yet — a monitor appears here once an SDK's crons integration sends its first check-in with a schedule.")
+	} else {
+		<div class="log-frame" data-slot="table-container">
+			<table class="log-table">
+				<thead>
+					<tr>
+						<th>Slug</th>
+						<th>Schedule</th>
+						<th>Last status</th>
+						<th>Next expected</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, m := range rows {
+						<tr data-href={ monitorHref(pg, m) } tabindex="0">
+							<td class="mono-cell">{ m.Slug }</td>
+							<td class="mono-cell">{ monitorSchedule(m) }</td>
+							<td>
+								if m.Alerting {
+									<span data-slot="badge" data-variant="destructive">{ monitorStatusLabel(m.LastStatus) }</span>
+								} else {
+									{ monitorStatusLabel(m.LastStatus) }
+								}
+							</td>
+							<td class="cell-time">{ monitorNextExpected(m) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	}
+}
+
+// MonitorPage: one monitor's config/state and its recent check-ins.
+templ MonitorPage(pg Page, m sqlc.Monitor, checkIns []sqlc.MonitorCheckin) {
+	<h1 class="page-title">{ m.Slug }</h1>
+	<dl class="meta-grid">
+		<div><dt>Schedule</dt><dd>{ monitorSchedule(m) }</dd></div>
+		<div><dt>Timezone</dt><dd>{ m.Timezone }</dd></div>
+		<div><dt>Checkin margin</dt><dd>{ strconv.Itoa(int(m.CheckinMarginMin)) } min</dd></div>
+		<div><dt>Max runtime</dt><dd>{ strconv.Itoa(int(m.MaxRuntimeMin)) } min</dd></div>
+		<div><dt>Failure threshold</dt><dd>{ strconv.Itoa(int(m.FailureThreshold)) }</dd></div>
+		<div><dt>Recovery threshold</dt><dd>{ strconv.Itoa(int(m.RecoveryThreshold)) }</dd></div>
+		<div><dt>Status</dt><dd>{ monitorStatusLabel(m.LastStatus) }</dd></div>
+		<div><dt>Next expected</dt><dd>{ monitorNextExpected(m) }</dd></div>
+	</dl>
+	<div class="mt-3">
+		<button type="button" data-slot="button" data-variant="outline" data-size="sm" hx-delete={ pg.S.Persist().Href("/monitors/" + m.Slug) } hx-confirm="Delete this monitor and its check-in history?" hx-target="body" hx-push-url="true">Delete</button>
+	</div>
+	<h2 class="section-title mt-4">Recent check-ins</h2>
+	if len(checkIns) == 0 {
+		@Empty("No check-ins", "No check_in envelope items received yet for this monitor.")
+	} else {
+		<div class="log-frame" data-slot="table-container">
+			<table class="log-table">
+				<thead>
+					<tr>
+						<th>Started</th>
+						<th>Status</th>
+						<th>Duration</th>
+						<th>Release</th>
+						<th>Environment</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, c := range checkIns {
+						<tr>
+							<td class="cell-time">{ ago(c.StartedAt) }</td>
+							<td>{ string(c.Status) }</td>
+							<td>{ checkInDuration(c) }</td>
+							<td class="mono-cell">{ orDash(deref(c.Release)) }</td>
+							<td class="mono-cell">{ orDash(deref(c.Environment)) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	}
+}

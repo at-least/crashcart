@@ -82,6 +82,10 @@ func (h *Handler) routes() map[string]http.HandlerFunc {
 		"GET /api/projects/{slug}/user_reports": h.listUserReports,
 		// client reports (SDK-side discarded event counts)
 		"GET /api/projects/{slug}/client_reports": h.listClientReports,
+		// monitors (Sentry's cron monitoring)
+		"GET /api/projects/{slug}/monitors":              h.listMonitors,
+		"GET /api/projects/{slug}/monitors/{monitor}":    h.getMonitor,
+		"DELETE /api/projects/{slug}/monitors/{monitor}": h.deleteMonitor,
 		// releases
 		"GET /api/projects/{slug}/releases":           h.listReleases,
 		"GET /api/projects/{slug}/releases/{version}": h.getRelease,

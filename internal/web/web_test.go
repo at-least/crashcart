@@ -300,7 +300,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if err != nil || len(np.PublicKey) != 32 {
 		t.Fatalf("new project: %+v %v", np, err)
 	}
-	if rules, _ := w.Store.ListAlertRules(ctx, np.ID); len(rules) != 4 {
+	if rules, _ := w.Store.ListAlertRules(ctx, np.ID); len(rules) != 6 {
 		t.Errorf("default alert rules = %d", len(rules))
 	}
 	assertPage(t, mux, "/p/ios-app/settings", np.PublicKey+"@")
@@ -671,5 +671,45 @@ func TestIgnoreConditionsAndAttachments(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != 303 {
 		t.Errorf("attachment without a session = %d", rec.Code)
+	}
+}
+
+func TestMonitorsPages(t *testing.T) {
+	w, p, mux := setup(t)
+	ctx := context.Background()
+	in := &ingest.Ingester{Store: w.Store, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+
+	cfg := `{"schedule":{"type":"crontab","value":"0 * * * *"},"checkin_margin":5}`
+	body := "{}\n{\"type\":\"check_in\"}\n" +
+		fmt.Sprintf(`{"check_in_id":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","monitor_slug":"nightly-backup","status":"in_progress","monitor_config":%s}`, cfg) + "\n"
+	if res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Monitors != 1 {
+		t.Fatalf("ingest: %+v %v", res, err)
+	}
+	body = "{}\n{\"type\":\"check_in\"}\n" +
+		`{"check_in_id":"00000000000000000000000000000000","monitor_slug":"nightly-backup","status":"ok"}` + "\n"
+	if _, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil {
+		t.Fatal(err)
+	}
+
+	assertPage(t, mux, "/p/shop/monitors", "nightly-backup", "0 * * * *")
+	assertPage(t, mux, "/p/shop/monitors/nightly-backup", "nightly-backup", "Recent check-ins", "ok")
+	if c, _ := get(t, mux, "/p/shop/monitors/no-such-monitor", false); c != 404 {
+		t.Errorf("unknown monitor = %d", c)
+	}
+
+	hx := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.AddCookie(sessionCookie)
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	if r := hx("DELETE", "/p/shop/monitors/nightly-backup", ""); r.Code != 303 {
+		t.Errorf("delete = %d %s", r.Code, r.Body)
+	}
+	if c, _ := get(t, mux, "/p/shop/monitors/nightly-backup", false); c != 404 {
+		t.Errorf("monitor still there after delete = %d", c)
 	}
 }

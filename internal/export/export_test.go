@@ -40,6 +40,13 @@ PNGPNGPNGPNG
 {"event_id":"e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3","name":"Alex","email":"alex@example.com","comments":"payment closed unexpectedly"}
 `
 
+// checkInEnvelope upserts one monitor (a monitor_config on its first,
+// in_progress check-in) — a durable config fact, so it round-trips.
+const checkInEnvelope = `{}
+{"type":"check_in"}
+{"check_in_id":"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1","monitor_slug":"nightly-backup","status":"in_progress","monitor_config":{"schedule":{"type":"crontab","value":"0 * * * *"},"checkin_margin":5}}
+`
+
 // fill writes a project with events, sessions, an issue, a symbol file,
 // alert rules and a channel into st.
 func fill(t *testing.T, st *store.Store) sqlc.Project {
@@ -67,6 +74,13 @@ func fill(t *testing.T, st *store.Store) sqlc.Project {
 	}
 	if res2.Stored != 1 || res2.Attachments != 1 || res2.UserReports != 1 {
 		t.Fatalf("ingest with attachment: %+v", res2)
+	}
+	res3, err := in.Ingest(ctx, p, sentry.Parse([]byte(checkInEnvelope), now), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res3.Monitors != 1 || res3.CheckIns != 1 {
+		t.Fatalf("ingest check-in: %+v", res3)
 	}
 	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0], Status: "resolved"}); err != nil {
 		t.Fatal(err)
@@ -151,7 +165,10 @@ func TestRoundTrip(t *testing.T) {
 	if !slices.Equal(seq, Tables) {
 		t.Fatalf("table order %v, want %v", seq, Tables)
 	}
-	want := map[string]int{"users": 1, "api_keys": 1, "projects": 1, "releases": 1, "issues": 2, "events": 3, "attachments": 1, "user_reports": 1, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1}
+	want := map[string]int{
+		"users": 1, "api_keys": 1, "projects": 1, "releases": 1, "issues": 2, "events": 3, "attachments": 1, "user_reports": 1,
+		"monitors": 1, "monitor_checkins": 1, "sessions": 3, "symbol_files": 1, "alert_rules": 1, "alert_channels": 1,
+	}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s: %d rows, want %d", k, got[k], v)

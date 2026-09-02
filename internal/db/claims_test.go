@@ -132,8 +132,9 @@ func TestEnumRejectsBadValue(t *testing.T) {
 		"issue_status":   "{unresolved,resolved,ignored,regression}",
 		"symbol_kind":    "{proguard,sourcemap,dsym}",
 		"job_kind":       "{symbolicate,resymbolicate,alert}",
-		"alert_type":     "{new_issue,regression,unhandled_spike,escalating}",
+		"alert_type":     "{new_issue,regression,unhandled_spike,escalating,monitor_failed,monitor_recovered}",
 		"channel_kind":   "{webhook,telegram}",
+		"checkin_status": "{in_progress,ok,error,missed,timeout}",
 	} {
 		if got[name] != want {
 			t.Errorf("enum %s = %s, want %s", name, got[name], want)

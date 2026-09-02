@@ -14,6 +14,8 @@ var alertLabels = map[string]alertLabel{
 	"regression":  {"Regression", "A resolved issue reappears on another release"},
 	"unhandled_spike": {"Unhandled error spike", "Unhandled errors in the last hour are 3× the 24 h baseline"},
 	"escalating":      {"Escalating", "An issue ignored until escalating has 3× its old hourly rate in the last hour (and at least 10 events)"},
+	"monitor_failed":    {"Monitor failed", "A monitor's consecutive failures (missed check-ins count too) reach its failure threshold"},
+	"monitor_recovered": {"Monitor recovered", "A previously failing monitor's consecutive successes reach its recovery threshold"},
 }
 
 func labelFor(t string) alertLabel {

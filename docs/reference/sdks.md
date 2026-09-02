@@ -41,8 +41,9 @@ If you run one of these, an issue or PR with what you saw is welcome.
 - `gzip` content encoding is supported.
 - Envelopes up to 20 MB.
 - `event`, `session`/`sessions`, `attachment`, `user_report` (user
-  feedback) and `client_report` (client-side discard counters) are
-  stored. Everything else — transactions, profiles, replays, the newer
-  `feedback` item, logs, metrics — is dropped without error, so enabling
-  tracing or replay in the SDK is harmless: the data just isn't stored.
+  feedback), `client_report` (client-side discard counters) and
+  `check_in` (cron monitoring) are stored. Everything else —
+  transactions, profiles, replays, the newer `feedback` item, logs,
+  metrics — is dropped without error, so enabling tracing or replay in
+  the SDK is harmless: the data just isn't stored.
 - Rate limiting answers `429`; SDKs honour it and resend cached crashes.

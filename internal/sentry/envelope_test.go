@@ -461,6 +461,90 @@ func TestParseClientReport(t *testing.T) {
 	}
 }
 
+func TestParseCheckIn(t *testing.T) {
+	body := `{"check_in_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","monitor_slug":"nightly-backup","status":"in_progress","release":"1.0","environment":"production",` +
+		`"monitor_config":{"schedule":{"type":"crontab","value":"0 * * * *"},"checkin_margin":5,"max_runtime":15,"failure_issue_threshold":2,"recovery_threshold":1,"timezone":"America/New_York"}}`
+	env := Parse(envelope(`{"type":"check_in"}`, body), now)
+	if env.Dropped != 0 || env.CheckIn == nil {
+		t.Fatalf("dropped=%d checkin=%+v", env.Dropped, env.CheckIn)
+	}
+	ci := env.CheckIn
+	if ci.CheckInID != "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" || ci.MonitorSlug != "nightly-backup" || ci.Status != "in_progress" ||
+		ci.Release != "1.0" || ci.Environment != "production" {
+		t.Errorf("check-in fields wrong: %+v", ci)
+	}
+	if ci.Config == nil {
+		t.Fatal("no monitor_config parsed")
+	}
+	cfg := ci.Config
+	if cfg.ScheduleType != "crontab" || cfg.ScheduleValue != "0 * * * *" || cfg.CheckinMarginMin != 5 || cfg.MaxRuntimeMin != 15 ||
+		cfg.FailureThreshold != 2 || cfg.RecoveryThreshold != 1 || cfg.Timezone != "America/New_York" {
+		t.Errorf("monitor config wrong: %+v", cfg)
+	}
+
+	// Interval schedule, and omitted thresholds/margin/timezone default.
+	body = `{"check_in_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","monitor_slug":"sync","status":"ok",` +
+		`"monitor_config":{"schedule":{"type":"interval","value":24,"unit":"hour"}}}`
+	env = Parse(envelope(`{"type":"check_in"}`, body), now)
+	if env.CheckIn == nil || env.CheckIn.Config == nil {
+		t.Fatal("interval config not parsed")
+	}
+	cfg = env.CheckIn.Config
+	if cfg.ScheduleType != "interval" || cfg.ScheduleValue != "24" || cfg.ScheduleUnit != "hour" || cfg.Timezone != "UTC" ||
+		cfg.CheckinMarginMin != defaultMargin || cfg.MaxRuntimeMin != defaultMaxRuntime || cfg.FailureThreshold != defaultThreshold || cfg.RecoveryThreshold != defaultThreshold {
+		t.Errorf("interval config defaults wrong: %+v", cfg)
+	}
+
+	// The all-zero check_in_id shorthand parses like any other valid id.
+	body = `{"check_in_id":"00000000000000000000000000000000","monitor_slug":"sync","status":"ok"}`
+	env = Parse(envelope(`{"type":"check_in"}`, body), now)
+	if env.CheckIn == nil || env.CheckIn.CheckInID != ZeroCheckInID {
+		t.Errorf("zero id: %+v", env.CheckIn)
+	}
+
+	// A check-in with no monitor_config: fine, just no config to upsert.
+	body = `{"check_in_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","monitor_slug":"sync","status":"ok"}`
+	env = Parse(envelope(`{"type":"check_in"}`, body), now)
+	if env.CheckIn == nil || env.CheckIn.Config != nil {
+		t.Errorf("no config expected: %+v", env.CheckIn)
+	}
+
+	// An invalid crontab expression drops the whole item — no
+	// half-configured monitor — not just the config.
+	body = `{"check_in_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","monitor_slug":"sync","status":"ok",` +
+		`"monitor_config":{"schedule":{"type":"crontab","value":"not a cron expression"}}}`
+	env = Parse(envelope(`{"type":"check_in"}`, body), now)
+	if env.CheckIn == nil || env.CheckIn.Config != nil {
+		t.Errorf("invalid crontab: config should be nil, got %+v", env.CheckIn)
+	}
+
+	// An unresolvable IANA timezone is treated the same way.
+	body = `{"check_in_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","monitor_slug":"sync","status":"ok",` +
+		`"monitor_config":{"schedule":{"type":"crontab","value":"0 * * * *"},"timezone":"Not/AZone"}}`
+	env = Parse(envelope(`{"type":"check_in"}`, body), now)
+	if env.CheckIn == nil || env.CheckIn.Config != nil {
+		t.Errorf("bad timezone: config should be nil, got %+v", env.CheckIn)
+	}
+
+	// missing monitor_slug or an unknown status: the whole item is dropped
+	// (an unknown status would fail the checkin_status enum, as with
+	// session status).
+	env = Parse(envelope(`{"type":"check_in"}`, `{"check_in_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","status":"ok"}`), now)
+	if env.CheckIn != nil || env.Dropped != 1 {
+		t.Errorf("no monitor_slug: checkin=%+v dropped=%d", env.CheckIn, env.Dropped)
+	}
+	env = Parse(envelope(`{"type":"check_in"}`, `{"check_in_id":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4","monitor_slug":"sync","status":"running"}`), now)
+	if env.CheckIn != nil || env.Dropped != 1 {
+		t.Errorf("unknown status: checkin=%+v dropped=%d", env.CheckIn, env.Dropped)
+	}
+
+	// Malformed body: dropped and counted.
+	env = Parse(envelope(`{"type":"check_in"}`, `not json`), now)
+	if env.CheckIn != nil || env.Dropped != 1 {
+		t.Errorf("malformed body: checkin=%+v dropped=%d", env.CheckIn, env.Dropped)
+	}
+}
+
 // TestTruncateRunes: Truncate bounds by characters, never splitting a
 // multi-byte one, and leaves a string of few characters but many bytes alone.
 func TestTruncateRunes(t *testing.T) {

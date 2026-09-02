@@ -88,6 +88,15 @@ crash-free rate, new issues introduced, and first/last seen.
 `/p/{slug}/releases/{version}` drills into one. See
 [Releases & release health](./releases).
 
+## Monitors
+
+`/p/{slug}/monitors` — Sentry's cron monitoring: every monitor an SDK's
+crons integration has reported a schedule for, its last status and when
+it's next expected. `/p/{slug}/monitors/{slug}` drills into one: its
+recent check-ins and a **Delete** button. A monitor is created only by
+the SDK's own `check_in` envelope item — there's no form here to add one
+by hand.
+
 ## Settings
 
 `/p/{slug}/settings`:

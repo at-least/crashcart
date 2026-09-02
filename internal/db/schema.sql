@@ -15,8 +15,9 @@ CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnor
 CREATE TYPE issue_status   AS ENUM ('unresolved', 'resolved', 'ignored', 'regression');
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
-CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike', 'escalating');
+CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike', 'escalating', 'monitor_failed', 'monitor_recovered');
 CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
+CREATE TYPE checkin_status AS ENUM ('in_progress', 'ok', 'error', 'missed', 'timeout');
 
 -- Time buckets of any width in seconds, Unix-epoch-aligned (equal to Go's t.Truncate(width) for widths
 -- that divide a day; a 7 d width would be Thursday-aligned): the chart queries fold the hourly rollups with
@@ -188,6 +189,57 @@ CREATE TABLE client_report_counts (
     quantity   BIGINT NOT NULL,
     PRIMARY KEY (project_id, bucket, reason, category)
 );
+
+-- ── monitors (Sentry's cron monitoring) ─────────────────────────────────
+-- A monitor is schedule config, not event-derived: created only by a
+-- check_in envelope item's monitor_config (upsert on the first, in_progress
+-- check-in of a run), never by the viewer. Kept forever (deleted by the
+-- user, or cascaded with the project) — no sweep, unlike user_reports:
+-- config is small and does not accumulate. State (last_status,
+-- consecutive_*, next_expected_at) is per monitor, not per environment
+-- (Sentry tracks the latter; CrashCart doesn't, for now) and is advanced
+-- only by a terminal (ok/error) check-in or alerts.CheckMonitors noticing a
+-- miss/timeout — never by an in_progress one.
+CREATE TABLE monitors (
+    project_id             BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    slug                   TEXT NOT NULL,
+    schedule_type          TEXT NOT NULL,             -- 'crontab' | 'interval'
+    schedule_value         TEXT NOT NULL,             -- crontab expression, or the interval number as text
+    schedule_unit          TEXT,                       -- interval unit: minute | hour | day | week (null for crontab)
+    timezone               TEXT NOT NULL DEFAULT 'UTC', -- IANA zone Schedule.Next is computed in
+    checkin_margin_min     INTEGER NOT NULL DEFAULT 1,
+    max_runtime_min        INTEGER NOT NULL DEFAULT 30,
+    failure_threshold      INTEGER NOT NULL DEFAULT 1,
+    recovery_threshold     INTEGER NOT NULL DEFAULT 1,
+    last_status            checkin_status,
+    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+    consecutive_successes  INTEGER NOT NULL DEFAULT 0,
+    alerting               BOOLEAN NOT NULL DEFAULT false, -- true from the moment consecutive_failures first crosses failure_threshold until recovery_threshold successes fire monitor_recovered — the one-shot edge both alerts fire on
+    next_expected_at       TIMESTAMPTZ,
+    last_checkin_at        TIMESTAMPTZ,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, slug)
+);
+
+-- One row per check-in, keyed by the SDK's check_in_id; an in_progress ->
+-- ok/error update of a run hits the same row (started_at, the partition
+-- key, is set once and never touched again — the same "status update
+-- hits one row" shape as sessions). Weekly-partitioned like
+-- events/sessions/attachments: a busy 5-minute cron is sessions-volume,
+-- not user_reports-volume, and retention drops it the same way.
+CREATE TABLE monitor_checkins (
+    started_at   TIMESTAMPTZ NOT NULL,
+    project_id   BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    monitor_slug TEXT NOT NULL,
+    check_in_id  UUID NOT NULL,
+    status       checkin_status NOT NULL,
+    duration_s   REAL,                                 -- seconds, per the wire spec (not ms)
+    release      TEXT,
+    environment  TEXT,
+    PRIMARY KEY (project_id, monitor_slug, check_in_id, started_at)
+) PARTITION BY RANGE (started_at);
+CREATE TABLE monitor_checkins_default PARTITION OF monitor_checkins DEFAULT;
+CREATE INDEX monitor_checkins_latest_in_progress ON monitor_checkins (project_id, monitor_slug, started_at DESC) WHERE status = 'in_progress';
 
 -- ── sessions (release health) ──────────────────────────────────────────
 

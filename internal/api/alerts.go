@@ -13,7 +13,10 @@ import (
 	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
-var alertTypes = map[string]bool{"new_issue": true, "regression": true, "unhandled_spike": true, "escalating": true}
+var alertTypes = map[string]bool{
+	"new_issue": true, "regression": true, "unhandled_spike": true, "escalating": true,
+	"monitor_failed": true, "monitor_recovered": true,
+}
 
 func (h *Handler) getAlerts(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.project(w, r)

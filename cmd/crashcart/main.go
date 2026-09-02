@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	_ "time/tzdata" // the release image (distroless/static) carries no system tzdata; monitors' IANA timezones need it embedded
 
 	"github.com/at-least/crashcart/internal/alerts"
 	"github.com/at-least/crashcart/internal/auth"
@@ -223,9 +224,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 			var a struct {
 				Type        string `json:"type"`
 				Fingerprint string `json:"fingerprint"`
+				Monitor     string `json:"monitor"`
 			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return err
+			}
+			if a.Monitor != "" {
+				return notifier.Monitor(ctx, j.ProjectID, a.Type, a.Monitor)
 			}
 			return notifier.Issue(ctx, j.ProjectID, a.Type, a.Fingerprint)
 		},
@@ -255,6 +260,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	tick(time.Minute, store.LeaderRollup, "stats rollup", func(ctx context.Context) error { _, err := retention.Rollup(ctx, st, cfg); return err })
 	tick(cfg.AlertInterval, store.LeaderSpikeCheck, "unhandled-spike check", notifier.CheckSpikes)
 	tick(time.Minute, store.LeaderIgnoreCheck, "ignored-issue check", notifier.CheckIgnored)
+	tick(time.Minute, store.LeaderMonitorCheck, "monitor check", notifier.CheckMonitors)
 	tick(time.Hour, store.LeaderSweep, "retention sweep", func(ctx context.Context) error { return retention.Sweep(ctx, st, cfg, log) })
 
 	// At shutdown the SSE streams are told to end (they would otherwise

@@ -4,8 +4,9 @@ CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnor
 CREATE TYPE issue_status   AS ENUM ('unresolved', 'resolved', 'ignored', 'regression');
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
-CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike', 'escalating');
+CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike', 'escalating', 'monitor_failed', 'monitor_recovered');
 CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
+CREATE TYPE checkin_status AS ENUM ('in_progress', 'ok', 'error', 'missed', 'timeout');
 
 -- Time buckets of any width in seconds, Unix-epoch-aligned (equal to Go's t.Truncate(width) for widths
 -- that divide a day; a 7 d width would be Thursday-aligned): the chart queries fold the hourly aggregates with
@@ -114,6 +115,39 @@ CREATE TABLE client_report_counts (
     category   TEXT NOT NULL,
     quantity   BIGINT NOT NULL,
     PRIMARY KEY (project_id, bucket, reason, category)
+);
+
+CREATE TABLE monitors (
+    project_id             BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    slug                   TEXT NOT NULL,
+    schedule_type          TEXT NOT NULL,
+    schedule_value         TEXT NOT NULL,
+    schedule_unit          TEXT,
+    timezone               TEXT NOT NULL DEFAULT 'UTC',
+    checkin_margin_min     INTEGER NOT NULL DEFAULT 1,
+    max_runtime_min        INTEGER NOT NULL DEFAULT 30,
+    failure_threshold      INTEGER NOT NULL DEFAULT 1,
+    recovery_threshold     INTEGER NOT NULL DEFAULT 1,
+    last_status            checkin_status,
+    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+    consecutive_successes  INTEGER NOT NULL DEFAULT 0,
+    alerting               BOOLEAN NOT NULL DEFAULT false,
+    next_expected_at       TIMESTAMPTZ,
+    last_checkin_at        TIMESTAMPTZ,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, slug)
+);
+
+CREATE TABLE monitor_checkins (
+    started_at   TIMESTAMPTZ NOT NULL,
+    project_id   BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    monitor_slug TEXT NOT NULL,
+    check_in_id  UUID NOT NULL,
+    status       checkin_status NOT NULL,
+    duration_s   REAL,
+    release      TEXT,
+    environment  TEXT,
+    PRIMARY KEY (project_id, monitor_slug, check_in_id, started_at)
 );
 
 CREATE TABLE sessions (

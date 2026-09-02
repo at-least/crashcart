@@ -8,7 +8,8 @@
 //
 //	{"t":"_meta","format":<Format>,"exported_at":"<RFC3339>","app":"crashcart"}
 //	{"t":"projects", ...}   then issues, events, attachments, user_reports,
-//	                        sessions, symbol_files, alert_rules, alert_channels (see Tables)
+//	                        monitors, monitor_checkins, sessions, symbol_files,
+//	                        alert_rules, alert_channels (see Tables)
 //
 // Rows refer to their project by "project": "<slug>" — never by id, so a
 // dump loads into any database. Events and sessions carry their natural
@@ -51,7 +52,7 @@ const Format = 3 // 3: no triaged status; 2: transaction / culprit / unhandled_s
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
-var Tables = []string{"users", "api_keys", "projects", "releases", "issues", "events", "attachments", "user_reports", "sessions", "symbol_files", "alert_rules", "alert_channels"}
+var Tables = []string{"users", "api_keys", "projects", "releases", "issues", "events", "attachments", "user_reports", "monitors", "monitor_checkins", "sessions", "symbol_files", "alert_rules", "alert_channels"}
 
 // Options narrows an export.
 type Options struct {
@@ -197,6 +198,39 @@ type userReportRow struct {
 	ReceivedAt ts      `json:"received_at"`
 }
 
+type monitorRow struct {
+	T                    string  `json:"t"`
+	Project              string  `json:"project"`
+	Slug                 string  `json:"slug"`
+	ScheduleType         string  `json:"schedule_type"`
+	ScheduleValue        string  `json:"schedule_value"`
+	ScheduleUnit         *string `json:"schedule_unit,omitempty"`
+	Timezone             string  `json:"timezone"`
+	CheckinMarginMin     int32   `json:"checkin_margin_min"`
+	MaxRuntimeMin        int32   `json:"max_runtime_min"`
+	FailureThreshold     int32   `json:"failure_threshold"`
+	RecoveryThreshold    int32   `json:"recovery_threshold"`
+	LastStatus           *string `json:"last_status,omitempty"`
+	ConsecutiveFailures  int32   `json:"consecutive_failures"`
+	ConsecutiveSuccesses int32   `json:"consecutive_successes"`
+	Alerting             bool    `json:"alerting"`
+	NextExpectedAt       *ts     `json:"next_expected_at,omitempty"`
+	LastCheckinAt        *ts     `json:"last_checkin_at,omitempty"`
+	CreatedAt            ts      `json:"created_at"`
+}
+
+type monitorCheckinRow struct {
+	T           string   `json:"t"`
+	Project     string   `json:"project"`
+	StartedAt   ts       `json:"started_at"`
+	MonitorSlug string   `json:"monitor_slug"`
+	CheckInID   string   `json:"check_in_id"`
+	Status      string   `json:"status"`
+	DurationS   *float32 `json:"duration_s,omitempty"`
+	Release     *string  `json:"release,omitempty"`
+	Environment *string  `json:"environment,omitempty"`
+}
+
 type sessionRow struct {
 	T           string  `json:"t"`
 	Project     string  `json:"project"`
@@ -283,6 +317,11 @@ const (
 	symbols, payload FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
 	selectAttachments = `SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data FROM attachments WHERE project_id = $1 ORDER BY occurred_at, event_id, n`
 	selectUserReports = `SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 ORDER BY event_id`
+	selectMonitors    = `SELECT project_id, slug, schedule_type, schedule_value, schedule_unit, timezone, checkin_margin_min, max_runtime_min,
+	failure_threshold, recovery_threshold, last_status, consecutive_failures, consecutive_successes, alerting, next_expected_at, last_checkin_at, created_at
+	FROM monitors WHERE project_id = $1 ORDER BY slug`
+	selectMonitorCheckins = `SELECT started_at, project_id, monitor_slug, check_in_id, status, duration_s, release, environment
+	FROM monitor_checkins WHERE project_id = $1 ORDER BY monitor_slug, started_at, check_in_id`
 	selectSessions    = `SELECT started_at, project_id, sid, release, environment, status, count FROM sessions WHERE project_id = $1 ORDER BY started_at, sid`
 	selectReleases    = `SELECT project_id, release, platforms, first_seen FROM releases WHERE project_id = $1 ORDER BY release`
 	selectSymbolFiles = `SELECT id, project_id, kind, release, debug_id, filename, size, data, uploaded_at
@@ -388,6 +427,39 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 			})
 		}, p.ID); err != nil {
 			return fmt.Errorf("export user_reports: %w", err)
+		}
+	}
+	for _, p := range projects {
+		if err := stream(ctx, tx, selectMonitors, func(r sqlc.Monitor) error {
+			var lastStatus *string
+			if r.LastStatus.Valid {
+				s := string(r.LastStatus.CheckinStatus)
+				lastStatus = &s
+			}
+			return enc.Encode(monitorRow{
+				T: "monitors", Project: p.Slug, Slug: r.Slug, ScheduleType: r.ScheduleType, ScheduleValue: r.ScheduleValue,
+				ScheduleUnit: r.ScheduleUnit, Timezone: r.Timezone, CheckinMarginMin: r.CheckinMarginMin, MaxRuntimeMin: r.MaxRuntimeMin,
+				FailureThreshold: r.FailureThreshold, RecoveryThreshold: r.RecoveryThreshold, LastStatus: lastStatus,
+				ConsecutiveFailures: r.ConsecutiveFailures, ConsecutiveSuccesses: r.ConsecutiveSuccesses, Alerting: r.Alerting,
+				NextExpectedAt: tsPtr(r.NextExpectedAt), LastCheckinAt: tsPtr(r.LastCheckinAt), CreatedAt: at(r.CreatedAt),
+			})
+		}, p.ID); err != nil {
+			return fmt.Errorf("export monitors: %w", err)
+		}
+	}
+	for _, p := range projects {
+		if err := stream(ctx, tx, selectMonitorCheckins, func(r sqlc.MonitorCheckin) error {
+			var durationS *float32
+			if r.DurationS != nil {
+				d := *r.DurationS
+				durationS = &d
+			}
+			return enc.Encode(monitorCheckinRow{
+				T: "monitor_checkins", Project: p.Slug, StartedAt: at(r.StartedAt), MonitorSlug: r.MonitorSlug,
+				CheckInID: string(r.CheckInID), Status: string(r.Status), DurationS: durationS, Release: r.Release, Environment: r.Environment,
+			})
+		}, p.ID); err != nil {
+			return fmt.Errorf("export monitor_checkins: %w", err)
 		}
 	}
 	for _, p := range projects {
@@ -546,6 +618,19 @@ const (
 	VALUES ($1,$2,$3,$4,$5,$6)
 	ON CONFLICT (project_id, event_id) DO UPDATE SET
 	    received_at = EXCLUDED.received_at, name = EXCLUDED.name, email = EXCLUDED.email, comments = EXCLUDED.comments`
+	upsertMonitor = `INSERT INTO monitors (project_id, slug, schedule_type, schedule_value, schedule_unit, timezone,
+	checkin_margin_min, max_runtime_min, failure_threshold, recovery_threshold, last_status, consecutive_failures,
+	consecutive_successes, alerting, next_expected_at, last_checkin_at, created_at)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+	ON CONFLICT (project_id, slug) DO UPDATE SET
+	    schedule_type = EXCLUDED.schedule_type, schedule_value = EXCLUDED.schedule_value, schedule_unit = EXCLUDED.schedule_unit,
+	    timezone = EXCLUDED.timezone, checkin_margin_min = EXCLUDED.checkin_margin_min, max_runtime_min = EXCLUDED.max_runtime_min,
+	    failure_threshold = EXCLUDED.failure_threshold, recovery_threshold = EXCLUDED.recovery_threshold,
+	    last_status = EXCLUDED.last_status, consecutive_failures = EXCLUDED.consecutive_failures,
+	    consecutive_successes = EXCLUDED.consecutive_successes, alerting = EXCLUDED.alerting,
+	    next_expected_at = EXCLUDED.next_expected_at, last_checkin_at = EXCLUDED.last_checkin_at, created_at = EXCLUDED.created_at`
+	insertMonitorCheckin = `INSERT INTO monitor_checkins (started_at, project_id, monitor_slug, check_in_id, status, duration_s, release, environment)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (project_id, monitor_slug, check_in_id, started_at) DO NOTHING`
 	upsertRelease = `INSERT INTO releases (project_id, release, platforms, first_seen) VALUES ($1,$2,$3,$4)
 	ON CONFLICT (project_id, release) DO UPDATE SET
 	    platforms = (SELECT array_agg(DISTINCT x ORDER BY x) FROM unnest(releases.platforms || EXCLUDED.platforms) AS x),
@@ -829,6 +914,45 @@ func (im *importer) line(b []byte) error {
 			return fmt.Errorf("user_reports row: event_id %q is not a 32-hex id", r.EventID)
 		}
 		im.batch.Queue(upsertUserReport, pid, eid, tsOrNow(r.ReceivedAt), r.Name, r.Email, r.Comments)
+	case "monitors":
+		var r monitorRow
+		if err := json.Unmarshal(b, &r); err != nil {
+			return err
+		}
+		pid, err := im.project(r.Project)
+		if err != nil {
+			return err
+		}
+		if r.Slug == "" {
+			return errors.New("monitors row without slug")
+		}
+		var nextExpected, lastCheckin *time.Time
+		if r.NextExpectedAt != nil {
+			nextExpected = &r.NextExpectedAt.Time
+		}
+		if r.LastCheckinAt != nil {
+			lastCheckin = &r.LastCheckinAt.Time
+		}
+		im.batch.Queue(upsertMonitor, pid, r.Slug, r.ScheduleType, r.ScheduleValue, r.ScheduleUnit, r.Timezone,
+			r.CheckinMarginMin, r.MaxRuntimeMin, r.FailureThreshold, r.RecoveryThreshold, r.LastStatus,
+			r.ConsecutiveFailures, r.ConsecutiveSuccesses, r.Alerting, nextExpected, lastCheckin, tsOrNow(r.CreatedAt))
+	case "monitor_checkins":
+		var r monitorCheckinRow
+		if err := json.Unmarshal(b, &r); err != nil {
+			return err
+		}
+		pid, err := im.project(r.Project)
+		if err != nil {
+			return err
+		}
+		if r.StartedAt.IsZero() || r.MonitorSlug == "" || r.CheckInID == "" {
+			return errors.New("monitor_checkins row needs started_at, monitor_slug and check_in_id")
+		}
+		cid, ok := sentry.ParseID(r.CheckInID)
+		if !ok {
+			return fmt.Errorf("monitor_checkins row: check_in_id %q is not a 32-hex id", r.CheckInID)
+		}
+		im.batch.Queue(insertMonitorCheckin, r.StartedAt.Time, pid, r.MonitorSlug, cid, r.Status, r.DurationS, r.Release, r.Environment)
 	case "sessions":
 		var r sessionRow
 		if err := json.Unmarshal(b, &r); err != nil {

@@ -9,6 +9,7 @@
 //	GET  /p/{slug}/events/{id}/attachments/{n}  one attachment's bytes (a screenshot)
 //	GET  /p/{slug}/releases[/{v}]   release health
 //	GET  /p/{slug}/feedback         user reports (Sentry's user feedback), newest first
+//	GET  /p/{slug}/monitors[/{m}]   cron monitoring: list, or one monitor's check-ins
 //	GET  /p/{slug}/settings         DSN, sampling, alerts, channels, symbols
 //	GET  /p/{slug}/stream           SSE: new issues / regressions counter
 //	GET  /login, /setup, /account   sign in, first user, users + API keys (account.go)
@@ -90,6 +91,9 @@ func (w *Web) Register(mux *http.ServeMux) {
 	mux.Handle("GET /p/{slug}/releases", page(w.releases))
 	mux.Handle("GET /p/{slug}/releases/{version}", page(w.release))
 	mux.Handle("GET /p/{slug}/feedback", page(w.feedback))
+	mux.Handle("GET /p/{slug}/monitors", page(w.monitors))
+	mux.Handle("GET /p/{slug}/monitors/{monitor}", page(w.monitor))
+	mux.Handle("DELETE /p/{slug}/monitors/{monitor}", mutation(w.monitorDelete))
 	mux.Handle("GET /p/{slug}/settings", page(w.settings))
 	mux.Handle("PATCH /p/{slug}/settings/sampling", mutation(w.settingsSampling))
 	mux.Handle("PATCH /p/{slug}/settings/platform", mutation(w.settingsPlatform))
@@ -182,7 +186,7 @@ func (w *Web) render(rw http.ResponseWriter, r *http.Request, c templ.Component)
 type Page struct {
 	S           ViewState
 	Project     *sqlc.Project // nil on the portal
-	Section     string        // overview | issues | events | releases | feedback | settings
+	Section     string        // overview | issues | events | releases | feedback | monitors | settings
 	Stream      string        // SSE URL when the page shows the "new issues" banner
 	Regressions int64         // current regression count (baseline for the banner)
 	Tags        []string      // custom tag keys shown as filters

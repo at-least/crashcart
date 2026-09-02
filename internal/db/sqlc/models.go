@@ -16,10 +16,12 @@ import (
 type AlertType string
 
 const (
-	AlertTypeNewIssue       AlertType = "new_issue"
-	AlertTypeRegression     AlertType = "regression"
-	AlertTypeUnhandledSpike AlertType = "unhandled_spike"
-	AlertTypeEscalating     AlertType = "escalating"
+	AlertTypeNewIssue         AlertType = "new_issue"
+	AlertTypeRegression       AlertType = "regression"
+	AlertTypeUnhandledSpike   AlertType = "unhandled_spike"
+	AlertTypeEscalating       AlertType = "escalating"
+	AlertTypeMonitorFailed    AlertType = "monitor_failed"
+	AlertTypeMonitorRecovered AlertType = "monitor_recovered"
 )
 
 func (e *AlertType) Scan(src interface{}) error {
@@ -97,6 +99,51 @@ func (ns NullChannelKind) Value() (driver.Value, error) {
 		return nil, nil
 	}
 	return string(ns.ChannelKind), nil
+}
+
+type CheckinStatus string
+
+const (
+	CheckinStatusInProgress CheckinStatus = "in_progress"
+	CheckinStatusOk         CheckinStatus = "ok"
+	CheckinStatusError      CheckinStatus = "error"
+	CheckinStatusMissed     CheckinStatus = "missed"
+	CheckinStatusTimeout    CheckinStatus = "timeout"
+)
+
+func (e *CheckinStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = CheckinStatus(s)
+	case string:
+		*e = CheckinStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for CheckinStatus: %T", src)
+	}
+	return nil
+}
+
+type NullCheckinStatus struct {
+	CheckinStatus CheckinStatus `json:"checkin_status"`
+	Valid         bool          `json:"valid"` // Valid is true if CheckinStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullCheckinStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.CheckinStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.CheckinStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullCheckinStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.CheckinStatus), nil
 }
 
 type EventLevel string
@@ -474,6 +521,37 @@ type Job struct {
 	LockedUntil *time.Time      `json:"locked_until"`
 	LastError   *string         `json:"last_error"`
 	CreatedAt   time.Time       `json:"created_at"`
+}
+
+type Monitor struct {
+	ProjectID            int64             `json:"project_id"`
+	Slug                 string            `json:"slug"`
+	ScheduleType         string            `json:"schedule_type"`
+	ScheduleValue        string            `json:"schedule_value"`
+	ScheduleUnit         *string           `json:"schedule_unit"`
+	Timezone             string            `json:"timezone"`
+	CheckinMarginMin     int32             `json:"checkin_margin_min"`
+	MaxRuntimeMin        int32             `json:"max_runtime_min"`
+	FailureThreshold     int32             `json:"failure_threshold"`
+	RecoveryThreshold    int32             `json:"recovery_threshold"`
+	LastStatus           NullCheckinStatus `json:"last_status"`
+	ConsecutiveFailures  int32             `json:"consecutive_failures"`
+	ConsecutiveSuccesses int32             `json:"consecutive_successes"`
+	Alerting             bool              `json:"alerting"`
+	NextExpectedAt       *time.Time        `json:"next_expected_at"`
+	LastCheckinAt        *time.Time        `json:"last_checkin_at"`
+	CreatedAt            time.Time         `json:"created_at"`
+}
+
+type MonitorCheckin struct {
+	StartedAt   time.Time     `json:"started_at"`
+	ProjectID   int64         `json:"project_id"`
+	MonitorSlug string        `json:"monitor_slug"`
+	CheckInID   sentry.ID     `json:"check_in_id"`
+	Status      CheckinStatus `json:"status"`
+	DurationS   *float32      `json:"duration_s"`
+	Release     *string       `json:"release"`
+	Environment *string       `json:"environment"`
 }
 
 type Project struct {

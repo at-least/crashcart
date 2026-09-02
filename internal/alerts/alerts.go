@@ -30,10 +30,12 @@ import (
 
 // Alert types (alert_rules.type).
 const (
-	TypeNewIssue       = "new_issue"
-	TypeRegression     = "regression"
-	TypeUnhandledSpike = "unhandled_spike"
-	TypeEscalating     = "escalating" // an issue ignored until escalating came back
+	TypeNewIssue         = "new_issue"
+	TypeRegression       = "regression"
+	TypeUnhandledSpike   = "unhandled_spike"
+	TypeEscalating       = "escalating" // an issue ignored until escalating came back
+	TypeMonitorFailed    = "monitor_failed"
+	TypeMonitorRecovered = "monitor_recovered"
 )
 
 // Spike thresholds: at least MinSpikeUnhandled in the last hour and
@@ -327,11 +329,15 @@ func TelegramText(p Payload) string {
 		b.WriteString("Unhandled error spike")
 	case TypeEscalating:
 		b.WriteString("Escalating")
+	case TypeMonitorFailed:
+		b.WriteString("Monitor failed")
+	case TypeMonitorRecovered:
+		b.WriteString("Monitor recovered")
 	default:
 		b.WriteString(p.Type)
 	}
 	fmt.Fprintf(&b, " in %s\n%s", p.Project, p.Title)
-	if p.Type != TypeUnhandledSpike {
+	if p.Type != TypeUnhandledSpike && p.Type != TypeMonitorFailed && p.Type != TypeMonitorRecovered {
 		fmt.Fprintf(&b, "\n%s · %d events", p.Level, p.EventCount)
 		if p.LastRelease != nil && *p.LastRelease != "" {
 			fmt.Fprintf(&b, " · release %s", *p.LastRelease)

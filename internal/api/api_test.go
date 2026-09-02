@@ -180,7 +180,7 @@ func TestProjectsAndAuth(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("bad slug: %d", rec.Code)
 	}
-	if out := e.get("/api/projects/demo/alerts", 200); len(out["rules"].([]any)) != 4 {
+	if out := e.get("/api/projects/demo/alerts", 200); len(out["rules"].([]any)) != 6 {
 		t.Errorf("default alert rules: %v", out["rules"])
 	}
 	req = httptest.NewRequest("GET", "/api/projects/demo", nil)
@@ -482,7 +482,7 @@ func TestAlerts(t *testing.T) {
 		t.Errorf("telegram numeric chat_id: %d", rec.Code)
 	}
 	al := e.get("/api/projects/demo/alerts", 200)
-	if len(al["channels"].([]any)) != 2 || len(al["rules"].([]any)) != 4 {
+	if len(al["channels"].([]any)) != 2 || len(al["rules"].([]any)) != 6 {
 		t.Errorf("alerts = %v", al)
 	}
 	if rec, _ := e.do("DELETE", fmt.Sprintf("/api/projects/demo/alerts/channels/%d", id), nil); rec.Code != 204 {
@@ -765,5 +765,60 @@ func TestClientReports(t *testing.T) {
 	c1 := counts[1].(map[string]any)
 	if c1["reason"] != "before_send" || c1["category"] != "error" || c1["quantity"] != float64(1) {
 		t.Errorf("count 1 = %v", c1)
+	}
+}
+
+func TestMonitors(t *testing.T) {
+	e := newEnv(t)
+	p := e.createProject("demo")
+	now := time.Now().UTC()
+
+	cfg := `{"schedule":{"type":"crontab","value":"0 * * * *"},"checkin_margin":5,"failure_issue_threshold":2}`
+	body := "{}\n{\"type\":\"check_in\"}\n" +
+		fmt.Sprintf(`{"check_in_id":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","monitor_slug":"nightly-backup","status":"in_progress","monitor_config":%s}`, cfg) + "\n"
+	if res, err := e.in.Ingest(context.Background(), p, sentry.Parse([]byte(body), now), now); err != nil || res.Monitors != 1 || res.CheckIns != 1 {
+		t.Fatalf("ingest: %+v %v", res, err)
+	}
+	body = "{}\n{\"type\":\"check_in\"}\n" +
+		`{"check_in_id":"00000000000000000000000000000000","monitor_slug":"nightly-backup","status":"ok","duration":12.5}` + "\n"
+	if res, err := e.in.Ingest(context.Background(), p, sentry.Parse([]byte(body), now), now); err != nil || res.CheckIns != 1 {
+		t.Fatalf("terminal check-in: %+v %v", res, err)
+	}
+
+	list := e.get("/api/projects/demo/monitors", 200)
+	rows, _ := list["monitors"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("monitors = %v", rows)
+	}
+	m := rows[0].(map[string]any)
+	if m["slug"] != "nightly-backup" || m["schedule_type"] != "crontab" || m["schedule_value"] != "0 * * * *" || m["last_status"] != "ok" {
+		t.Fatalf("monitor = %v", m)
+	}
+
+	detail := e.get("/api/projects/demo/monitors/nightly-backup", 200)
+	dm, _ := detail["monitor"].(map[string]any)
+	if dm["slug"] != "nightly-backup" || dm["consecutive_successes"] != float64(1) {
+		t.Fatalf("monitor detail = %v", dm)
+	}
+	checkIns, _ := detail["check_ins"].([]any)
+	if len(checkIns) != 1 {
+		t.Fatalf("check_ins = %v", checkIns)
+	}
+	ci := checkIns[0].(map[string]any)
+	if ci["status"] != "ok" || ci["duration_s"] != 12.5 {
+		t.Errorf("check-in = %v", ci)
+	}
+
+	if rec, _ := e.do("GET", "/api/projects/demo/monitors/no-such-monitor", nil); rec.Code != 404 {
+		t.Errorf("unknown monitor: %d", rec.Code)
+	}
+	if rec, _ := e.do("DELETE", "/api/projects/demo/monitors/nightly-backup", nil); rec.Code != 204 {
+		t.Errorf("delete: %d", rec.Code)
+	}
+	if rec, _ := e.do("DELETE", "/api/projects/demo/monitors/nightly-backup", nil); rec.Code != 404 {
+		t.Errorf("delete again: %d, want 404", rec.Code)
+	}
+	if list := e.get("/api/projects/demo/monitors", 200); len(list["monitors"].([]any)) != 0 {
+		t.Errorf("monitor still listed after delete: %v", list["monitors"])
 	}
 }

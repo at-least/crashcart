@@ -32,7 +32,7 @@ const PartitionWidth = 7 * 24 * time.Hour
 const partitionsAhead = 2 * PartitionWidth
 
 // partitioned lists the tables and their partition key.
-var partitioned = []struct{ table, column string }{{"events", "occurred_at"}, {"attachments", "occurred_at"}, {"sessions", "started_at"}}
+var partitioned = []struct{ table, column string }{{"events", "occurred_at"}, {"attachments", "occurred_at"}, {"sessions", "started_at"}, {"monitor_checkins", "started_at"}}
 
 // rolled lists the rollup tables (bounded by AggregateRetentionDays).
 var rolled = []string{"event_stats_hourly_rolled", "issue_stats_hourly_rolled", "release_health_hourly_rolled", "client_report_counts"}
@@ -49,7 +49,7 @@ func Reconcile(ctx context.Context, st *store.Store, cfg config.Config, log *slo
 
 // ── partitions ─────────────────────────────────────────────────────────
 
-var partitionName = regexp.MustCompile(`^(events|attachments|sessions)_p(\d{8})$`)
+var partitionName = regexp.MustCompile(`^(events|attachments|sessions|monitor_checkins)_p(\d{8})$`)
 
 // weekStart is the Monday 00:00 UTC on or before t.
 func weekStart(t time.Time) time.Time {

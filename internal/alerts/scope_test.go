@@ -45,7 +45,7 @@ func TestEnsureRulesDefaults(t *testing.T) {
 			t.Errorf("%s: %+v (present %v)", typ, r, ok)
 		}
 	}
-	if len(rules) != 4 {
+	if len(rules) != 6 {
 		t.Errorf("rules = %d", len(rules))
 	}
 	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue, Enabled: false, CooldownMinutes: 5}); err != nil {

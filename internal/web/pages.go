@@ -932,3 +932,60 @@ func (w *Web) feedback(rw http.ResponseWriter, r *http.Request) {
 	pg := Page{S: state(r), Project: &p, Section: "feedback"}
 	w.page(rw, r, pg, func(pg Page) templ.Component { return Feedback(pg, rows) })
 }
+
+// ── monitors (Sentry's cron monitoring) ────────────────────────
+
+// monitorCheckInsPageSize mirrors internal/api's: enough recent runs to
+// see a pattern without paging.
+const monitorCheckInsPageSize = 100
+
+func (w *Web) monitors(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	rows, err := w.Store.ListMonitors(r.Context(), p.ID)
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	pg := Page{S: state(r), Project: &p, Section: "monitors"}
+	w.page(rw, r, pg, func(pg Page) templ.Component { return Monitors(pg, rows) })
+}
+
+func (w *Web) monitor(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	slug := r.PathValue("monitor")
+	ctx := r.Context()
+	m, err := w.Store.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: slug})
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.NotFound(rw, r)
+		return
+	}
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	checkIns, err := w.Store.ListCheckIns(ctx, sqlc.ListCheckInsParams{ProjectID: p.ID, MonitorSlug: slug, Limit: monitorCheckInsPageSize})
+	if err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	pg := Page{S: state(r), Project: &p, Section: "monitors"}
+	w.page(rw, r, pg, func(pg Page) templ.Component { return MonitorPage(pg, m, checkIns) })
+}
+
+func (w *Web) monitorDelete(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	if _, err := w.Store.DeleteMonitor(r.Context(), sqlc.DeleteMonitorParams{ProjectID: p.ID, Slug: r.PathValue("monitor")}); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	redirect(rw, r, state(r).Href("/monitors"))
+}

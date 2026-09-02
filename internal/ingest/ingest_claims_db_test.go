@@ -624,3 +624,181 @@ func TestIngestClientReportCountsAccumulate(t *testing.T) {
 		t.Fatalf("quota was consumed by client_report-only envelopes: %+v %v", res, err)
 	}
 }
+
+func checkInBody(checkInID, slug, status, monitorConfig string) string {
+	b := fmt.Sprintf(`{"check_in_id":%q,"monitor_slug":%q,"status":%q`, checkInID, slug, status)
+	if monitorConfig != "" {
+		b += `,"monitor_config":` + monitorConfig
+	}
+	return b + "}"
+}
+
+const zeroCheckInID = "00000000000000000000000000000000"
+
+// TestIngestCheckInMonitorConfigUpsert: monitor_config on the run's first
+// (in_progress) check-in upserts the monitor's schedule, and the
+// in_progress check-in itself does not advance the monitor's state
+// (last_status, next_expected_at) — only a terminal one does.
+func TestIngestCheckInMonitorConfigUpsert(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st, "ci1")
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+
+	cfg := `{"schedule":{"type":"crontab","value":"0 * * * *"},"checkin_margin":5,"max_runtime":15,"failure_issue_threshold":2,"recovery_threshold":1,"timezone":"UTC"}`
+	body := "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("run-1"), "nightly-backup", "in_progress", cfg) + "\n"
+	res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now)
+	if err != nil || res.Monitors != 1 || res.CheckIns != 1 {
+		t.Fatalf("ingest: %+v %v", res, err)
+	}
+	m, err := st.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: "nightly-backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ScheduleType != "crontab" || m.ScheduleValue != "0 * * * *" || m.CheckinMarginMin != 5 || m.MaxRuntimeMin != 15 ||
+		m.FailureThreshold != 2 || m.RecoveryThreshold != 1 {
+		t.Fatalf("monitor config = %+v", m)
+	}
+	if m.NextExpectedAt != nil || m.LastCheckinAt != nil || m.LastStatus.Valid {
+		t.Fatalf("in_progress advanced monitor state: %+v", m)
+	}
+	rows, err := st.ListCheckIns(ctx, sqlc.ListCheckInsParams{ProjectID: p.ID, MonitorSlug: "nightly-backup", Limit: 10})
+	if err != nil || len(rows) != 1 || rows[0].Status != "in_progress" {
+		t.Fatalf("check-in row = %+v %v", rows, err)
+	}
+}
+
+// TestIngestCheckInZeroIDCompletesLatestInProgress: the all-zero
+// check_in_id shorthand updates the monitor's latest in_progress row
+// rather than creating a new one, and a terminal status advances the
+// monitor's state (last_status, next_expected_at, consecutive_successes).
+func TestIngestCheckInZeroIDCompletesLatestInProgress(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st, "ci2")
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+
+	cfg := `{"schedule":{"type":"interval","value":10,"unit":"minute"},"checkin_margin":1}`
+	body := "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("run-2"), "sync-job", "in_progress", cfg) + "\n"
+	if res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.CheckIns != 1 {
+		t.Fatalf("first: %+v %v", res, err)
+	}
+	body = "{}\n{\"type\":\"check_in\"}\n" + checkInBody(zeroCheckInID, "sync-job", "ok", "") + "\n"
+	res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now)
+	if err != nil || res.CheckIns != 1 {
+		t.Fatalf("zero-id completion: %+v %v", res, err)
+	}
+	if n := count(t, st, "SELECT count(*) FROM monitor_checkins WHERE project_id = $1 AND monitor_slug = 'sync-job'", p.ID); n != 1 {
+		t.Fatalf("zero-id created a new row instead of completing the existing one: %d rows", n)
+	}
+	m, err := st.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: "sync-job"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.LastStatus.Valid || m.LastStatus.CheckinStatus != "ok" || m.ConsecutiveSuccesses != 1 || m.NextExpectedAt == nil {
+		t.Fatalf("monitor state after terminal check-in = %+v", m)
+	}
+
+	// A zero id with nothing open to update (no in_progress run) is a
+	// no-op, not a new bare row.
+	body = "{}\n{\"type\":\"check_in\"}\n" + checkInBody(zeroCheckInID, "sync-job", "ok", "") + "\n"
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.CheckIns != 0 {
+		t.Fatalf("zero-id no-op: %+v %v", res, err)
+	}
+	if n := count(t, st, "SELECT count(*) FROM monitor_checkins WHERE project_id = $1 AND monitor_slug = 'sync-job'", p.ID); n != 1 {
+		t.Fatalf("zero-id no-op created a row: %d rows", n)
+	}
+}
+
+// TestIngestCheckInOrphanDropped: a check-in against a monitor CrashCart
+// has never seen a monitor_config for is dropped, not auto-created bare.
+func TestIngestCheckInOrphanDropped(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st, "ci3")
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+
+	body := "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("orphan"), "never-configured", "ok", "") + "\n"
+	res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now)
+	if err != nil || res.CheckIns != 0 || res.Monitors != 0 {
+		t.Fatalf("orphan check-in: %+v %v", res, err)
+	}
+	if n := count(t, st, "SELECT count(*) FROM monitors WHERE project_id = $1", p.ID); n != 0 {
+		t.Fatalf("orphan check-in created a monitor: %d rows", n)
+	}
+}
+
+// TestIngestCheckInDoesNotConsumeQuota: like client_report, a check-in is
+// not an event and must not count against the daily quota.
+func TestIngestCheckInDoesNotConsumeQuota(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st, "ci4")
+	p.DailyQuota = 1
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+
+	cfg := `{"schedule":{"type":"interval","value":1,"unit":"hour"}}`
+	body := "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("q-run"), "quota-job", "ok", cfg) + "\n"
+	if res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.CheckIns != 1 {
+		t.Fatalf("check-in: %+v %v", res, err)
+	}
+	id := hexID("q-event")
+	ev := fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":"error","platform":"android","exception":{"values":[{"type":"E","value":"v","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id, now.Format(time.RFC3339))
+	body = "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\"}\n" + ev + "\n"
+	if res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Stored != 1 {
+		t.Fatalf("quota was consumed by the check-in: %+v %v", res, err)
+	}
+}
+
+func jobCount(t *testing.T, st *store.Store, projectID int64, typ string) int64 {
+	t.Helper()
+	return count(t, st, "SELECT count(*) FROM jobs WHERE project_id = $1 AND kind = 'alert' AND args->>'type' = $2", projectID, typ)
+}
+
+// TestIngestMonitorFailureAndRecoveryFireOnce: the failure threshold
+// fires monitor_failed exactly on the crossing tick, not again while
+// still failing, and one ok crossing the recovery threshold fires
+// monitor_recovered.
+func TestIngestMonitorFailureAndRecoveryFireOnce(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st, "ci5")
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+
+	cfg := `{"schedule":{"type":"interval","value":1,"unit":"hour"},"failure_issue_threshold":2,"recovery_threshold":1}`
+	body := "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("f1"), "flaky-job", "error", cfg) + "\n"
+	if _, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil {
+		t.Fatal(err)
+	}
+	if n := jobCount(t, st, p.ID, "monitor_failed"); n != 0 {
+		t.Fatalf("fired before crossing the threshold: %d jobs", n)
+	}
+	body = "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("f2"), "flaky-job", "error", "") + "\n"
+	if _, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil {
+		t.Fatal(err)
+	}
+	if n := jobCount(t, st, p.ID, "monitor_failed"); n != 1 {
+		t.Fatalf("monitor_failed jobs = %d, want 1", n)
+	}
+	// A third failure must not refire.
+	body = "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("f3"), "flaky-job", "error", "") + "\n"
+	if _, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil {
+		t.Fatal(err)
+	}
+	if n := jobCount(t, st, p.ID, "monitor_failed"); n != 1 {
+		t.Fatalf("monitor_failed refired: %d jobs", n)
+	}
+	// Recovery: one ok (recovery_threshold=1) fires monitor_recovered once.
+	body = "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("f4"), "flaky-job", "ok", "") + "\n"
+	if _, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil {
+		t.Fatal(err)
+	}
+	if n := jobCount(t, st, p.ID, "monitor_recovered"); n != 1 {
+		t.Fatalf("monitor_recovered jobs = %d, want 1", n)
+	}
+}

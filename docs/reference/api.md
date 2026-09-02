@@ -251,6 +251,30 @@ Same `days` / `from` / `to` window parameters as
 Response: `{"from","to","counts": [{"reason","category","quantity"}, ...]}`.
 
 
+## Monitors
+
+```
+GET /api/projects/{slug}/monitors
+GET /api/projects/{slug}/monitors/{monitor}
+DELETE /api/projects/{slug}/monitors/{monitor}
+```
+
+Sentry's cron monitoring: a monitor is schedule config created only by
+the SDK's own `check_in` envelope item (`monitor_config` on its first,
+`in_progress` check-in upserts it) — there is no create/update endpoint,
+only delete. List response `{"monitors": [...]}`, each a config + state
+row: `slug`, `schedule_type` (`crontab` | `interval`), `schedule_value`,
+`schedule_unit`, `timezone`, `checkin_margin_min`, `max_runtime_min`,
+`failure_threshold`, `recovery_threshold`, `last_status`,
+`consecutive_failures`, `consecutive_successes`, `alerting`,
+`next_expected_at`, `last_checkin_at`. The detail response adds
+`check_ins`: the monitor's most recent 100 check-ins, newest first
+(`check_in_id`, `status`, `duration_s`, `release`, `environment`,
+`started_at`).
+
+`DELETE` removes the monitor and its check-in history; `204` on success.
+
+
 ## Releases
 
 ```
@@ -352,9 +376,9 @@ SDK as `X-Sentry-Auth` or the `sentry_key` query parameter. Accepts gzip.
 | `429` | Rate limit, or the project's daily quota exceeded |
 
 Envelope items handled: `event`, `session`, `sessions`, `attachment`,
-`user_report`, `client_report`. Others (`transaction`, `profile`,
-`replay_event`, `feedback`, …) are accepted and dropped so SDKs never see
-an error. CORS preflight is answered with `CORS_ORIGIN`.
+`user_report`, `client_report`, `check_in`. Others (`transaction`,
+`profile`, `replay_event`, `feedback`, …) are accepted and dropped so
+SDKs never see an error. CORS preflight is answered with `CORS_ORIGIN`.
 
 ## sentry-cli compatibility
 

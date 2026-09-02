@@ -37,6 +37,7 @@ import (
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/monitors"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 )
@@ -165,6 +166,8 @@ type Result struct {
 	Attachments        int         // attachment rows written (the header event's, when it was stored)
 	UserReports        int         // user_report items written (kept regardless of sampling)
 	ClientReportCounts int         // client_report discarded_events entries added to their bucket
+	Monitors           int         // monitors upserted from a check_in's monitor_config
+	CheckIns           int         // check_in items written (a status update of an existing run counts too)
 	NewIssues          []sentry.ID // fingerprints created by this envelope
 	Regressions        []sentry.ID // fingerprints flipped to 'regression'
 	Jobs               int
@@ -360,7 +363,7 @@ type prepared struct {
 func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envelope, now time.Time) (Result, error) {
 	var res Result
 	res.Received = len(env.Events)
-	if len(env.Events) == 0 && len(env.Sessions) == 0 && env.UserReport == nil && len(env.ClientReportCounts) == 0 {
+	if len(env.Events) == 0 && len(env.Sessions) == 0 && env.UserReport == nil && len(env.ClientReportCounts) == 0 && env.CheckIn == nil {
 		return res, nil
 	}
 
@@ -700,6 +703,96 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			res.ClientReportCounts = len(env.ClientReportCounts)
 		}
 
+		// check_in: a run's status against a monitor, tied by slug — not
+		// gated on sampling/quota (not an event). monitor_config on this
+		// item upserts the monitor; a check-in against a monitor CrashCart
+		// has no config for is dropped, like Sentry does for an orphan
+		// check-in, rather than creating a bare, unscheduled monitor.
+		if ci := env.CheckIn; ci != nil {
+			var mon sqlc.Monitor
+			var haveMonitor bool
+			if ci.Config != nil {
+				m, err := q.UpsertMonitor(ctx, sqlc.UpsertMonitorParams{
+					ProjectID: p.ID, Slug: ci.MonitorSlug, ScheduleType: ci.Config.ScheduleType, ScheduleValue: ci.Config.ScheduleValue,
+					ScheduleUnit: nilIfEmpty(ci.Config.ScheduleUnit), Timezone: ci.Config.Timezone,
+					CheckinMarginMin: ci.Config.CheckinMarginMin, MaxRuntimeMin: ci.Config.MaxRuntimeMin,
+					FailureThreshold: ci.Config.FailureThreshold, RecoveryThreshold: ci.Config.RecoveryThreshold,
+				})
+				if err != nil {
+					return fmt.Errorf("upsert monitor: %w", err)
+				}
+				mon, haveMonitor = m, true
+				res.Monitors = 1
+			} else if m, err := q.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: ci.MonitorSlug}); err == nil {
+				mon, haveMonitor = m, true
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("get monitor: %w", err)
+			}
+			if haveMonitor {
+				zero := ci.CheckInID == sentry.ZeroCheckInID
+				var durationS *float32
+				if ci.DurationS != nil {
+					d := float32(*ci.DurationS)
+					durationS = &d
+				}
+				existing, err := q.FindOpenCheckIn(ctx, sqlc.FindOpenCheckInParams{ProjectID: p.ID, MonitorSlug: ci.MonitorSlug, Zero: zero, CheckInID: ci.CheckInID})
+				switch {
+				case err == nil:
+					// A later check-in of the same run: advance status.
+					if err := q.UpdateCheckIn(ctx, sqlc.UpdateCheckInParams{
+						ProjectID: p.ID, MonitorSlug: ci.MonitorSlug, CheckInID: existing.CheckInID, StartedAt: existing.StartedAt,
+						Status: sqlc.CheckinStatus(ci.Status), DurationS: durationS, Release: nilIfEmpty(ci.Release), Environment: nilIfEmpty(ci.Environment),
+					}); err != nil {
+						return fmt.Errorf("update check-in: %w", err)
+					}
+					res.CheckIns = 1
+				case errors.Is(err, pgx.ErrNoRows):
+					if !zero {
+						// A fresh run: the zero-id shorthand with nothing open
+						// to update is a no-op instead (no real id to key a row on).
+						if err := q.InsertCheckIn(ctx, sqlc.InsertCheckInParams{
+							StartedAt: now, ProjectID: p.ID, MonitorSlug: ci.MonitorSlug, CheckInID: ci.CheckInID,
+							Status: sqlc.CheckinStatus(ci.Status), DurationS: durationS, Release: nilIfEmpty(ci.Release), Environment: nilIfEmpty(ci.Environment),
+						}); err != nil {
+							return fmt.Errorf("insert check-in: %w", err)
+						}
+						res.CheckIns = 1
+					}
+				default:
+					return fmt.Errorf("find check-in: %w", err)
+				}
+				// A terminal status advances the monitor's own state (never
+				// an in_progress one): the schedule was already validated at
+				// parse time, so a re-parse failure here is a stored-data
+				// invariant break, not a user input to recover from.
+				if ci.Status == "ok" || ci.Status == "error" {
+					sched, err := monitors.ParseSchedule(mon.ScheduleType, mon.ScheduleValue, deref(mon.ScheduleUnit))
+					if err != nil {
+						return fmt.Errorf("monitor %s: stored schedule no longer parses: %w", ci.MonitorSlug, err)
+					}
+					loc, err := time.LoadLocation(mon.Timezone)
+					if err != nil {
+						loc = time.UTC
+					}
+					next := sched.Next(now.In(loc)).UTC().Add(time.Duration(mon.CheckinMarginMin) * time.Minute)
+					tr := monitors.Record(mon.ConsecutiveFailures, mon.ConsecutiveSuccesses, mon.Alerting, mon.FailureThreshold, mon.RecoveryThreshold, ci.Status == "ok")
+					if err := q.RecordMonitorResult(ctx, sqlc.RecordMonitorResultParams{
+						ProjectID: p.ID, Slug: ci.MonitorSlug, LastStatus: sqlc.CheckinStatus(ci.Status),
+						ConsecutiveFailures: tr.ConsecutiveFailures, ConsecutiveSuccesses: tr.ConsecutiveSuccesses, Alerting: tr.Alerting,
+						NextExpectedAt: next, LastCheckinAt: now,
+					}); err != nil {
+						return fmt.Errorf("record monitor result: %w", err)
+					}
+					switch {
+					case tr.Failed:
+						jobs = append(jobs, monitorAlertJob(p.ID, "monitor_failed", ci.MonitorSlug))
+					case tr.Recovered:
+						jobs = append(jobs, monitorAlertJob(p.ID, "monitor_recovered", ci.MonitorSlug))
+					}
+				}
+			}
+		}
+
 		sessions := make([]store.SessionInsert, 0, len(env.Sessions))
 		for _, s := range env.Sessions {
 			sessions = append(sessions, store.SessionInsert{
@@ -774,6 +867,20 @@ func JobTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.00
 func alertJob(projectID int64, typ string, fp sentry.ID) sqlc.EnqueueJobParams {
 	args, _ := json.Marshal(map[string]any{"type": typ, "fingerprint": fp})
 	return sqlc.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
+}
+
+// monitorAlertJob: like alertJob, keyed by monitor slug instead of a
+// fingerprint (the "alert" job handler dispatches on which one is set).
+func monitorAlertJob(projectID int64, typ, slug string) sqlc.EnqueueJobParams {
+	args, _ := json.Marshal(map[string]any{"type": typ, "monitor": slug})
+	return sqlc.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func redact(ev *sentry.Event) {

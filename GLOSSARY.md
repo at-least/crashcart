@@ -26,6 +26,8 @@ in `internal/db/schema.sql`.
 | **Session** | One app run / page load reported for release health (`session` / `sessions` items) | |
 | **Attachment** | A file the SDK attached to an event (an envelope `attachment` item): a screenshot, a view hierarchy, a log | ~~upload~~ ~~asset~~ |
 | **User Feedback** | A user-typed name/email/comments about a crash (an envelope `user_report` item), tied to one event | ~~user report~~ (only as the wire item type) ~~feedback~~ (Sentry's newer, session-replay-linked item; not accepted) |
+| **Monitor** | A named, scheduled job CrashCart expects to hear from (an envelope `check_in` item's `monitor_slug` and `monitor_config`); created only by the SDK's own upsert, never by hand | ~~cron~~ ~~schedule~~ |
+| **Check-in** | One run of a monitor: `in_progress` when it starts, `ok`/`error` when it ends, or `missed`/`timeout` when CrashCart notices it didn't (the `checkin_status` enum) | |
 
 ## Event: level and handled
 
@@ -89,8 +91,9 @@ shown under it, not in it.
 ## Alerts
 
 The rule types are the `alert_type` enum (`new_issue`, `regression`,
-`unhandled_spike`, `escalating`); what each fires on is
-`internal/alerts/alerts.go` (`IsSpike` for the two spike-shaped ones).
+`unhandled_spike`, `escalating`, `monitor_failed`, `monitor_recovered`);
+what each fires on is `internal/alerts/alerts.go` (`IsSpike` for the two
+spike-shaped ones; the monitor pair in `internal/alerts/monitors.go`).
 
 ## Branding
 
