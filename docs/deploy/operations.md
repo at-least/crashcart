@@ -20,6 +20,33 @@ kept, missing ones added, projects created as needed.
 Regular Postgres backups (`pg_dump`, volume snapshots) work too and are
 faster for like-for-like restores; the export file is the portable one.
 
+### On a schedule, with cron
+
+Write to a temp name and `mv` into place, so a crash or a full disk mid-export
+never leaves a truncated file where a good backup used to be; prune old
+dumps so the directory doesn't grow forever. `%` in a crontab command must
+be escaped as `\%` — unescaped, cron treats it as a newline. cron runs
+`/bin/sh`, not bash, so the commands below stick to POSIX syntax (no
+`{a,b}` brace expansion).
+
+With Docker Compose, from the host's crontab (`crontab -e`):
+
+```
+0 3 * * * f=/var/backups/crashcart/$(date +\%F).ndjson; mkdir -p /var/backups/crashcart && docker compose -f /path/to/docker-compose.yml exec -T crashcart /crashcart export > "$f.tmp" && mv "$f.tmp" "$f" && find /var/backups/crashcart -name '*.ndjson' -mtime +7 -delete
+```
+
+With the binary + systemd install, as the `crashcart` user
+(`sudo crontab -u crashcart -e`) — cron does not read `/etc/crashcart.env`
+the way the systemd unit does, so pass it explicitly:
+
+```
+0 3 * * * f=/var/backups/crashcart/$(date +\%F).ndjson; mkdir -p /var/backups/crashcart && env $(cat /etc/crashcart.env | xargs) crashcart export > "$f.tmp" && mv "$f.tmp" "$f" && find /var/backups/crashcart -name '*.ndjson' -mtime +7 -delete
+```
+
+Either way, a failing cron job is only as loud as your mail setup — point
+`MAILTO` in the crontab at an address you read, or wrap the command so a
+non-zero exit reaches whatever you use for alerts.
+
 ## Retention
 
 - Raw events and sessions are deleted after
