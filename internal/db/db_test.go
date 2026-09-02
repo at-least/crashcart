@@ -65,6 +65,31 @@ func TestInitFreshDatabase(t *testing.T) {
 // reaches the end.
 const latestMigration = 1
 
+// TestInitSingleConnection: Init must not need more than one pool
+// connection at a time. Before the fix it pinned a connection for the
+// advisory lock and ran goose's migrations through a second acquisition
+// on the same pool — with MaxConns=1 that is a self-deadlock (see
+// https://github.com/at-least/crashcart/issues/1, the same shape as
+// RunAsLeader's).
+func TestInitSingleConnection(t *testing.T) {
+	pool := emptyDatabase(t)
+	cfg := pool.Config().Copy()
+	cfg.MaxConns = 1
+	ctx := context.Background()
+	onePool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer onePool.Close()
+
+	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	created, err := db.Init(initCtx, onePool)
+	if err != nil || !created {
+		t.Fatalf("Init with MaxConns=1: created=%v err=%v", created, err)
+	}
+}
+
 // A new project accepts everything by default: sampling bounds the
 // database, a daily quota is an explicit cost cap.
 func TestProjectDefaults(t *testing.T) {

@@ -95,8 +95,8 @@ func adminConfig(dsn string) (pgtestdb.Config, error) {
 // schemaMigrator provisions a pgtestdb template by running the same goose
 // migrations db.Init applies in production, against a database nothing
 // else can see yet (pgtestdb already serializes template creation, so
-// there's no need for db.Init's own advisory lock or legacy-bootstrap
-// logic here — every template starts empty).
+// there's no need for db.Init's own session-locking logic here — every
+// template starts empty).
 type schemaMigrator struct{}
 
 // Hash identifies the template by every migration file's content, so
