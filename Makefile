@@ -1,4 +1,4 @@
-.PHONY: build run generate sqlc templ gendocs test test-db css docker
+.PHONY: build run generate sqlc templ gendocs test test-db mutate css docker
 
 BIN     := bin/crashcart
 PKG     := ./cmd/crashcart
@@ -34,6 +34,21 @@ test-db:
 	@test -n "$(TEST_DATABASE_URL)" || (echo "TEST_DATABASE_URL is required" >&2; exit 1)
 	go vet ./...
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test ./...
+
+# Mutation testing (go-gremlins/gremlins: go install
+# github.com/go-gremlins/gremlins/cmd/gremlins@latest). Runs the covering
+# tests once per mutant, so run it in its own git worktree against its own
+# disposable Postgres (a different port from the one make test-db uses) -
+# not the working tree you're actively editing, and not the same database:
+# pg_notify channels are per-database, not per-schema (see internal/testdb),
+# so two full test-suite runs sharing one Postgres can cross-signal on
+# Listener-keyed tests. go clean -testcache first: a warm cache makes
+# gremlins measure a too-fast baseline test time and time out almost every
+# mutant against it.
+mutate:
+	@test -n "$(TEST_DATABASE_URL)" || (echo "TEST_DATABASE_URL is required" >&2; exit 1)
+	go clean -testcache
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" gremlins unleash --timeout-coefficient 8 .
 
 # Rebuilds the committed CSS artifact with the locally installed Tailwind
 # (`npm install` first; no npx, so nothing is fetched at build time).
