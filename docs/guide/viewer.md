@@ -60,7 +60,7 @@ not reload the list under you.
   issue, when it comes back.
 - The latest event's **screenshot**, when the SDK attached one.
 
-Statuses and what they mean are in [Issues & grouping](./issues#lifecycle).
+Statuses and what they mean are in [Issues & grouping](./issues#status).
 
 ## Events
 

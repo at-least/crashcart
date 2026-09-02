@@ -94,7 +94,7 @@ unresolved on its own (any combination; none = ignored for good):
 |---|---|
 | `ignore_minutes` | back after this many minutes |
 | `ignore_events` | back after this many further events (`ignore_until_count` = the count now + this) |
-| `ignore_until_escalating` | back when the issue's events in an hour are 3× its rate of the 24 h before now, and at least 10 — with an `escalating` alert |
+| `ignore_until_escalating` | back when the issue's events in an hour are 3× its rate of the 24 h before it was ignored, and at least 10 — with an `escalating` alert |
 
 ```json
 {"status": "ignored", "ignore_minutes": 10080, "ignore_until_escalating": true}
@@ -265,7 +265,7 @@ DELETE /api/projects/{slug}/alerts/channels/{id}
 `cooldown_minutes` is the minimum gap between two alerts of the same type
 for the project. A webhook `url` must be `http(s)`; a Telegram channel
 needs `chat_id` and `TELEGRAM_BOT_TOKEN` on the server. The webhook
-payload is documented in [Alerts](/guide/alerts#webhook-payload).
+payload is documented in [Alerts](/guide/alerts#where-alerts-go).
 
 ## Symbols
 
@@ -281,8 +281,8 @@ DELETE /api/projects/{slug}/symbols/{id}
 { "id": 12, "project_id": 1, "kind": "proguard", "release": "2.4.1", "debug_id": "…", "filename": "mapping.txt", "size": 1048576, "uploaded_at": "…" }
 ```
 
-Uploading also symbolicates the release's events from the last
-48 hours. See [Symbolication](/guide/symbolication).
+Uploading also symbolicates the release's most recent unsymbolicated
+events (newest first, up to 2000). See [Symbolication](/guide/symbolication).
 
 ## Export / import
 

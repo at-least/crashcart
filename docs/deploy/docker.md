@@ -122,15 +122,16 @@ docker compose up -d
 
 `latest` follows the newest release. To pin a version, set
 `image: ghcr.io/at-least/crashcart:0.1.0` (or `:0.1` for the newest
-patch release of that line) in `docker-compose.yml`.
+patch release of that line) in `docker-compose.yml`. See
+[Operations → Upgrading](./operations#upgrading) for what changes if a
+release bumps the schema.
 
 ## iOS crashes
 
 To symbolicate iOS / macOS crashes, uncomment the `symbolicate` service
 (and its `symbols` volume) in `docker-compose.yml` and set
-`SYMBOLICATE_URL=http://symbolicate:8080` in `.env`. It is the same
-binary with llvm-symbolizer next to it. Android and JavaScript need
-nothing extra.
+`SYMBOLICATE_URL=http://symbolicate:8080` in `.env`. See
+[Symbolication](/guide/symbolication#ios-macos) for what it does and why.
 
 ## Backups
 

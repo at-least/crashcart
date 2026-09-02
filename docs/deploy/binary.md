@@ -120,14 +120,15 @@ sudo install -m 755 crashcart /usr/local/bin/crashcart
 sudo systemctl restart crashcart
 ```
 
-The schema is created on start.
+The schema is created on start. See
+[Operations → Upgrading](./operations#upgrading) for what changes if a
+release bumps the schema.
 
 ## iOS crashes
 
 dSYM symbolication is the same binary run as `crashcart symbolicate` on a
-machine that has `llvm-symbolizer` (the `llvm` package on Debian/Ubuntu),
-listening on its own `LISTEN_ADDR` — as a second systemd unit, or as the
-`container/symbolicate` image with Docker or Podman. Set
-`SYMBOLICATE_URL=http://localhost:<port>` in `/etc/crashcart.env`. It
-needs no database; its cache lives in `SYMBOLICATE_CACHE_DIR`. Android
-and JavaScript need nothing extra.
+machine that has `llvm-symbolizer` (the `llvm` package on Debian/Ubuntu) —
+as a second systemd unit, or as the `container/symbolicate` image with
+Docker or Podman — listening on its own `LISTEN_ADDR`. Set
+`SYMBOLICATE_URL=http://localhost:<port>` in `/etc/crashcart.env`. See
+[Symbolication](/guide/symbolication#ios-macos) for what it does and why.
