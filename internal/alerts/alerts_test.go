@@ -168,6 +168,81 @@ func TestTelegram(t *testing.T) {
 	}
 }
 
+// TestSlack: a slack channel posts to its own URL (like webhook, unlike
+// telegram's bot-token API endpoint) with a plain {"text": ...} body.
+func TestSlack(t *testing.T) {
+	st, p, s, n := setup(t)
+	ctx := context.Background()
+	sl := s.server()
+	defer sl.Close()
+	cfg, _ := json.Marshal(map[string]string{"url": sl.URL + "/slack"})
+	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "slack", Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
+	id := time.Now().UTC()
+	fp := sentry.DerivedID([]byte("slack"))
+	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "NullPointerException: <init> failed & died", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
+	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(fp)); err != nil {
+		t.Fatal(err)
+	}
+	if s.count() != 2 {
+		t.Fatalf("expected webhook + slack, got %d", s.count())
+	}
+	var slBody map[string]any
+	for i, path := range s.paths {
+		if path == "/slack" {
+			slBody = s.bodies[i]
+		}
+	}
+	text, _ := slBody["text"].(string)
+	if text == "" {
+		t.Fatalf("slack call = %v %v", s.paths, s.bodies)
+	}
+	if strings.Contains(text, "<init>") || strings.Contains(text, "& died") {
+		t.Errorf("title not escaped for slack mrkdwn: %q", text)
+	}
+	if !strings.Contains(text, "&lt;init&gt;") || !strings.Contains(text, "failed &amp; died") {
+		t.Errorf("expected escaped title, got %q", text)
+	}
+	if !strings.Contains(text, "/p/shop/issues/"+string(fp)) {
+		t.Errorf("expected an unescaped link line, got %q", text)
+	}
+}
+
+func TestSlackTextEscaping(t *testing.T) {
+	p := Payload{Type: TypeNewIssue, Project: "Shop", Title: "A <b>bold</b> & broken title", URL: "https://x.example.com/p/shop"}
+	got := SlackText(p)
+	if strings.Contains(got, "<b>") || strings.Contains(got, "broken title\"") {
+		t.Errorf("raw markup leaked: %q", got)
+	}
+	if !strings.Contains(got, "&lt;b&gt;bold&lt;/b&gt; &amp; broken title") {
+		t.Errorf("escaped title missing, got %q", got)
+	}
+	if !strings.Contains(got, "https://x.example.com/p/shop") {
+		t.Errorf("url should not be escaped, got %q", got)
+	}
+	// TelegramText on the same payload stays unescaped.
+	if tg := TelegramText(p); !strings.Contains(tg, "<b>bold</b> & broken title") {
+		t.Errorf("telegram text should stay unescaped, got %q", tg)
+	}
+}
+
+func TestChannelConfigSlack(t *testing.T) {
+	get := map[string]string{"url": "https://hooks.slack.com/services/T000/B000/XXXX"}
+	cfg, err := ChannelConfig("slack", func(k string) string { return get[k] }, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]string
+	json.Unmarshal(cfg, &m)
+	if m["url"] != get["url"] {
+		t.Errorf("config = %v", m)
+	}
+	if _, err := ChannelConfig("slack", func(string) string { return "not-a-url" }, false); err == nil {
+		t.Fatal("expected the same URL validation webhook gets")
+	}
+}
+
 func TestCheckSpikes(t *testing.T) {
 	st, p, s, n := setup(t)
 	ctx := context.Background()

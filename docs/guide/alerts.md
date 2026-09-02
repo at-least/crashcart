@@ -48,8 +48,13 @@ in the 24 hours before it was ignored).
 [`PUBLIC_URL`](/deploy/configuration). The exact fields are in the
 [API reference](/reference/api#alerts).
 
-Slack, Discord and most chat tools accept incoming webhooks; put a small
-relay in between if they need a specific message shape.
+Discord and most other chat tools accept incoming webhooks too; put a
+small relay in between if they need a specific message shape.
+
+**Slack** — add an Incoming Webhook to your workspace and use its URL as
+the channel. Unlike the generic **Webhook** above, this posts a plain
+`text` message (mrkdwn: bold title, a linked issue) instead of the raw
+JSON, so nothing else is needed in between.
 
 **Telegram** — create a bot with @BotFather, set its token as
 `TELEGRAM_BOT_TOKEN` on the server, add the bot to a group, and enter that

@@ -104,7 +104,7 @@ by hand.
 - **DSN** and **Rotate key**
 - **Platform** label
 - **Sampling**: keep first, sample rate, daily quota
-- **Alerts**: enable each detector, add webhook / Telegram channels
+- **Alerts**: enable each detector, add webhook / Slack / Telegram channels
 - **Symbols**: upload and delete symbol files
 - **Discarded events**: what the project's SDKs reported dropping
   client-side over the last week — by reason (sample rate, `before_send`,

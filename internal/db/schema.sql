@@ -16,7 +16,7 @@ CREATE TYPE issue_status   AS ENUM ('unresolved', 'resolved', 'ignored', 'regres
 CREATE TYPE symbol_kind    AS ENUM ('proguard', 'sourcemap', 'dsym');
 CREATE TYPE job_kind       AS ENUM ('symbolicate', 'resymbolicate', 'alert');
 CREATE TYPE alert_type     AS ENUM ('new_issue', 'regression', 'unhandled_spike', 'escalating', 'monitor_failed', 'monitor_recovered');
-CREATE TYPE channel_kind   AS ENUM ('webhook', 'telegram');
+CREATE TYPE channel_kind   AS ENUM ('webhook', 'slack', 'telegram');
 CREATE TYPE checkin_status AS ENUM ('in_progress', 'ok', 'error', 'missed', 'timeout');
 
 -- Time buckets of any width in seconds, Unix-epoch-aligned (equal to Go's t.Truncate(width) for widths

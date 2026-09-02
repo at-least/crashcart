@@ -133,7 +133,7 @@ func TestEnumRejectsBadValue(t *testing.T) {
 		"symbol_kind":    "{proguard,sourcemap,dsym}",
 		"job_kind":       "{symbolicate,resymbolicate,alert}",
 		"alert_type":     "{new_issue,regression,unhandled_spike,escalating,monitor_failed,monitor_recovered}",
-		"channel_kind":   "{webhook,telegram}",
+		"channel_kind":   "{webhook,slack,telegram}",
 		"checkin_status": "{in_progress,ok,error,missed,timeout}",
 	} {
 		if got[name] != want {

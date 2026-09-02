@@ -320,18 +320,21 @@ The detail returns:
 GET    /api/projects/{slug}/alerts                     {"rules": [...], "channels": [...]}
 PATCH  /api/projects/{slug}/alerts/{type}              {"enabled": bool, "cooldown_minutes": n}   (either)
 POST   /api/projects/{slug}/alerts/channels            {"kind":"webhook","config":{"url":"https://…"}}   → 201
+                                                       {"kind":"slack","config":{"url":"https://hooks.slack.com/…"}}  → 201
                                                        {"kind":"telegram","config":{"chat_id":"…"}}      → 201
 DELETE /api/projects/{slug}/alerts/channels/{id}
 ```
 
-`{type}` is `new_issue`, `regression`, `unhandled_spike` or `escalating`. A rule:
+`{type}` is `new_issue`, `regression`, `unhandled_spike`, `escalating`,
+`monitor_failed` or `monitor_recovered`. A rule:
 
 ```json
 { "project_id": 1, "type": "unhandled_spike", "enabled": true, "cooldown_minutes": 60, "last_triggered": "…" }
 ```
 
 `cooldown_minutes` is the minimum gap between two alerts of the same type
-for the project. A webhook `url` must be `http(s)`; a Telegram channel
+for the project. A webhook or Slack `url` must be `http(s)` (Slack posts
+a plain `text` message instead of the raw JSON); a Telegram channel
 needs `chat_id` and `TELEGRAM_BOT_TOKEN` on the server. The webhook
 payload is documented in [Alerts](/guide/alerts#where-alerts-go).
 

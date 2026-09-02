@@ -172,12 +172,13 @@ templ Settings(pg Page, d SettingsData) {
 							<span data-slot="native-select-wrapper">
 								<select data-slot="native-select" class="h-8 text-xs" id="ch-kind" name="kind" data-channel-kind>
 									<option value="webhook">webhook</option>
+									<option value="slack">Slack</option>
 									<option value="telegram">telegram</option>
 								</select>
 								@ChevronIcon()
 							</span>
 						</div>
-						<div class="grid gap-1" data-channel-field="webhook">
+						<div class="grid gap-1" data-channel-field="webhook slack">
 							<label data-slot="label" for="ch-url">URL</label>
 							<input data-slot="input" class="h-8 w-72 max-w-full text-xs" id="ch-url" name="url" type="url" placeholder="https://hooks.example.com/…"/>
 						</div>

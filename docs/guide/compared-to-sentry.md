@@ -31,7 +31,7 @@ is it different from Sentry?" Honest answer below, in both directions.
 | Scope | Error tracking, release health and cron monitoring, nothing else | Errors, performance tracing, profiling, session replay, logs, uptime, cron monitoring |
 | Users | User accounts for the viewer, API keys for automation; no roles | Accounts, teams, roles, SSO |
 | Running it | One binary + Postgres. 512 MB of RAM is plenty | Self-hosted needs 16 GB RAM, 4 cores and ~20 services; or the hosted plans |
-| Integrations | Webhooks and Telegram | Slack, Jira, GitHub, PagerDuty and dozens more |
+| Integrations | Webhooks, Slack and Telegram | Slack, Jira, GitHub, PagerDuty and dozens more |
 | Ownership of the data | Your Postgres. No telemetry, nothing leaves the server unless you add an alert channel | Sentry's cloud, or your own self-hosted install |
 | Price | Free and MIT; what your server costs | Per-event plans; self-hosted is free |
 

@@ -37,7 +37,7 @@
     if (!e.target.matches("[data-channel-kind]")) return;
     var kind = e.target.value;
     e.target.closest("form").querySelectorAll("[data-channel-field]").forEach((el) => {
-      el.hidden = el.getAttribute("data-channel-field") !== kind;
+      el.hidden = !el.getAttribute("data-channel-field").split(" ").includes(kind);
     });
   });
 

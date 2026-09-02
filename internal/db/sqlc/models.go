@@ -63,6 +63,7 @@ type ChannelKind string
 
 const (
 	ChannelKindWebhook  ChannelKind = "webhook"
+	ChannelKindSlack    ChannelKind = "slack"
 	ChannelKindTelegram ChannelKind = "telegram"
 )
 

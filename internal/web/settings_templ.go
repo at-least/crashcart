@@ -467,7 +467,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "\" hx-target=\"#settings\" hx-select=\"#settings\" hx-swap=\"outerHTML\" hx-push-url=\"false\"><section class=\"flex flex-wrap items-end gap-3 px-4 py-3\"><div class=\"grid gap-1\"><label data-slot=\"label\" for=\"ch-kind\">Kind</label> <span data-slot=\"native-select-wrapper\"><select data-slot=\"native-select\" class=\"h-8 text-xs\" id=\"ch-kind\" name=\"kind\" data-channel-kind><option value=\"webhook\">webhook</option> <option value=\"telegram\">telegram</option></select>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "\" hx-target=\"#settings\" hx-select=\"#settings\" hx-swap=\"outerHTML\" hx-push-url=\"false\"><section class=\"flex flex-wrap items-end gap-3 px-4 py-3\"><div class=\"grid gap-1\"><label data-slot=\"label\" for=\"ch-kind\">Kind</label> <span data-slot=\"native-select-wrapper\"><select data-slot=\"native-select\" class=\"h-8 text-xs\" id=\"ch-kind\" name=\"kind\" data-channel-kind><option value=\"webhook\">webhook</option> <option value=\"slack\">Slack</option> <option value=\"telegram\">telegram</option></select>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -475,7 +475,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</span></div><div class=\"grid gap-1\" data-channel-field=\"webhook\"><label data-slot=\"label\" for=\"ch-url\">URL</label> <input data-slot=\"input\" class=\"h-8 w-72 max-w-full text-xs\" id=\"ch-url\" name=\"url\" type=\"url\" placeholder=\"https://hooks.example.com/…\"></div><div class=\"grid gap-1\" data-channel-field=\"telegram\" hidden><label data-slot=\"label\" for=\"ch-chat\">Chat id</label> <input data-slot=\"input\" class=\"h-8 w-40 text-xs\" id=\"ch-chat\" name=\"chat_id\" placeholder=\"-100123456\"></div><button type=\"submit\" data-slot=\"button\" data-size=\"sm\">Add channel</button></section></form></div></section><section class=\"settings-section\" id=\"symbols\"><h2 class=\"section-title\">Symbol files</h2><p class=\"section-desc\">ProGuard mappings (.txt), source maps (.map) or dSYM bundles. Uploading re-symbolicates the release's recent events.</p><div class=\"mt-3 grid gap-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</span></div><div class=\"grid gap-1\" data-channel-field=\"webhook slack\"><label data-slot=\"label\" for=\"ch-url\">URL</label> <input data-slot=\"input\" class=\"h-8 w-72 max-w-full text-xs\" id=\"ch-url\" name=\"url\" type=\"url\" placeholder=\"https://hooks.example.com/…\"></div><div class=\"grid gap-1\" data-channel-field=\"telegram\" hidden><label data-slot=\"label\" for=\"ch-chat\">Chat id</label> <input data-slot=\"input\" class=\"h-8 w-40 text-xs\" id=\"ch-chat\" name=\"chat_id\" placeholder=\"-100123456\"></div><button type=\"submit\" data-slot=\"button\" data-size=\"sm\">Add channel</button></section></form></div></section><section class=\"settings-section\" id=\"symbols\"><h2 class=\"section-title\">Symbol files</h2><p class=\"section-desc\">ProGuard mappings (.txt), source maps (.map) or dSYM bundles. Uploading re-symbolicates the release's recent events.</p><div class=\"mt-3 grid gap-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -487,7 +487,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 			var templ_7745c5c3_Var24 string
 			templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(sf.Filename)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 201, Col: 57}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 202, Col: 57}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 			if templ_7745c5c3_Err != nil {
@@ -500,7 +500,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 			var templ_7745c5c3_Var25 string
 			templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(sf.Kind)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 202, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 203, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 			if templ_7745c5c3_Err != nil {
@@ -513,7 +513,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 			var templ_7745c5c3_Var26 string
 			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(orDash(deref(sf.Release)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 204, Col: 59}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 205, Col: 59}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -526,7 +526,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 			var templ_7745c5c3_Var27 string
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(sizeLabel(sf.Size))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 204, Col: 85}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 205, Col: 85}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 			if templ_7745c5c3_Err != nil {
@@ -539,7 +539,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(formatDateTime(sf.UploadedAt))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 204, Col: 122}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 205, Col: 122}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -552,7 +552,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 			var templ_7745c5c3_Var29 string
 			templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(pg.S.Href("/settings/symbols/" + i64(sf.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 206, Col: 141}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 207, Col: 141}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 			if templ_7745c5c3_Err != nil {
@@ -570,7 +570,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(pg.S.Href("/settings/symbols"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 209, Col: 95}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 210, Col: 95}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 		if templ_7745c5c3_Err != nil {
@@ -598,7 +598,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 				var templ_7745c5c3_Var31 string
 				templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(c.Reason)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 242, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 243, Col: 40}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 				if templ_7745c5c3_Err != nil {
@@ -611,7 +611,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 				var templ_7745c5c3_Var32 string
 				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(c.Category)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 243, Col: 42}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 244, Col: 42}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 				if templ_7745c5c3_Err != nil {
@@ -624,7 +624,7 @@ func Settings(pg Page, d SettingsData) templ.Component {
 				var templ_7745c5c3_Var33 string
 				templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(c.Quantity, 10))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 244, Col: 47}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 245, Col: 47}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 				if templ_7745c5c3_Err != nil {

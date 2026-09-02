@@ -472,6 +472,10 @@ func TestAlerts(t *testing.T) {
 		t.Fatalf("create channel: %d %v", rec.Code, out)
 	}
 	id := int64(out["id"].(float64))
+	rec, out = e.do("POST", "/api/projects/demo/alerts/channels", map[string]any{"kind": "slack", "config": map[string]any{"url": "https://hooks.slack.com/services/T0/B0/XX"}})
+	if rec.Code != 201 || out["kind"] != "slack" {
+		t.Fatalf("create slack channel: %d %v", rec.Code, out)
+	}
 	if rec, _ := e.do("POST", "/api/projects/demo/alerts/channels", map[string]any{"kind": "telegram", "config": map[string]any{}}); rec.Code != 400 {
 		t.Errorf("telegram without chat_id: %d", rec.Code)
 	}
@@ -482,7 +486,7 @@ func TestAlerts(t *testing.T) {
 		t.Errorf("telegram numeric chat_id: %d", rec.Code)
 	}
 	al := e.get("/api/projects/demo/alerts", 200)
-	if len(al["channels"].([]any)) != 2 || len(al["rules"].([]any)) != 6 {
+	if len(al["channels"].([]any)) != 3 || len(al["rules"].([]any)) != 6 {
 		t.Errorf("alerts = %v", al)
 	}
 	if rec, _ := e.do("DELETE", fmt.Sprintf("/api/projects/demo/alerts/channels/%d", id), nil); rec.Code != 204 {

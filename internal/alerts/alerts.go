@@ -303,6 +303,12 @@ func (n *Notifier) send(ctx context.Context, ch sqlc.AlertChannel, payload Paylo
 		}
 		body, _ := json.Marshal(payload)
 		return n.post(ctx, cfg.URL, body)
+	case "slack":
+		if cfg.URL == "" {
+			return errors.New("slack: missing url")
+		}
+		body, _ := json.Marshal(map[string]string{"text": SlackText(payload)})
+		return n.post(ctx, cfg.URL, body)
 	case "telegram":
 		if n.Cfg.TelegramBotToken == "" {
 			return errors.New("telegram: TELEGRAM_BOT_TOKEN not set")
@@ -318,7 +324,24 @@ func (n *Notifier) send(ctx context.Context, ch sqlc.AlertChannel, payload Paylo
 }
 
 // TelegramText renders the short plain-text message.
-func TelegramText(p Payload) string {
+func TelegramText(p Payload) string { return chatText(p, func(s string) string { return s }) }
+
+// SlackText renders the message for Slack's mrkdwn: identical to
+// TelegramText except the title — the one field that can carry an
+// exception message like "NullPointerException: <init> failed" — is
+// escaped per Slack's control characters (& < >); a bare URL on its own
+// line already auto-linkifies in mrkdwn, so it needs no <...> wrapping.
+func SlackText(p Payload) string { return chatText(p, slackEscape) }
+
+func slackEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return r.Replace(s)
+}
+
+// chatText renders the short plain-text message shared by Telegram and
+// Slack; escapeTitle lets Slack's mrkdwn control characters be escaped
+// without duplicating the rest of the layout.
+func chatText(p Payload, escapeTitle func(string) string) string {
 	var b strings.Builder
 	switch p.Type {
 	case TypeNewIssue:
@@ -336,7 +359,7 @@ func TelegramText(p Payload) string {
 	default:
 		b.WriteString(p.Type)
 	}
-	fmt.Fprintf(&b, " in %s\n%s", p.Project, p.Title)
+	fmt.Fprintf(&b, " in %s\n%s", p.Project, escapeTitle(p.Title))
 	if p.Type != TypeUnhandledSpike && p.Type != TypeMonitorFailed && p.Type != TypeMonitorRecovered {
 		fmt.Fprintf(&b, "\n%s · %d events", p.Level, p.EventCount)
 		if p.LastRelease != nil && *p.LastRelease != "" {
@@ -385,7 +408,7 @@ func (n *Notifier) post(ctx context.Context, target string, body []byte) error {
 // is the user-facing message.
 func ChannelConfig(kind string, get func(string) string, allowPrivate bool) (json.RawMessage, error) {
 	switch kind {
-	case "webhook":
+	case "webhook", "slack":
 		u := strings.TrimSpace(get("url"))
 		if err := ValidateWebhookURL(u, allowPrivate); err != nil {
 			return nil, err
@@ -398,7 +421,7 @@ func ChannelConfig(kind string, get func(string) string, allowPrivate bool) (jso
 		}
 		return json.Marshal(map[string]string{"chat_id": id})
 	}
-	return nil, errors.New("kind must be webhook or telegram")
+	return nil, errors.New("kind must be webhook, slack or telegram")
 }
 
 // ErrBlockedURL: a webhook target this server will not connect to.
