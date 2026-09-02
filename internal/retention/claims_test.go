@@ -327,6 +327,9 @@ func TestRollupHistoryExpiry(t *testing.T) {
 		if _, err := st.Pool.Exec(ctx, `INSERT INTO release_health_hourly_rolled (bucket, project_id, release, total, crashed, errored) VALUES ($1, 1, '1.0', 1, 0, 0)`, b); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := st.Pool.Exec(ctx, `INSERT INTO client_report_counts (project_id, bucket, reason, category, quantity) VALUES (1, $1, 'sample_rate', 'error', 1)`, b); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := Sweep(ctx, st, config.Config{RetentionDays: 7}, quiet); err != nil {
 		t.Fatal(err)

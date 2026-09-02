@@ -358,6 +358,14 @@ type Attachment struct {
 	Data           []byte    `json:"data"`
 }
 
+type ClientReportCount struct {
+	ProjectID int64     `json:"project_id"`
+	Bucket    time.Time `json:"bucket"`
+	Reason    string    `json:"reason"`
+	Category  string    `json:"category"`
+	Quantity  int64     `json:"quantity"`
+}
+
 type CrashcartSchema struct {
 	Version   int32     `json:"version"`
 	CreatedAt time.Time `json:"created_at"`

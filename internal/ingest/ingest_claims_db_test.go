@@ -330,8 +330,11 @@ func TestIngestClampedTimesAreNow(t *testing.T) {
 	}
 }
 
-// TestIngestDropsUnstoredItemTypes: transactions, profiles, replays and
-// client reports are accepted (200) and leave no row.
+// TestIngestDropsUnstoredItemTypes: transactions, profiles and replays
+// are accepted (200) and leave no row. A client_report with no
+// discarded_events is accepted too and leaves no count row (nothing to
+// add) — it is parsed, not in the unstored-types drop list, but an empty
+// report has nothing worth storing either.
 func TestIngestDropsUnstoredItemTypes(t *testing.T) {
 	st := testdb.New(t)
 	p := newProject(t, st, "drop")
@@ -342,8 +345,8 @@ func TestIngestDropsUnstoredItemTypes(t *testing.T) {
 		`{"type":"replay_event"}` + "\n" + `{"replay":1}` + "\n" +
 		`{"type":"client_report"}` + "\n" + `{"discarded_events":[]}` + "\n")
 	env := sentry.Parse(body, time.Now())
-	if env.Dropped != 4 || len(env.Events) != 0 || len(env.Sessions) != 0 {
-		t.Fatalf("parsed: dropped=%d events=%d sessions=%d", env.Dropped, len(env.Events), len(env.Sessions))
+	if env.Dropped != 3 || len(env.Events) != 0 || len(env.Sessions) != 0 || len(env.ClientReportCounts) != 0 {
+		t.Fatalf("parsed: dropped=%d events=%d sessions=%d counts=%d", env.Dropped, len(env.Events), len(env.Sessions), len(env.ClientReportCounts))
 	}
 	req := newRequest("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), body)
 	req.Header.Set("X-Sentry-Auth", "Sentry sentry_key=drop")
@@ -352,7 +355,7 @@ func TestIngestDropsUnstoredItemTypes(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"received":0`) {
 		t.Fatalf("→ %d %s", rec.Code, rec.Body.String())
 	}
-	for _, tbl := range []string{"events", "sessions", "issues", "event_stats_dirty", "project_usage"} {
+	for _, tbl := range []string{"events", "sessions", "issues", "event_stats_dirty", "project_usage", "client_report_counts"} {
 		if n := count(t, st, "SELECT count(*) FROM "+tbl+" WHERE project_id = $1", p.ID); n != 0 {
 			t.Errorf("%s rows = %d, want 0", tbl, n)
 		}
@@ -570,5 +573,54 @@ func TestIngestUserReportPIIRedact(t *testing.T) {
 	}
 	if strings.Contains(ur.Comments, "@example.com") {
 		t.Errorf("comments not redacted: %q", ur.Comments)
+	}
+}
+
+// TestIngestClientReportCountsAccumulate: two separate envelopes each
+// reporting the same (reason, category) add up into one bucket rather
+// than overwriting it, and ingesting a client_report-only envelope does
+// not touch the daily event quota.
+func TestIngestClientReportCountsAccumulate(t *testing.T) {
+	st := testdb.New(t)
+	ctx := context.Background()
+	p := newProject(t, st, "cr1")
+	p.DailyQuota = 1 // any event quota consumption here would show up as an exhausted quota within this test
+	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
+	now := time.Now().UTC()
+
+	body := "{}\n{\"type\":\"client_report\"}\n" +
+		`{"discarded_events":[{"reason":"sample_rate","category":"error","quantity":3},{"reason":"before_send","category":"error","quantity":1}]}` + "\n"
+	res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now)
+	if err != nil || res.ClientReportCounts != 2 {
+		t.Fatalf("first envelope: %+v %v", res, err)
+	}
+
+	body = "{}\n{\"type\":\"client_report\"}\n" +
+		`{"discarded_events":[{"reason":"sample_rate","category":"error","quantity":2}]}` + "\n"
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.ClientReportCounts != 1 {
+		t.Fatalf("second envelope: %+v %v", res, err)
+	}
+
+	rows, err := st.ListClientReportCounts(ctx, sqlc.ListClientReportCountsParams{
+		ProjectID: p.ID, Bucket: now.Add(-time.Hour), Bucket_2: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, r := range rows {
+		got[r.Reason+"/"+r.Category] = r.Quantity
+	}
+	if got["sample_rate/error"] != 5 || got["before_send/error"] != 1 {
+		t.Fatalf("counts did not accumulate: %+v", got)
+	}
+
+	// Neither envelope had an event, so nothing was counted against the
+	// quota — a third envelope with an actual event still fits under 1.
+	id := hexID("cr-event-1")
+	ev := fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":"error","platform":"android","exception":{"values":[{"type":"E","value":"v","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id, now.Format(time.RFC3339))
+	body = "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\"}\n" + ev + "\n"
+	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Stored != 1 {
+		t.Fatalf("quota was consumed by client_report-only envelopes: %+v %v", res, err)
 	}
 }

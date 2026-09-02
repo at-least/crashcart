@@ -732,3 +732,38 @@ func TestUserReports(t *testing.T) {
 		t.Errorf("order = %v", rows)
 	}
 }
+
+// TestClientReports: discarded-event counts from two separate envelopes
+// sum into one bucket and come back summed by reason+category, largest
+// first, within the requested window.
+func TestClientReports(t *testing.T) {
+	e := newEnv(t)
+	p := e.createProject("demo")
+	now := time.Now().UTC()
+
+	body := "{}\n{\"type\":\"client_report\"}\n" +
+		`{"discarded_events":[{"reason":"sample_rate","category":"error","quantity":3},{"reason":"before_send","category":"error","quantity":1}]}` + "\n"
+	if res, err := e.in.Ingest(context.Background(), p, sentry.Parse([]byte(body), now), now); err != nil || res.ClientReportCounts != 2 {
+		t.Fatalf("ingest 1: %+v %v", res, err)
+	}
+	body = "{}\n{\"type\":\"client_report\"}\n" +
+		`{"discarded_events":[{"reason":"sample_rate","category":"error","quantity":2}]}` + "\n"
+	if res, err := e.in.Ingest(context.Background(), p, sentry.Parse([]byte(body), now), now); err != nil || res.ClientReportCounts != 1 {
+		t.Fatalf("ingest 2: %+v %v", res, err)
+	}
+
+	out := e.get("/api/projects/demo/client_reports?days=1", 200)
+	counts, _ := out["counts"].([]any)
+	if len(counts) != 2 {
+		t.Fatalf("counts = %v", out["counts"])
+	}
+	// Largest first.
+	c0 := counts[0].(map[string]any)
+	if c0["reason"] != "sample_rate" || c0["category"] != "error" || c0["quantity"] != float64(5) {
+		t.Errorf("count 0 = %v", c0)
+	}
+	c1 := counts[1].(map[string]any)
+	if c1["reason"] != "before_send" || c1["category"] != "error" || c1["quantity"] != float64(1) {
+		t.Errorf("count 1 = %v", c1)
+	}
+}

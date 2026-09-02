@@ -166,13 +166,14 @@ type Session struct {
 
 // Envelope is the parsed result of one POST body.
 type Envelope struct {
-	EventID     string // the header's event_id (32-hex) — the event the attachments belong to; "" when absent or malformed
-	Events      []*Event
-	Sessions    []Session
-	Attachments []Attachment
-	UserReport  *UserReport // the envelope's `user_report` item, if any (the protocol allows at most one)
-	Dropped     int         // items of types CrashCart does not store, and attachments/user reports over the limits
-	Invalid     int         // event items that did not parse (logged and reported to the SDK)
+	EventID            string // the header's event_id (32-hex) — the event the attachments belong to; "" when absent or malformed
+	Events             []*Event
+	Sessions           []Session
+	Attachments        []Attachment
+	UserReport         *UserReport         // the envelope's `user_report` item, if any (the protocol allows at most one)
+	ClientReportCounts []ClientReportCount // the envelope's `client_report` item's discarded_events, if any
+	Dropped            int                 // items of types CrashCart does not store, and attachments/user reports over the limits
+	Invalid            int                 // event items that did not parse (logged and reported to the SDK)
 }
 
 // Attachment is one envelope `attachment` item: a file the SDK attached
@@ -236,6 +237,60 @@ func parseUserReport(headerEventID string, body []byte) *UserReport {
 		Email:    clean(raw.Email, maxReportField),
 		Comments: comments,
 	}
+}
+
+// ClientReportCount is one `discarded_events` entry of a `client_report`
+// item: how many events the SDK itself dropped client-side, and why
+// (reason) and of what kind (category). Both are Sentry's own open wire
+// vocabulary — new values appear over time — so an unrecognized one is
+// kept as-is, not rejected.
+type ClientReportCount struct {
+	Reason   string
+	Category string
+	Quantity int64
+}
+
+type rawClientReport struct {
+	DiscardedEvents []struct {
+		Reason   string `json:"reason"`
+		Category string `json:"category"`
+		Quantity int64  `json:"quantity"`
+	} `json:"discarded_events"`
+}
+
+// Field bounds for client_report: the spec has no documented limit on
+// discarded_events length or the reason/category strings, so these are
+// generous bounds against a broken or hostile sender, not the protocol's
+// own limit (contrast maxReportComments, which is Sentry's documented
+// limit for user_report).
+const (
+	maxClientReportEntries = 200
+	maxClientReportField   = 200
+)
+
+// parseClientReport parses a `client_report` item body. Entries with a
+// non-positive quantity are skipped (nothing to add); entries beyond
+// maxClientReportEntries are dropped and counted.
+func parseClientReport(body []byte) (counts []ClientReportCount, dropped int) {
+	var raw rawClientReport
+	if json.Unmarshal(body, &raw) != nil {
+		return nil, 1
+	}
+	for i, e := range raw.DiscardedEvents {
+		if e.Quantity <= 0 {
+			continue
+		}
+		if i >= maxClientReportEntries {
+			dropped++
+			continue
+		}
+		counts = append(counts, ClientReportCount{
+			Reason:   clean(e.Reason, maxClientReportField),
+			Category: clean(e.Category, maxClientReportField),
+			Quantity: e.Quantity,
+		})
+	}
+	return counts, dropped
 }
 
 type itemHeader struct {
@@ -336,8 +391,12 @@ func Parse(body []byte, now time.Time) Envelope {
 			} else {
 				env.Dropped++
 			}
+		case "client_report":
+			counts, dropped := parseClientReport(itemBody)
+			env.ClientReportCounts = append(env.ClientReportCounts, counts...)
+			env.Dropped += dropped
 		case "transaction", "profile", "replay_event", "replay_recording",
-			"client_report", "check_in", "log", "statsd", "feedback", "span":
+			"check_in", "log", "statsd", "feedback", "span":
 			env.Dropped++
 		default:
 			env.Dropped++

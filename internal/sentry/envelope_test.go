@@ -408,6 +408,59 @@ func TestParseUserReport(t *testing.T) {
 	}
 }
 
+func TestParseClientReport(t *testing.T) {
+	env := Parse(envelope(`{"type":"event"}`, crashEvent,
+		`{"type":"client_report"}`, `{"timestamp":"2026-08-29T11:00:00Z","discarded_events":[{"reason":"sample_rate","category":"error","quantity":3},{"reason":"before_send","category":"error","quantity":1}]}`), now)
+	if len(env.Events) != 1 || env.Dropped != 0 {
+		t.Fatalf("events=%d dropped=%d", len(env.Events), env.Dropped)
+	}
+	if len(env.ClientReportCounts) != 2 {
+		t.Fatalf("counts = %+v", env.ClientReportCounts)
+	}
+	if c := env.ClientReportCounts[0]; c.Reason != "sample_rate" || c.Category != "error" || c.Quantity != 3 {
+		t.Errorf("count 0 = %+v", c)
+	}
+	if c := env.ClientReportCounts[1]; c.Reason != "before_send" || c.Category != "error" || c.Quantity != 1 {
+		t.Errorf("count 1 = %+v", c)
+	}
+
+	// An unrecognized reason/category is kept as-is, not rejected — this
+	// is Sentry's own open wire vocabulary, not something CrashCart owns.
+	env = Parse(envelope(`{"type":"client_report"}`, `{"discarded_events":[{"reason":"a_future_reason","category":"a_future_category","quantity":1}]}`), now)
+	if len(env.ClientReportCounts) != 1 || env.ClientReportCounts[0].Reason != "a_future_reason" || env.ClientReportCounts[0].Category != "a_future_category" {
+		t.Errorf("unrecognized values not tolerated: %+v", env.ClientReportCounts)
+	}
+
+	// A zero/negative quantity is nothing to add: skipped, not an error.
+	env = Parse(envelope(`{"type":"client_report"}`, `{"discarded_events":[{"reason":"sample_rate","category":"error","quantity":0}]}`), now)
+	if len(env.ClientReportCounts) != 0 || env.Dropped != 0 {
+		t.Errorf("zero quantity: counts=%+v dropped=%d", env.ClientReportCounts, env.Dropped)
+	}
+
+	// Over the entry count limit: the rest are dropped and counted.
+	var entries []string
+	for i := 0; i <= maxClientReportEntries; i++ {
+		entries = append(entries, fmt.Sprintf(`{"reason":"sample_rate","category":"error","quantity":%d}`, i+1))
+	}
+	env = Parse(envelope(`{"type":"client_report"}`, fmt.Sprintf(`{"discarded_events":[%s]}`, strings.Join(entries, ","))), now)
+	if len(env.ClientReportCounts) != maxClientReportEntries || env.Dropped != 1 {
+		t.Errorf("entry limit: counts=%d dropped=%d", len(env.ClientReportCounts), env.Dropped)
+	}
+
+	// Bounds: an oversized reason/category is truncated, not dropped.
+	long := strings.Repeat("x", maxClientReportField+50)
+	env = Parse(envelope(`{"type":"client_report"}`, fmt.Sprintf(`{"discarded_events":[{"reason":%q,"category":"error","quantity":1}]}`, long)), now)
+	if len(env.ClientReportCounts) != 1 || len(env.ClientReportCounts[0].Reason) != maxClientReportField {
+		t.Errorf("reason bound: %+v", env.ClientReportCounts)
+	}
+
+	// Malformed body: dropped and counted, like any other unparseable item.
+	env = Parse(envelope(`{"type":"client_report"}`, `not json`), now)
+	if len(env.ClientReportCounts) != 0 || env.Dropped != 1 {
+		t.Errorf("malformed body: counts=%+v dropped=%d", env.ClientReportCounts, env.Dropped)
+	}
+}
+
 // TestTruncateRunes: Truncate bounds by characters, never splitting a
 // multi-byte one, and leaves a string of few characters but many bytes alone.
 func TestTruncateRunes(t *testing.T) {

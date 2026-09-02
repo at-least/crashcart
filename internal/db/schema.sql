@@ -172,6 +172,23 @@ CREATE TABLE user_reports (
 );
 CREATE INDEX user_reports_project_received ON user_reports (project_id, received_at DESC);
 
+-- client_report_counts: how many events an SDK itself discarded
+-- client-side, and why (reason) and of what kind (category) — a periodic
+-- SDK self-report, not a per-event fact. reason/category are TEXT, not
+-- enums: they are Sentry's own open wire vocabulary (like attachment_type,
+-- platform below), which Sentry can extend without CrashCart's say-so.
+-- Aggregated at ingest (add-to-bucket, not one row per report); pruned on
+-- retention's AggregateRetentionDays cutoff alongside the *_rolled tables,
+-- not RETENTION_DAYS (internal/retention/retention.go).
+CREATE TABLE client_report_counts (
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    bucket     TIMESTAMPTZ NOT NULL,             -- crashcart_bucket(received_at, 3600); named like the *_rolled tables so it prunes on the same generic sweep loop
+    reason     TEXT NOT NULL,
+    category   TEXT NOT NULL,
+    quantity   BIGINT NOT NULL,
+    PRIMARY KEY (project_id, bucket, reason, category)
+);
+
 -- ── sessions (release health) ──────────────────────────────────────────
 
 CREATE TABLE sessions (

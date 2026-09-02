@@ -155,18 +155,19 @@ type cachedProject struct {
 
 // Result summarizes one Ingest call.
 type Result struct {
-	Received    int         // events parsed
-	Stored      int         // events written
-	Sampled     int         // events counted but not stored
-	Duplicates  int         // resent events already stored
-	Mismatched  int         // events whose platform family is not the project's
-	Invalid     int         // event items that did not parse
-	Sessions    int         // session rows written
-	Attachments int         // attachment rows written (the header event's, when it was stored)
-	UserReports int         // user_report items written (kept regardless of sampling)
-	NewIssues   []sentry.ID // fingerprints created by this envelope
-	Regressions []sentry.ID // fingerprints flipped to 'regression'
-	Jobs        int
+	Received           int         // events parsed
+	Stored             int         // events written
+	Sampled            int         // events counted but not stored
+	Duplicates         int         // resent events already stored
+	Mismatched         int         // events whose platform family is not the project's
+	Invalid            int         // event items that did not parse
+	Sessions           int         // session rows written
+	Attachments        int         // attachment rows written (the header event's, when it was stored)
+	UserReports        int         // user_report items written (kept regardless of sampling)
+	ClientReportCounts int         // client_report discarded_events entries added to their bucket
+	NewIssues          []sentry.ID // fingerprints created by this envelope
+	Regressions        []sentry.ID // fingerprints flipped to 'regression'
+	Jobs               int
 }
 
 // Handler routes the Sentry endpoints. The {project} path value is the
@@ -359,7 +360,7 @@ type prepared struct {
 func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envelope, now time.Time) (Result, error) {
 	var res Result
 	res.Received = len(env.Events)
-	if len(env.Events) == 0 && len(env.Sessions) == 0 && env.UserReport == nil {
+	if len(env.Events) == 0 && len(env.Sessions) == 0 && env.UserReport == nil && len(env.ClientReportCounts) == 0 {
 		return res, nil
 	}
 
@@ -678,6 +679,25 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				return fmt.Errorf("upsert user report: %w", err)
 			}
 			res.UserReports = 1
+		}
+
+		// client_report counts are added to their hour bucket regardless of
+		// what happened to any event in the same envelope — pure SDK-side
+		// diagnostics, no PII, no daily quota (not an event).
+		if len(env.ClientReportCounts) > 0 {
+			reasons := make([]string, len(env.ClientReportCounts))
+			categories := make([]string, len(env.ClientReportCounts))
+			quantities := make([]int64, len(env.ClientReportCounts))
+			for i, c := range env.ClientReportCounts {
+				reasons[i], categories[i], quantities[i] = c.Reason, c.Category, c.Quantity
+			}
+			if err := q.UpsertClientReportCounts(ctx, sqlc.UpsertClientReportCountsParams{
+				ProjectID: p.ID, Bucket: now.UTC().Truncate(time.Hour),
+				Reasons: reasons, Categories: categories, Quantities: quantities,
+			}); err != nil {
+				return fmt.Errorf("upsert client report counts: %w", err)
+			}
+			res.ClientReportCounts = len(env.ClientReportCounts)
 		}
 
 		sessions := make([]store.SessionInsert, 0, len(env.Sessions))

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/at-least/crashcart/internal/alerts"
 	"github.com/at-least/crashcart/internal/auth"
@@ -24,11 +25,12 @@ var AlertTypes = []string{"new_issue", "regression", "unhandled_spike", "escalat
 
 // SettingsData feeds the settings page.
 type SettingsData struct {
-	DSN         string
-	EnvelopeURL string
-	Rules       []sqlc.AlertRule
-	Channels    []sqlc.AlertChannel
-	Symbols     []sqlc.ListSymbolFilesRow
+	DSN           string
+	EnvelopeURL   string
+	Rules         []sqlc.AlertRule
+	Channels      []sqlc.AlertChannel
+	Symbols       []sqlc.ListSymbolFilesRow
+	ClientReports []sqlc.ListClientReportCountsRow // events the project's SDKs discarded client-side, last 7 days
 }
 
 func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {
@@ -61,6 +63,13 @@ func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if d.Symbols, err = w.Store.ListSymbolFiles(ctx, p.ID); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	now := time.Now().UTC()
+	if d.ClientReports, err = w.Store.ListClientReportCounts(ctx, sqlc.ListClientReportCountsParams{
+		ProjectID: p.ID, Bucket: now.Add(-7 * day).Truncate(time.Hour), Bucket_2: now,
+	}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

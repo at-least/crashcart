@@ -35,7 +35,7 @@ const partitionsAhead = 2 * PartitionWidth
 var partitioned = []struct{ table, column string }{{"events", "occurred_at"}, {"attachments", "occurred_at"}, {"sessions", "started_at"}}
 
 // rolled lists the rollup tables (bounded by AggregateRetentionDays).
-var rolled = []string{"event_stats_hourly_rolled", "issue_stats_hourly_rolled", "release_health_hourly_rolled"}
+var rolled = []string{"event_stats_hourly_rolled", "issue_stats_hourly_rolled", "release_health_hourly_rolled", "client_report_counts"}
 
 // Reconcile runs at startup: partitions for the retention window plus
 // partitionsAhead exist. Idempotent.

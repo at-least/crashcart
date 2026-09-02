@@ -574,7 +574,71 @@ func Settings(pg Page, d SettingsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" hx-encoding=\"multipart/form-data\" hx-target=\"#settings\" hx-select=\"#settings\" hx-swap=\"outerHTML\" hx-push-url=\"false\"><section class=\"flex flex-wrap items-end gap-3 px-4 py-3\"><div class=\"grid gap-1\"><label data-slot=\"label\" for=\"sym-release\">Release</label> <input data-slot=\"input\" class=\"h-8 w-40 text-xs\" id=\"sym-release\" name=\"release\" placeholder=\"2.4.1\"></div><div class=\"grid gap-1\"><label data-slot=\"label\" for=\"sym-file\">File</label> <input data-slot=\"input\" class=\"h-8 text-xs\" id=\"sym-file\" name=\"file\" type=\"file\" required></div><button type=\"submit\" data-slot=\"button\" data-size=\"sm\">Upload</button><p data-form-error class=\"text-xs text-destructive\" hidden></p></section></form></div></section></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" hx-encoding=\"multipart/form-data\" hx-target=\"#settings\" hx-select=\"#settings\" hx-swap=\"outerHTML\" hx-push-url=\"false\"><section class=\"flex flex-wrap items-end gap-3 px-4 py-3\"><div class=\"grid gap-1\"><label data-slot=\"label\" for=\"sym-release\">Release</label> <input data-slot=\"input\" class=\"h-8 w-40 text-xs\" id=\"sym-release\" name=\"release\" placeholder=\"2.4.1\"></div><div class=\"grid gap-1\"><label data-slot=\"label\" for=\"sym-file\">File</label> <input data-slot=\"input\" class=\"h-8 text-xs\" id=\"sym-file\" name=\"file\" type=\"file\" required></div><button type=\"submit\" data-slot=\"button\" data-size=\"sm\">Upload</button><p data-form-error class=\"text-xs text-destructive\" hidden></p></section></form></div></section><section class=\"settings-section\" id=\"client-reports\"><h2 class=\"section-title\">Discarded events</h2><p class=\"section-desc\">What the project's SDKs dropped client-side in the last 7 days, and why — before it ever reached CrashCart. A rising sample_rate/before_send count here explains fewer events than expected without anything being wrong server-side.</p>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if len(d.ClientReports) == 0 {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, "<p class=\"section-desc\">None reported.</p>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "<table class=\"log-table\"><thead><tr><th>Reason</th><th>Category</th><th>Count</th></tr></thead> <tbody>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			for _, c := range d.ClientReports {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "<tr><td class=\"mono-cell\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var31 string
+				templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(c.Reason)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 240, Col: 40}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, "</td><td class=\"mono-cell\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var32 string
+				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(c.Category)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 241, Col: 42}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "</td><td>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var33 string
+				templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(c.Quantity, 10))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/settings.templ`, Line: 242, Col: 47}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, "</td></tr>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "</tbody></table>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "</section></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

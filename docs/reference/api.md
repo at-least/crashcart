@@ -231,6 +231,26 @@ it is the only place such a report surfaces.
 Response: `{"user_reports": [{"event_id","name","email","comments","received_at"}, ...], "total": n}`.
 
 
+## Client reports
+
+```
+GET /api/projects/{slug}/client_reports?days=7
+```
+
+How many events the project's SDKs discarded client-side over the
+window, and why — a `client_report` envelope item's `discarded_events`,
+summed by reason and category (`sample_rate`, `before_send`,
+`queue_overflow`, … × `error`, `attachment`, …), largest first. This is
+SDK-side self-reporting, not a fact about anything CrashCart received;
+a rising count here explains fewer events arriving without anything
+being wrong on the server.
+
+Same `days` / `from` / `to` window parameters as
+[Overview](#overview).
+
+Response: `{"from","to","counts": [{"reason","category","quantity"}, ...]}`.
+
+
 ## Releases
 
 ```

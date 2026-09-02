@@ -107,6 +107,15 @@ CREATE TABLE user_reports (
     PRIMARY KEY (project_id, event_id)
 );
 
+CREATE TABLE client_report_counts (
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    bucket     TIMESTAMPTZ NOT NULL,
+    reason     TEXT NOT NULL,
+    category   TEXT NOT NULL,
+    quantity   BIGINT NOT NULL,
+    PRIMARY KEY (project_id, bucket, reason, category)
+);
+
 CREATE TABLE sessions (
     started_at  TIMESTAMPTZ NOT NULL,
     project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,

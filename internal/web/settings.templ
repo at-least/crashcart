@@ -220,5 +220,31 @@ templ Settings(pg Page, d SettingsData) {
 				</form>
 			</div>
 		</section>
+		<section class="settings-section" id="client-reports">
+			<h2 class="section-title">Discarded events</h2>
+			<p class="section-desc">What the project's SDKs dropped client-side in the last 7 days, and why — before it ever reached CrashCart. A rising sample_rate/before_send count here explains fewer events than expected without anything being wrong server-side.</p>
+			if len(d.ClientReports) == 0 {
+				<p class="section-desc">None reported.</p>
+			} else {
+				<table class="log-table">
+					<thead>
+						<tr>
+							<th>Reason</th>
+							<th>Category</th>
+							<th>Count</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, c := range d.ClientReports {
+							<tr>
+								<td class="mono-cell">{ c.Reason }</td>
+								<td class="mono-cell">{ c.Category }</td>
+								<td>{ strconv.FormatInt(c.Quantity, 10) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</section>
 	</div>
 }
