@@ -227,6 +227,15 @@ func TestBulkAndMutations(t *testing.T) {
 	if got, _ := w.Store.GetProject(ctx, "shop"); got.PublicKey == oldKey {
 		t.Errorf("key not rotated")
 	}
+	if r := hx("PATCH", "/p/shop/settings/name", "name=Shop+Renamed"); r.Code != 303 {
+		t.Errorf("name = %d %s", r.Code, r.Body)
+	}
+	if got, _ := w.Store.GetProject(ctx, "shop"); got.Name != "Shop Renamed" {
+		t.Errorf("name not saved: %+v", got.Name)
+	}
+	if r := hx("PATCH", "/p/shop/settings/name", "name="); r.Code != 400 {
+		t.Errorf("empty name accepted: %d", r.Code)
+	}
 	if r := hx("PATCH", "/p/shop/settings/platform", "platform=android"); r.Code != 303 {
 		t.Errorf("platform = %d %s", r.Code, r.Body)
 	}

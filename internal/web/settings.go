@@ -150,6 +150,27 @@ func (w *Web) settingsSampling(rw http.ResponseWriter, r *http.Request) {
 	redirect(rw, r, state(r).Href("/settings"))
 }
 
+func (w *Web) settingsName(rw http.ResponseWriter, r *http.Request) {
+	p, ok := w.project(rw, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(rw, "bad form", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.Form.Get("name"))
+	if name == "" {
+		http.Error(rw, "name must not be empty", http.StatusBadRequest)
+		return
+	}
+	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}); err != nil {
+		w.fail(rw, r, err)
+		return
+	}
+	redirect(rw, r, state(r).Href("/settings"))
+}
+
 func (w *Web) settingsPlatform(rw http.ResponseWriter, r *http.Request) {
 	p, ok := w.project(rw, r)
 	if !ok {
