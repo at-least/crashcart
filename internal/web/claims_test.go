@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"log/slog"
-	mrand "math/rand"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -81,12 +80,7 @@ func TestStreamWakesOnOwnProjectOnly(t *testing.T) {
 	w, _, mux := setup(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// NOTIFY channels are per database, not per schema: the other packages'
-	// tests share this database and their issue triggers raise
-	// crashcart_issues with *their* small sequential project ids, so the
-	// streamed project gets an id no other test schema will produce.
-	// (In production there is one schema, so ids are unique by construction.)
-	id := int64(1)<<40 + mrand.Int63n(1<<30)
+	id := int64(7)
 	if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO projects (id, slug, name, public_key) OVERRIDING SYSTEM VALUE VALUES ($1, 'stream', 'Stream', $2)`, id, strings.Repeat("f", 32)); err != nil {
 		t.Fatal(err)
 	}

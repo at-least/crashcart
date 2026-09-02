@@ -30,12 +30,11 @@ sidecar (`container/symbolicate`).
 make generate      sqlc generate + templ generate + gendocs (generated files are committed)
 make build         → bin/crashcart
 make test          go vet + gendocs -check + unit tests
-TEST_DATABASE_URL=postgres://crashcart:crashcart@127.0.0.1:55432/crashcart?sslmode=disable make test-db
+make test-db       DB-backed tests too; provisions a disposable Postgres via Docker
+                    (cmd/testpg) when TEST_DATABASE_URL is unset
 make css           rebuild internal/web/assets/app.css (needs npm install; artifact is committed)
 crashcart          subcommands: the `usage` text in cmd/crashcart/main.go
 ```
-
-Local Postgres for tests: `docker run -d --name crashcart-test-pg -e POSTGRES_PASSWORD=crashcart -e POSTGRES_USER=crashcart -e POSTGRES_DB=crashcart -p 127.0.0.1:55432:5432 postgres:16-alpine`.
 
 ## Layout
 
@@ -60,7 +59,8 @@ internal/
   export/             NDJSON export / import
   seed/               demo data
   server/             mux wiring
-  testdb/             TEST_DATABASE_URL helper: fresh schema per test
+  testdb/             a real, separate database per test (pgtestdb template clone);
+                      skip without TEST_DATABASE_URL
 container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + llvm-symbolizer
 ```
 
@@ -112,12 +112,10 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
 - Tests with every change, and tests that can *fail*: assert the specific
   behaviour (rows, values, statuses), not `err == nil`; a claim about how
   the code behaves is confirmed by a test, not by reading. Unit tests next
-  to the code; DB-backed tests use `internal/testdb` (fresh schema per
-  test, skip without `TEST_DATABASE_URL`; `testdb.Projects` for made-up
-  project ids); `internal/server/server_test.go` is the end-to-end suite.
-- Test-DB pitfalls: `pg_notify` channels are per *database*, not per
-  schema — a Listener-keyed test must use a project id no other package's
-  test can produce (random ≥ 2^40 via `OVERRIDING SYSTEM VALUE`), or it
-  passes alone and fails in the full suite. Prefer `pg_catalog` over
-  `information_schema` in tests. Killed runs leave `t_*` schemas behind;
-  drop them when the DB gets slow.
+  to the code; DB-backed tests use `internal/testdb` (a real, separate
+  database per test, cloned from a migrated template; skip without
+  `TEST_DATABASE_URL`; `testdb.Projects` for made-up project ids);
+  `internal/server/server_test.go` is the end-to-end suite.
+- Test-DB pitfalls: prefer `pg_catalog` over `information_schema` in
+  tests. The test Postgres is the `crashcart-testpg` container
+  `cmd/testpg` manages (reused across runs); `docker rm -f` it to reset.
