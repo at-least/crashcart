@@ -22,8 +22,9 @@ tests, do not "update the docs" with a second copy.
 Go 1.27+ (std `net/http` mux, pgx/v5, sqlc, templ, goose for migrations),
 plain Postgres 15+ (no extensions; the one store — payloads, symbol files
 included by default), htmx + Tailwind v4 + shadless for the viewer.
-Optional: symbol files in S3 / a directory (`BLOB_STORE`, minio-go), dSYM
-symbolication sidecar (`container/symbolicate`).
+Optional: symbol files and event payloads in an S3-compatible bucket
+(`BLOB_STORE=s3`, minio-go), dSYM symbolication sidecar
+(`container/symbolicate`).
 
 ## Commands
 
@@ -42,13 +43,14 @@ crashcart          subcommands: the `usage` text in cmd/crashcart/main.go
 ```
 cmd/crashcart/        main.go: subcommands, the `serve` wiring (schedulers, shutdown order)
 internal/
-  blob/               optional object store for symbol files: Store (Memory, FS, S3 via minio-go)
+  blob/               optional object store (BLOB_STORE=s3): Store (Memory for tests, S3 via minio-go)
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, Culprit, ID
   db/                 migrations/*.sql (goose, applied on every start; 00001_baseline.sql is
                       everything through the last pre-migration release), sqlc_schema.sql
                       (mirror for sqlc; the stats views appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
-  store/              Store = pool + sqlc.Queries; dynamic event listing/breakdown (only hand-written SQL);
+  store/              Store = pool + sqlc.Queries + Blobs; dynamic event listing/breakdown (only hand-written SQL);
+                      packs.go (payload spool → packs, Payload read path);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out), RunAsLeader
   auth/               Access (API keys, user sessions), CORS, RateLimit, SentryKey
   ingest/             POST /api/{id}/envelope|store; Ingest(); PII redaction
@@ -89,13 +91,17 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   its body (a plpgsql function). An export-format change bumps the format
   in `internal/export` and its spec `docs/reference/export-format.md`
   together — independent of schema versioning.
-- There is one store by default — Postgres. Symbol files may live in
-  object storage (`BLOB_STORE`, `internal/blob`), nothing else does: no
-  cache server, no second queue, no other table in a bucket; per-issue
-  sampling is what bounds the database (ARCHITECTURE.md). A symbol row's
-  location is its own (`data` xor `blob_key`) — read rows the way they
-  were written (`symbolicate.Service` helpers in `files.go`), write
-  objects before rows and delete them after, never rely on bucket
+- There is one store by default — Postgres. Symbol files and event
+  payloads may live in object storage (`BLOB_STORE=s3`, `internal/blob`),
+  nothing else does: no cache server, no second queue, no other table in
+  a bucket; per-issue sampling is what bounds the database
+  (ARCHITECTURE.md). A row's location is its own — `symbol_files.data`
+  xor `blob_key`; `events.payload`, else `payload_spool`, else a pack via
+  `event_packs` — so read rows the way they were written
+  (`store.Payload`, `symbolicate.Service`'s `files.go` helpers), never
+  by the process's mode. Write objects before rows, delete them after
+  rows, in `packs.go` / `files.go`; ingest never talks to the bucket
+  (the spool is written in its transaction); never rely on bucket
   lifecycle rules.
 - Never rewrite `events.payload`. Symbolication writes the small columns only.
 - Never write the `*_rolled` stats tables from anywhere but

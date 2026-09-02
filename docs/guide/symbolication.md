@@ -97,8 +97,11 @@ elsewhere:
 | `BLOB_STORE` | Where | When |
 |---|---|---|
 | `postgres` (default) | the `symbol_files` table | small mappings, nothing extra to run |
-| `s3` | an S3-compatible bucket (`S3_BUCKET`, `S3_ENDPOINT` for MinIO / R2 / Backblaze, `S3_ACCESS_KEY` + `S3_SECRET_KEY` or the usual AWS credential chain) | large mappings, or more than one replica |
-| `fs` | a directory (`BLOB_DIR`) | one instance on one machine |
+| `s3` | an S3-compatible bucket (`S3_BUCKET`, `S3_ENDPOINT` for MinIO / R2 / Backblaze, `S3_ACCESS_KEY` + `S3_SECRET_KEY` or the usual AWS credential chain) | large mappings, or a database you want kept to metadata |
+
+`BLOB_STORE=s3` moves raw event payloads to the bucket as well — see
+[The database](/deploy/postgres#payloads-in-a-bucket) for what that
+changes.
 
 Variables: [Configuration](/deploy/configuration). The bucket must exist;
 CrashCart checks it can reach it at startup and refuses to start
@@ -110,8 +113,8 @@ ones go to the new place. To move the existing ones, `crashcart export`
 then `crashcart import` into the new backend — the export file always
 carries the bytes inline ([Operations](/deploy/operations#backups)).
 Deleting a symbol file, a project, or expiring old files removes the
-object with the row. Events, attachments and everything else stay in
-Postgres whatever `BLOB_STORE` says.
+object with the row. Attachments and everything that is not a symbol
+file or a raw payload stay in Postgres whatever `BLOB_STORE` says.
 
 ## Already-collected events
 

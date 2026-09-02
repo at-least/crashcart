@@ -8,10 +8,10 @@ crashcart export shop-ios > shop-ios.ndjson         # one project
 ```
 
 The file is plain newline-delimited JSON — payloads and symbol files
-included, whether the symbol files live in the database or in the bucket
-/ directory `BLOB_STORE` names — and restores into **any** CrashCart, on a
-different Postgres or a different symbol-file backend (importing writes
-them the destination's way, which is also how you move an instance from
+included, whether they live in the database or in the bucket
+`BLOB_STORE=s3` names — and restores into **any** CrashCart, on a
+different Postgres or a different `BLOB_STORE` (importing writes them the
+destination's way, which is also how you move an instance from
 `postgres` to `s3`):
 
 ```sh
@@ -23,6 +23,9 @@ kept, missing ones added, projects created as needed.
 
 Regular Postgres backups (`pg_dump`, volume snapshots) work too and are
 faster for like-for-like restores; the export file is the portable one.
+With `BLOB_STORE=s3` a Postgres backup alone is metadata: pair it with
+the bucket (its own versioning or replication), or use the export, which
+carries the bytes.
 
 ### On a schedule, with cron
 

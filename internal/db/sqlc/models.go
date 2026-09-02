@@ -439,6 +439,15 @@ type Event struct {
 	Payload      []byte          `json:"payload"`
 }
 
+type EventPack struct {
+	ProjectID  int64     `json:"project_id"`
+	EventID    sentry.ID `json:"event_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	PackID     int64     `json:"pack_id"`
+	PackOffset int32     `json:"pack_offset"`
+	PackLen    int32     `json:"pack_len"`
+}
+
 type EventStatsDirty struct {
 	ProjectID int64     `json:"project_id"`
 	Bucket    time.Time `json:"bucket"`
@@ -548,6 +557,22 @@ type MonitorCheckin struct {
 	DurationS   *float32      `json:"duration_s"`
 	Release     *string       `json:"release"`
 	Environment *string       `json:"environment"`
+}
+
+type Pack struct {
+	ID        int64     `json:"id"`
+	ProjectID int64     `json:"project_id"`
+	Week      time.Time `json:"week"`
+	Bytes     int64     `json:"bytes"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type PayloadSpool struct {
+	ProjectID  int64     `json:"project_id"`
+	EventID    sentry.ID `json:"event_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	Data       []byte    `json:"data"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type Project struct {

@@ -38,8 +38,7 @@ type Config struct {
 	PIIRedact           bool
 	CustomTags          []string // tag keys the viewer shows as filters
 
-	BlobStore string        // where symbol files are stored: "postgres" (default), "s3" or "fs"
-	BlobDir   string        // BLOB_STORE=fs: the directory
+	BlobStore string        // where symbol files and event payloads are stored: "postgres" (default) or "s3"
 	S3        blob.S3Config // BLOB_STORE=s3
 }
 
@@ -95,8 +94,7 @@ var Vars = []Var{
 	{Name: "CUSTOM_TAGS", Group: "Optional features",
 		Doc: "Comma-separated tag keys to offer as filters in the viewer, e.g. `tenant,feature_flag`"},
 	{Name: "BLOB_STORE", Group: "Optional features", Default: "postgres",
-		Doc: "Where uploaded symbol files (ProGuard mappings, dSYMs, source maps) are kept: `postgres` — in the database, nothing else to run; `s3` — an S3-compatible bucket, for large mapping files and several replicas; `fs` — a local directory, one replica only. Files already uploaded stay where they are; `crashcart export` / `import` moves them"},
-	{Name: "BLOB_DIR", Group: "Optional features", Doc: "`BLOB_STORE=fs`: the directory symbol files are written to"},
+		Doc: "Where the big bytes go — uploaded symbol files (ProGuard mappings, dSYMs, source maps) and raw event payloads: `postgres` — in the database, nothing else to run; `s3` — an S3-compatible bucket, which keeps the database to metadata (a fiftieth of the size) so backups, replication and exports stay small. Rows already written stay where they are"},
 	{Name: "S3_BUCKET", Group: "Optional features", Doc: "`BLOB_STORE=s3`: the bucket (must exist)"},
 	{Name: "S3_ENDPOINT", Group: "Optional features", Shown: "AWS",
 		Doc: "`BLOB_STORE=s3`: host[:port] of an S3-compatible store — MinIO, R2, Backblaze, Ceph — e.g. `minio:9000` or `https://<account>.r2.cloudflarestorage.com` (`http://` for a plain-HTTP MinIO on the LAN). Empty means AWS S3"},
@@ -144,7 +142,6 @@ func Load() (Config, error) {
 		WebhookAllowPrivate: get("WEBHOOK_ALLOW_PRIVATE") == "true",
 		CustomTags:          SplitCSV(get("CUSTOM_TAGS")),
 		BlobStore:           get("BLOB_STORE"),
-		BlobDir:             get("BLOB_DIR"),
 		S3: blob.S3Config{
 			Bucket: get("S3_BUCKET"), Endpoint: get("S3_ENDPOINT"), Region: get("S3_REGION"),
 			AccessKey: get("S3_ACCESS_KEY"), SecretKey: get("S3_SECRET_KEY"), Prefix: get("S3_PREFIX"),
@@ -155,10 +152,6 @@ func Load() (Config, error) {
 	}
 	switch c.BlobStore {
 	case "postgres":
-	case "fs":
-		if c.BlobDir == "" {
-			return c, fmt.Errorf("BLOB_STORE=fs needs BLOB_DIR")
-		}
 	case "s3":
 		if c.S3.Bucket == "" {
 			return c, fmt.Errorf("BLOB_STORE=s3 needs S3_BUCKET")
@@ -167,7 +160,7 @@ func Load() (Config, error) {
 			return c, fmt.Errorf("S3_ACCESS_KEY and S3_SECRET_KEY must be set together")
 		}
 	default:
-		return c, fmt.Errorf("BLOB_STORE must be postgres, s3 or fs, not %q", c.BlobStore)
+		return c, fmt.Errorf("BLOB_STORE must be postgres or s3, not %q", c.BlobStore)
 	}
 	var err error
 	if c.RateLimit, err = intEnv("RATE_LIMIT"); err != nil {

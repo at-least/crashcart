@@ -8,176 +8,56 @@ package sqlc
 import (
 	"context"
 	"time"
+
+	"github.com/at-least/crashcart/internal/sentry"
 )
-
-const advancePack = `-- name: AdvancePack :one
-UPDATE packs SET next_offset = next_offset + $2::bigint, closed = next_offset + $2::bigint >= $3::bigint
-WHERE id = $1 RETURNING (next_offset - $2::bigint)::bigint AS off, closed
-`
-
-type AdvancePackParams struct {
-	ID       int64 `json:"id"`
-	N        int64 `json:"n"`
-	MaxBytes int64 `json:"max_bytes"`
-}
-
-type AdvancePackRow struct {
-	Off    int64 `json:"off"`
-	Closed bool  `json:"closed"`
-}
-
-// Reserves n bytes in a claimed pack; the pack closes when that reaches
-// max_bytes. Rolling the transaction back returns the bytes: no gaps.
-func (q *Queries) AdvancePack(ctx context.Context, arg AdvancePackParams) (AdvancePackRow, error) {
-	row := q.db.QueryRow(ctx, advancePack, arg.ID, arg.N, arg.MaxBytes)
-	var i AdvancePackRow
-	err := row.Scan(&i.Off, &i.Closed)
-	return i, err
-}
-
-const claimOpenPack = `-- name: ClaimOpenPack :one
-
-SELECT id, next_offset FROM packs WHERE NOT closed
-ORDER BY next_offset DESC LIMIT 1 FOR UPDATE SKIP LOCKED
-`
-
-type ClaimOpenPackRow struct {
-	ID         int64 `json:"id"`
-	NextOffset int64 `json:"next_offset"`
-}
-
-// Payload packs: packs is the set of pack objects being filled (closed =
-// false, any number, chosen with SKIP LOCKED so concurrent envelopes never
-// wait on each other) or waiting for upload (closed = true);
-// payload_spool holds the payloads of those packs, each at its offset.
-// The event row's pack_id / pack_offset / pack_len were written with them.
-// The fullest open pack no other transaction is writing to (its row lock
-// is ours until commit). ErrNoRows: open one (OpenPack).
-func (q *Queries) ClaimOpenPack(ctx context.Context) (ClaimOpenPackRow, error) {
-	row := q.db.QueryRow(ctx, claimOpenPack)
-	var i ClaimOpenPackRow
-	err := row.Scan(&i.ID, &i.NextOffset)
-	return i, err
-}
-
-const closeOpenPacks = `-- name: CloseOpenPacks :execrows
-UPDATE packs SET closed = true WHERE NOT closed
-`
-
-// Everything waiting goes out now (the CLI after an import or seed).
-func (q *Queries) CloseOpenPacks(ctx context.Context) (int64, error) {
-	result, err := q.db.Exec(ctx, closeOpenPacks)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const closedPacks = `-- name: ClosedPacks :many
-SELECT id FROM packs WHERE closed ORDER BY id
-`
-
-func (q *Queries) ClosedPacks(ctx context.Context) ([]int64, error) {
-	rows, err := q.db.Query(ctx, closedPacks)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []int64{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const countSpool = `-- name: CountSpool :one
-SELECT count(*) FROM payload_spool
-`
-
-func (q *Queries) CountSpool(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countSpool)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
 
 const deletePack = `-- name: DeletePack :exec
 DELETE FROM packs WHERE id = $1
 `
 
-// The spool rows go with it (ON DELETE CASCADE).
 func (q *Queries) DeletePack(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deletePack, id)
 	return err
 }
 
 const expireSpool = `-- name: ExpireSpool :execrows
-DELETE FROM payload_spool WHERE created_at < $1
+DELETE FROM payload_spool WHERE date_trunc('week', occurred_at AT TIME ZONE 'UTC')::date + 7 <= $1::date
 `
 
-// Rows older than retention: their events are gone (a pack that never
-// filled on a very quiet project).
-func (q *Queries) ExpireSpool(ctx context.Context, createdAt time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, expireSpool, createdAt)
+// Spool rows of expired weeks (the partition rule, not a plain cutoff: a
+// weekly partition keeps rows up to a week past the cutoff, and a row
+// still in the spool — a bucket outage — is their only payload).
+func (q *Queries) ExpireSpool(ctx context.Context, cutoff time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, expireSpool, cutoff)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const lockClosedPack = `-- name: LockClosedPack :one
-SELECT id FROM packs WHERE id = $1 AND closed FOR UPDATE SKIP LOCKED
+const expiredPacks = `-- name: ExpiredPacks :many
+SELECT id, project_id, week FROM packs WHERE week + 7 <= $1::date
 `
 
-// Claims a closed pack for upload; another process's claim is skipped.
-func (q *Queries) LockClosedPack(ctx context.Context, id int64) (int64, error) {
-	row := q.db.QueryRow(ctx, lockClosedPack, id)
-	err := row.Scan(&id)
-	return id, err
+type ExpiredPacksRow struct {
+	ID        int64     `json:"id"`
+	ProjectID int64     `json:"project_id"`
+	Week      time.Time `json:"week"`
 }
 
-const openPack = `-- name: OpenPack :one
-INSERT INTO packs DEFAULT VALUES RETURNING id, next_offset
-`
-
-type OpenPackRow struct {
-	ID         int64 `json:"id"`
-	NextOffset int64 `json:"next_offset"`
-}
-
-func (q *Queries) OpenPack(ctx context.Context) (OpenPackRow, error) {
-	row := q.db.QueryRow(ctx, openPack)
-	var i OpenPackRow
-	err := row.Scan(&i.ID, &i.NextOffset)
-	return i, err
-}
-
-const packRows = `-- name: PackRows :many
-SELECT "offset", data FROM payload_spool WHERE pack_id = $1 ORDER BY "offset"
-`
-
-type PackRowsRow struct {
-	Offset int32  `json:"offset"`
-	Data   []byte `json:"data"`
-}
-
-func (q *Queries) PackRows(ctx context.Context, packID int64) ([]PackRowsRow, error) {
-	rows, err := q.db.Query(ctx, packRows, packID)
+// Packs of weeks past retention: the same rule as the partition drop
+// (a week is expired once its end is at or before the cutoff).
+func (q *Queries) ExpiredPacks(ctx context.Context, cutoff time.Time) ([]ExpiredPacksRow, error) {
+	rows, err := q.db.Query(ctx, expiredPacks, cutoff)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []PackRowsRow{}
+	items := []ExpiredPacksRow{}
 	for rows.Next() {
-		var i PackRowsRow
-		if err := rows.Scan(&i.Offset, &i.Data); err != nil {
+		var i ExpiredPacksRow
+		if err := rows.Scan(&i.ID, &i.ProjectID, &i.Week); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -188,36 +68,214 @@ func (q *Queries) PackRows(ctx context.Context, packID int64) ([]PackRowsRow, er
 	return items, nil
 }
 
-const spoolPayloads = `-- name: SpoolPayloads :exec
-INSERT INTO payload_spool (pack_id, "offset", data, size)
-SELECT d.pack_id, d.off, d.data, octet_length(d.data)
-FROM (SELECT unnest($1::bigint[]) AS pack_id, unnest($2::int[]) AS off, unnest($3::bytea[]) AS data) AS d
-ON CONFLICT (pack_id, "offset") DO NOTHING
+const insertPack = `-- name: InsertPack :one
+INSERT INTO packs (project_id, week) VALUES ($1, $2) RETURNING id
 `
 
-type SpoolPayloadsParams struct {
-	PackIds []int64  `json:"pack_ids"`
-	Offsets []int32  `json:"offsets"`
-	Datas   [][]byte `json:"datas"`
+type InsertPackParams struct {
+	ProjectID int64     `json:"project_id"`
+	Week      time.Time `json:"week"`
 }
 
-func (q *Queries) SpoolPayloads(ctx context.Context, arg SpoolPayloadsParams) error {
-	_, err := q.db.Exec(ctx, spoolPayloads, arg.PackIds, arg.Offsets, arg.Datas)
+func (q *Queries) InsertPack(ctx context.Context, arg InsertPackParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertPack, arg.ProjectID, arg.Week)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const payloadLocation = `-- name: PayloadLocation :one
+SELECT s.data AS spooled, p.pack_id, p.pack_offset, p.pack_len, k.week
+FROM (SELECT $1::bigint AS project_id, $2::uuid AS event_id, $3::timestamptz AS occurred_at) e
+LEFT JOIN payload_spool s ON s.project_id = e.project_id AND s.event_id = e.event_id AND s.occurred_at = e.occurred_at
+LEFT JOIN event_packs p ON p.project_id = e.project_id AND p.event_id = e.event_id AND p.occurred_at = e.occurred_at
+LEFT JOIN packs k ON k.id = p.pack_id
+`
+
+type PayloadLocationParams struct {
+	ProjectID  int64     `json:"project_id"`
+	EventID    sentry.ID `json:"event_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type PayloadLocationRow struct {
+	Spooled    []byte     `json:"spooled"`
+	PackID     *int64     `json:"pack_id"`
+	PackOffset *int32     `json:"pack_offset"`
+	PackLen    *int32     `json:"pack_len"`
+	Week       *time.Time `json:"week"`
+}
+
+// One statement, one snapshot: the spool row if the event is not packed
+// yet, else its place in a pack; neither when it has no payload.
+func (q *Queries) PayloadLocation(ctx context.Context, arg PayloadLocationParams) (PayloadLocationRow, error) {
+	row := q.db.QueryRow(ctx, payloadLocation, arg.ProjectID, arg.EventID, arg.OccurredAt)
+	var i PayloadLocationRow
+	err := row.Scan(
+		&i.Spooled,
+		&i.PackID,
+		&i.PackOffset,
+		&i.PackLen,
+		&i.Week,
+	)
+	return i, err
+}
+
+const projectPacks = `-- name: ProjectPacks :many
+SELECT id, week FROM packs WHERE project_id = $1
+`
+
+type ProjectPacksRow struct {
+	ID   int64     `json:"id"`
+	Week time.Time `json:"week"`
+}
+
+// A project's packs, read before the project (and, by cascade, the rows)
+// is deleted, so the objects can be deleted after.
+func (q *Queries) ProjectPacks(ctx context.Context, projectID int64) ([]ProjectPacksRow, error) {
+	rows, err := q.db.Query(ctx, projectPacks, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectPacksRow{}
+	for rows.Next() {
+		var i ProjectPacksRow
+		if err := rows.Scan(&i.ID, &i.Week); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setPackBytes = `-- name: SetPackBytes :exec
+UPDATE packs SET bytes = $2 WHERE id = $1
+`
+
+type SetPackBytesParams struct {
+	ID    int64 `json:"id"`
+	Bytes int64 `json:"bytes"`
+}
+
+func (q *Queries) SetPackBytes(ctx context.Context, arg SetPackBytesParams) error {
+	_, err := q.db.Exec(ctx, setPackBytes, arg.ID, arg.Bytes)
 	return err
 }
 
-const spooledPayload = `-- name: SpooledPayload :one
-SELECT data FROM payload_spool WHERE pack_id = $1 AND "offset" = $2
+const spoolCount = `-- name: SpoolCount :one
+SELECT count(*)::bigint FROM payload_spool
 `
 
-type SpooledPayloadParams struct {
-	PackID int64 `json:"pack_id"`
-	Offset int32 `json:"offset"`
+func (q *Queries) SpoolCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, spoolCount)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
-func (q *Queries) SpooledPayload(ctx context.Context, arg SpooledPayloadParams) ([]byte, error) {
-	row := q.db.QueryRow(ctx, spooledPayload, arg.PackID, arg.Offset)
-	var data []byte
-	err := row.Scan(&data)
-	return data, err
+const spoolGroups = `-- name: SpoolGroups :many
+
+SELECT project_id,
+       date_trunc('week', occurred_at AT TIME ZONE 'UTC')::date AS week,
+       sum(length(data))::bigint AS bytes,
+       min(created_at)::timestamptz AS oldest
+FROM payload_spool
+GROUP BY project_id, date_trunc('week', occurred_at AT TIME ZONE 'UTC')
+ORDER BY oldest
+`
+
+type SpoolGroupsRow struct {
+	ProjectID int64     `json:"project_id"`
+	Week      time.Time `json:"week"`
+	Bytes     int64     `json:"bytes"`
+	Oldest    time.Time `json:"oldest"`
+}
+
+// Event payloads in the blob store: the spool ingest writes, the packs the
+// flusher builds from it, and where each packed event's bytes are
+// (internal/store/packs.go).
+// What the flusher chooses from: each (project, week) with spooled
+// payloads, its total size and its oldest row. The week is Monday 00:00
+// UTC like retention's partitions (date_trunc('week') is ISO, Monday-based).
+func (q *Queries) SpoolGroups(ctx context.Context) ([]SpoolGroupsRow, error) {
+	rows, err := q.db.Query(ctx, spoolGroups)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SpoolGroupsRow{}
+	for rows.Next() {
+		var i SpoolGroupsRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.Week,
+			&i.Bytes,
+			&i.Oldest,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const spoolRows = `-- name: SpoolRows :many
+SELECT project_id, event_id, occurred_at, data
+FROM payload_spool
+WHERE project_id = $1 AND occurred_at >= $3 AND occurred_at < $4
+ORDER BY occurred_at, event_id
+LIMIT $2
+`
+
+type SpoolRowsParams struct {
+	ProjectID int64     `json:"project_id"`
+	Limit     int32     `json:"limit"`
+	FromAt    time.Time `json:"from_at"`
+	ToAt      time.Time `json:"to_at"`
+}
+
+type SpoolRowsRow struct {
+	ProjectID  int64     `json:"project_id"`
+	EventID    sentry.ID `json:"event_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	Data       []byte    `json:"data"`
+}
+
+// One group's rows in export order (payload_spool_order), oldest week
+// boundary [from, to): the flusher cuts at PackBytes in Go.
+func (q *Queries) SpoolRows(ctx context.Context, arg SpoolRowsParams) ([]SpoolRowsRow, error) {
+	rows, err := q.db.Query(ctx, spoolRows,
+		arg.ProjectID,
+		arg.Limit,
+		arg.FromAt,
+		arg.ToAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SpoolRowsRow{}
+	for rows.Next() {
+		var i SpoolRowsRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.EventID,
+			&i.OccurredAt,
+			&i.Data,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

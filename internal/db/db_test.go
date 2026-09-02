@@ -66,7 +66,7 @@ func TestInitFreshDatabase(t *testing.T) {
 // latestMigration is the highest file in internal/db/migrations; bump it
 // with every new migration so the fresh and legacy tests keep proving Init
 // reaches the end.
-const latestMigration = 2
+const latestMigration = 3
 
 func TestInitBootstrapsLegacyDatabase(t *testing.T) {
 	pool := legacyDatabase(t, 15)

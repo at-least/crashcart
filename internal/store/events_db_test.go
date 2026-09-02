@@ -40,7 +40,7 @@ func TestTagsFilterAndBreakdowns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.InsertEvents(ctx, tx, rows); err != nil {
+	if err := st.InsertEvents(ctx, tx, rows); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {

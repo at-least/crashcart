@@ -331,7 +331,7 @@ func TestRollupHistoryExpiry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := Sweep(ctx, st, config.Config{RetentionDays: 7}, nil, quiet); err != nil {
+	if err := Sweep(ctx, st, config.Config{RetentionDays: 7}, quiet); err != nil {
 		t.Fatal(err)
 	}
 	for _, tbl := range rolled {
@@ -368,7 +368,7 @@ func TestSweepRowExpiries(t *testing.T) {
 	exec(`INSERT INTO jobs (kind, project_id, args, attempts, created_at) VALUES
 		('alert', 1, '{"j":"dead-keep"}', 8, $1), ('alert', 1, '{"j":"dead-drop"}', 8, $2), ('alert', 1, '{"j":"live-old"}', 0, $2)`, now.Add(-6*d), now.Add(-8*d))
 	exec(`INSERT INTO project_usage (project_id, day, events) VALUES (1, $1, 1), (1, $2, 1)`, now.Add(-9*d).Truncate(d), now.Add(-11*d).Truncate(d))
-	if err := Sweep(ctx, st, cfg, nil, quiet); err != nil {
+	if err := Sweep(ctx, st, cfg, quiet); err != nil {
 		t.Fatal(err)
 	}
 	check := func(what, q string, want int64) {

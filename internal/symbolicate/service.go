@@ -52,7 +52,6 @@ const (
 type Service struct {
 	Store *store.Store
 	DSYM  *DSYMClient // Enabled() false when no sidecar
-	Blobs blob.Store  // where uploads go; nil = the symbol_files.data column (files.go)
 
 	mu     sync.Mutex
 	cache  map[cacheKey]*cacheEntry
@@ -417,7 +416,7 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 	if row.Symbolicated {
 		return nil
 	}
-	payload, err := store.Payload(row)
+	payload, err := s.Store.Payload(ctx, nil, row)
 	if err != nil {
 		return err
 	}

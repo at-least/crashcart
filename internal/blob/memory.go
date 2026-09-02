@@ -2,6 +2,7 @@ package blob
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 )
@@ -10,6 +11,7 @@ import (
 type Memory struct {
 	mu   sync.Mutex
 	data map[string][]byte
+	gets int
 }
 
 func (m *Memory) Put(_ context.Context, key string, data []byte) error {
@@ -32,7 +34,30 @@ func (m *Memory) Get(_ context.Context, key string) ([]byte, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
+	m.gets++
 	return slices.Clone(d), nil
+}
+
+func (m *Memory) GetRange(_ context.Context, key string, off, n int64) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.data[key]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if off < 0 || n < 0 || off+n > int64(len(d)) {
+		return nil, fmt.Errorf("blob: range %d+%d outside %d bytes of %s", off, n, len(d), key)
+	}
+	m.gets++
+	return slices.Clone(d[off : off+n]), nil
+}
+
+// Gets counts Get and GetRange calls — for tests asserting how many
+// round trips a read path takes.
+func (m *Memory) Gets() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gets
 }
 
 func (m *Memory) Delete(_ context.Context, key string) error {

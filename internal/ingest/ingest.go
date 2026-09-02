@@ -645,7 +645,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
 			}
 		}
-		if err := store.InsertEvents(ctx, tx, rows); err != nil {
+		if err := in.Store.InsertEvents(ctx, tx, rows); err != nil {
 			return fmt.Errorf("insert events: %w", err)
 		}
 		res.Stored = len(rows)

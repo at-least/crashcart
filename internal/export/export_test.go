@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/config"
@@ -192,7 +194,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Error("HTML escaped in export")
 	}
 
-	rep, err := Import(ctx, dst, bytes.NewReader(a.Bytes()), nil)
+	rep, err := Import(ctx, dst, bytes.NewReader(a.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +220,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	// Importing again is a no-op.
-	if _, err := Import(ctx, dst, bytes.NewReader(a.Bytes()), nil); err != nil {
+	if _, err := Import(ctx, dst, bytes.NewReader(a.Bytes())); err != nil {
 		t.Fatal(err)
 	}
 	var c bytes.Buffer
@@ -242,7 +244,7 @@ func TestRoundTrip(t *testing.T) {
 	if _, err := dst.Pool.Exec(ctx, "UPDATE issues SET event_count = 7, stored_count = 5"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Import(ctx, dst, bytes.NewReader(a.Bytes()), nil); err != nil {
+	if _, err := Import(ctx, dst, bytes.NewReader(a.Bytes())); err != nil {
 		t.Fatal(err)
 	}
 	var stored int64
@@ -265,7 +267,7 @@ func TestImportCommitsInChunks(t *testing.T) {
 	}
 	in := `{"t":"_meta","format":1,"exported_at":"2026-08-20T10:00:00Z","app":"crashcart"}` + "\n" +
 		row(1) + "\n" + row(2) + "\n" + row(3) + "\n" + `{"t":"events","project":"p","event_id":"bad"}` + "\n"
-	rep, err := Import(ctx, st, strings.NewReader(in), nil)
+	rep, err := Import(ctx, st, strings.NewReader(in))
 	if err == nil || !strings.Contains(err.Error(), "line 5") || !strings.Contains(err.Error(), "lines 1-4 were committed") {
 		t.Fatalf("err = %v, report %+v", err, rep)
 	}
@@ -278,7 +280,7 @@ func TestImportCommitsInChunks(t *testing.T) {
 		t.Fatalf("committed lines = %d, want 4", rep.Committed)
 	}
 	fixed := strings.Replace(in, `{"t":"events","project":"p","event_id":"bad"}`, row(4), 1)
-	rep, err = Import(ctx, st, strings.NewReader(fixed), nil)
+	rep, err = Import(ctx, st, strings.NewReader(fixed))
 	if err != nil || rep.Rows["events"] != 4 || rep.Committed != 5 {
 		t.Fatalf("re-run: %v %+v", err, rep)
 	}
@@ -294,7 +296,7 @@ func TestImportCreatesProjectAndSkipsUnknown(t *testing.T) {
 {"t":"events","project":"fresh","occurred_at":"2026-08-20T10:00:00.000123Z","event_id":"abababababababababababababababab","level":"error","message":"m","tags":{},"breadcrumbs":[],"payload":{"a":1}}
 {"t":"widgets","project":"fresh"}
 `
-	rep, err := Import(ctx, st, strings.NewReader(in), nil)
+	rep, err := Import(ctx, st, strings.NewReader(in))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +346,7 @@ func TestImportFormat1Names(t *testing.T) {
 {"t":"events","project":"old","occurred_at":"2026-08-20T10:00:00.000123Z","event_id":"abababababababababababababababab","level":"error","message":"m","screen":"CartFragment","error_location":"CartFragment.java:1","tags":{},"breadcrumbs":[],"payload":{"a":1}}
 {"t":"alert_rules","project":"old","type":"crash_spike","enabled":false,"cooldown_minutes":5}
 `
-	if _, err := Import(ctx, st, strings.NewReader(in), nil); err != nil {
+	if _, err := Import(ctx, st, strings.NewReader(in)); err != nil {
 		t.Fatal(err)
 	}
 	var transaction, culprit string
@@ -409,7 +411,7 @@ func TestExportShapeAndImportMarksDirty(t *testing.T) {
 		t.Fatalf("events exported = %d", events)
 	}
 
-	if _, err := Import(ctx, dst, bytes.NewReader(buf.Bytes()), nil); err != nil {
+	if _, err := Import(ctx, dst, bytes.NewReader(buf.Bytes())); err != nil {
 		t.Fatal(err)
 	}
 	var dirtyE, dirtyS, rolled int
@@ -444,13 +446,14 @@ func TestRoundTripBlobStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	memSrc, memDst := &blob.Memory{}, &blob.Memory{}
-	s := &symbolicate.Service{Store: src, DSYM: symbolicate.NewDSYMClient(""), Blobs: memSrc}
+	src.Blobs, dst.Blobs = memSrc, memDst
+	s := &symbolicate.Service{Store: src, DSYM: symbolicate.NewDSYMClient("")}
 	mapping := []byte("com.example.Foo -> a.b:\n    void bar() -> c\n")
 	if _, err := s.Upload(ctx, p.ID, "1.0", symbolicate.KindProGuard, "mapping.txt", mapping); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if err := Export(ctx, src, &buf, Options{Blobs: memSrc}); err != nil {
+	if err := Export(ctx, src, &buf, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), `"data":"`+base64.StdEncoding.EncodeToString(mapping)+`"`) {
@@ -458,12 +461,14 @@ func TestRoundTripBlobStore(t *testing.T) {
 	}
 	// Without the store the export refuses rather than writing a file
 	// with the bytes missing.
+	src.Blobs = nil
 	if err := Export(ctx, src, io.Discard, Options{}); err == nil || !strings.Contains(err.Error(), "BLOB_STORE") {
 		t.Fatalf("export of a blob row without a store: %v", err)
 	}
+	src.Blobs = memSrc
 
 	file := buf.Bytes()
-	if _, err := Import(ctx, dst, bytes.NewReader(file), memDst); err != nil {
+	if _, err := Import(ctx, dst, bytes.NewReader(file)); err != nil {
 		t.Fatal(err)
 	}
 	var data []byte
@@ -481,7 +486,7 @@ func TestRoundTripBlobStore(t *testing.T) {
 		t.Fatalf("source store touched by import: %v", memSrc.Keys())
 	}
 	// Importing again replaces the object and deletes the one replaced.
-	if _, err := Import(ctx, dst, bytes.NewReader(file), memDst); err != nil {
+	if _, err := Import(ctx, dst, bytes.NewReader(file)); err != nil {
 		t.Fatal(err)
 	}
 	if keys := memDst.Keys(); len(keys) != 1 || keys[0] == *key {
@@ -489,10 +494,131 @@ func TestRoundTripBlobStore(t *testing.T) {
 	}
 	// A destination without a store keeps the bytes in the row.
 	dst2 := testdb.New(t)
-	if _, err := Import(ctx, dst2, bytes.NewReader(file), nil); err != nil {
+	if _, err := Import(ctx, dst2, bytes.NewReader(file)); err != nil {
 		t.Fatal(err)
 	}
 	if err := dst2.Pool.QueryRow(ctx, "SELECT data, blob_key FROM symbol_files").Scan(&data, &key); err != nil || !bytes.Equal(data, mapping) || key != nil {
 		t.Fatalf("import into postgres mode: data=%d bytes key=%v %v", len(data), key, err)
+	}
+}
+
+// TestRoundTripPacks: events whose payloads live in packs export with the
+// bytes inlined — about one GET per pack, not per event — and import into
+// a store-backed destination packs them again (the import drains the
+// spool before returning), or into the column without a store.
+func TestRoundTripPacks(t *testing.T) {
+	src, dst := testdb.New(t), testdb.New(t)
+	ctx := context.Background()
+	memSrc, memDst := &blob.Memory{}, &blob.Memory{}
+	src.Blobs, dst.Blobs = memSrc, memDst
+	p := fill(t, src) // 3 events through ingest → spooled, not in the column
+	var inColumn int
+	if err := src.Pool.QueryRow(ctx, "SELECT count(*) FROM events WHERE payload IS NOT NULL").Scan(&inColumn); err != nil || inColumn != 0 {
+		t.Fatalf("payload column used with a store: %d %v", inColumn, err)
+	}
+	if n, err := src.Drain(ctx); err != nil || n != 3 {
+		t.Fatalf("drain: %d %v", n, err)
+	}
+	packs := 0
+	for _, k := range memSrc.Keys() {
+		if strings.HasPrefix(k, "events/") {
+			packs++
+		}
+	}
+	if packs != 1 {
+		t.Fatalf("packs for one project-week: %d (%v)", packs, memSrc.Keys())
+	}
+	before := memSrc.Gets()
+	var buf bytes.Buffer
+	if err := Export(ctx, src, &buf, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := memSrc.Gets() - before; got > packs+1 { // + the symbol file
+		t.Fatalf("export made %d object reads for %d packs", got, packs)
+	}
+	if n := strings.Count(buf.String(), `"payload":{`); n != 3 {
+		t.Fatalf("payloads inlined: %d of 3\n%s", n, buf.String())
+	}
+	// Into a store-backed destination: spooled by import, packed before it returns.
+	if _, err := Import(ctx, dst, bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := dst.SpoolCount(ctx); n != 0 {
+		t.Fatalf("import left %d rows in the spool", n)
+	}
+	var packed int
+	if err := dst.Pool.QueryRow(ctx, "SELECT count(*) FROM event_packs").Scan(&packed); err != nil || packed != 3 {
+		t.Fatalf("event_packs after import = %d %v", packed, err)
+	}
+	ev, err := dst.GetEvent(ctx, sqlc.GetEventParams{ProjectID: mustProject(t, dst, p.Slug).ID, EventID: sentry.ID(strings.Repeat("e3", 16))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := dst.Payload(ctx, nil, ev); err != nil || !bytes.Contains(b, []byte("IllegalStateException")) {
+		t.Fatalf("imported payload from a pack: %.60q %v", b, err)
+	}
+	// Into a destination without a store: the column.
+	dst2 := testdb.New(t)
+	if _, err := Import(ctx, dst2, bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst2.Pool.QueryRow(ctx, "SELECT count(*) FROM events WHERE payload IS NOT NULL").Scan(&inColumn); err != nil || inColumn != 3 {
+		t.Fatalf("import into postgres mode: %d payloads in the column %v", inColumn, err)
+	}
+}
+
+func mustProject(t *testing.T, st *store.Store, slug string) sqlc.Project {
+	t.Helper()
+	p, err := st.GetProject(context.Background(), slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestExportReadsEachPackOnce: events arrive out of time order (a mobile
+// crash lands a day late), so a week's packs interleave in occurred_at;
+// the export streams in pack order and reads every pack exactly once,
+// never a whole pack per event.
+func TestExportReadsEachPackOnce(t *testing.T) {
+	st := testdb.New(t)
+	testdb.Projects(t, st, 1)
+	mem := &blob.Memory{}
+	st.Blobs = mem
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	insert := func(at time.Time, raw string) {
+		t.Helper()
+		row := store.EventInsert{OccurredAt: at, ProjectID: 1, EventID: sentry.DerivedID([]byte(raw)), Level: "error", Message: "m", Tags: []byte("{}"), Payload: store.Gzip([]byte(raw))}
+		if err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, _ *sqlc.Queries) error {
+			return st.InsertEvents(ctx, tx, []store.EventInsert{row})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Three flushes, each packing events that are older than the previous
+	// flush's: by occurred_at the packs interleave completely.
+	for flush := 0; flush < 3; flush++ {
+		for i := 0; i < 4; i++ {
+			insert(now.Add(-time.Duration(flush)*time.Hour-time.Duration(i)*time.Minute), fmt.Sprintf(`{"flush":%d,"i":%d}`, flush, i))
+		}
+		if _, err := st.Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	packs := len(mem.Keys())
+	if packs != 3 {
+		t.Fatalf("packs = %d (%v)", packs, mem.Keys())
+	}
+	before := mem.Gets()
+	var buf bytes.Buffer
+	if err := Export(ctx, st, &buf, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := mem.Gets() - before; got != packs {
+		t.Fatalf("export read objects %d times for %d packs", got, packs)
+	}
+	if n := strings.Count(buf.String(), `"t":"events"`); n != 12 {
+		t.Fatalf("events exported = %d", n)
 	}
 }

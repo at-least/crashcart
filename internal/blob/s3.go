@@ -101,6 +101,38 @@ func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
 	return data, nil
 }
 
+// GetRange reads bytes [off, off+n) of an object — one payload out of a
+// pack — as a single ranged request.
+func (s *S3) GetRange(ctx context.Context, key string, off, n int64) ([]byte, error) {
+	k, err := s.key(key)
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return []byte{}, nil
+	}
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(off, off+n-1); err != nil {
+		return nil, err
+	}
+	obj, err := s.client.GetObject(ctx, s.bucket, k, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer obj.Close()
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if int64(len(data)) != n {
+		return nil, fmt.Errorf("blob: short range read of %s: %d of %d bytes", key, len(data), n)
+	}
+	return data, nil
+}
+
 // Delete: S3 answers a delete of a missing key with success, so there is
 // nothing to translate.
 func (s *S3) Delete(ctx context.Context, key string) error {

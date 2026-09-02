@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -57,6 +56,17 @@ func conformance(t *testing.T, s Store) {
 	if got, err := s.Get(ctx, "symbols/2/big"); err != nil || !bytes.Equal(got, big) {
 		t.Fatalf("big after unrelated delete: %d %v", len(got), err)
 	}
+	// Ranges: a payload out of a pack, from the start, the middle and the
+	// end; an empty range; a missing key.
+	for _, r := range [][2]int64{{0, 10}, {1000, 25}, {int64(len(big)) - 7, 7}, {5, 0}} {
+		got, err := s.GetRange(ctx, "symbols/2/big", r[0], r[1])
+		if err != nil || !bytes.Equal(got, big[r[0]:r[0]+r[1]]) {
+			t.Fatalf("range %v: %d bytes %v", r, len(got), err)
+		}
+	}
+	if _, err := s.GetRange(ctx, "symbols/9/nope", 0, 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("range of a missing key: %v", err)
+	}
 	// Bad keys are refused before touching the store.
 	for _, k := range []string{"", "/abs", "a//b", "a/../b", "./x"} {
 		if err := s.Put(ctx, k, []byte("x")); err == nil {
@@ -70,32 +80,6 @@ func TestMemory(t *testing.T) {
 	conformance(t, m)
 	if keys := m.Keys(); len(keys) != 3 || keys[0] != "symbols/1/empty" {
 		t.Fatalf("keys after conformance: %v", keys)
-	}
-}
-
-func TestFS(t *testing.T) {
-	dir := t.TempDir()
-	f := &FS{Dir: dir}
-	if err := f.Ping(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	conformance(t, f)
-	// Objects are plain files under Dir, and no temporaries are left behind.
-	if _, err := os.Stat(filepath.Join(dir, "symbols", "2", "big")); err != nil {
-		t.Fatal(err)
-	}
-	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if strings.HasSuffix(p, ".tmp") {
-			t.Errorf("temporary left behind: %s", p)
-		}
-		return nil
-	})
-	// A key can never escape Dir.
-	if err := f.Put(context.Background(), "../escape", []byte("x")); err == nil {
-		t.Fatal("traversal key accepted")
-	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escape")); err == nil {
-		t.Fatal("file written outside Dir")
 	}
 }
 

@@ -427,7 +427,7 @@ func TestIngestRedactsStoredPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := store.Payload(e)
+	raw, err := st.Payload(ctx, nil, e)
 	if err != nil || len(raw) == 0 {
 		t.Fatalf("payload: %d bytes %v", len(raw), err)
 	}

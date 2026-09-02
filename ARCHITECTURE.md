@@ -1,8 +1,8 @@
 # CrashCart — Architecture
 
 Sentry-SDK-compatible crash tracking for self-hosters. One Go binary, any
-Postgres; nothing else required — an S3 bucket or a directory for symbol
-files is optional (`BLOB_STORE`), not assumed.
+Postgres; nothing else required — an S3-compatible bucket for the big
+bytes (symbol files, raw payloads) is optional (`BLOB_STORE`), not assumed.
 
 ```
 Sentry SDK ──POST /api/{id}/envelope/──▶ crashcart ──▶ Postgres 15+ (no extensions)
@@ -103,26 +103,42 @@ to keep consistent with anything else. An object store for payloads was
 considered and rejected: sampling already bounds the volume, and a second
 store buys only a second thing to run, back up and keep consistent.
 
-**Symbol files are the one exception, and only when asked.** A ProGuard
-mapping from a large multi-module Android app runs to hundreds of MB
-(`symbolicate.MaxUpload` is 500 MB): written once, read rarely, never
-queried by content — the shape object storage exists for, and what
-Sentry itself does (its debug files live in a filestore, never in
-Postgres). In Postgres such a row costs WAL on every upload and makes
-every backup and `crashcart export` as heavy as the largest file. So
-`BLOB_STORE` chooses where symbol bytes go — `postgres` (default, nothing
-else to run), `s3` (large mappings, several replicas) or `fs` (a
-directory; one replica) — and the choice is **per row**, not per
-process: `symbol_files` carries either `data` or `blob_key`, a row is read
-the way it was written, and nothing is migrated when the backend
-changes; `export` inlines the bytes whichever way they are held and
-`import` writes them the destination's way, so the export file is also
-the move between backends. Objects are written before their row and
-deleted after it under a per-row advisory lock, so a failed upload leaves
-no row, a re-upload frees exactly the object it replaced, and nothing
-relies on bucket lifecycle rules (the previous object store expired
-still-referenced files that way). `internal/blob`,
-`internal/symbolicate/files.go`.
+**The big bytes may go to a bucket — only when asked, and per row.**
+Measured: 30,000 events with 30 KB gzipped payloads are 1,015 MB in
+Postgres and 20 MB without them — payload bytes *are* the database, and
+backup/restore time, WAL, replication and `crashcart export` all scale
+with them; a ProGuard mapping from a large Android app runs to hundreds
+of MB on its own (`symbolicate.MaxUpload` is 500 MB). Both are written
+once, read rarely and never queried by content — the shape object storage
+exists for, and what Sentry does with its debug files. So `BLOB_STORE=s3`
+puts symbol files and event payloads in an S3-compatible bucket; the
+default stays `postgres` (nothing else to run). The choice is **per
+row**, never per process, so nothing is migrated when the backend
+changes and a database legitimately holds both kinds: `export` inlines
+the bytes whichever way they are held and `import` writes them the
+destination's way — the export file is also the move between backends.
+
+Symbol files: `symbol_files` carries either `data` or `blob_key`; the
+object is written before its row and deleted after it under a per-row
+advisory lock, so a failed upload leaves no row and a re-upload frees
+exactly the object it replaced (`internal/symbolicate/files.go`).
+
+Payloads: ingest never touches the bucket. With a store, `InsertEvents`
+writes the gzipped payload into `payload_spool` **in the ingest
+transaction** — durable in Postgres before any object exists, the bucket
+being down only a growing spool — and a leader tick packs the spool per
+(project, week) into ~8 MB objects (`events/<project>/<week>/<id>`;
+one PUT per pack, because PUT requests, not bytes, are what an
+object-store bill is made of: per-event objects at 1M events/month would
+cost more in PUTs than in storage), recording each event's place in
+`event_packs`. A payload is read from the column, else the spool, else a
+ranged GET — the last two in one statement, so an event packed between
+two lookups cannot read as one without a payload; an export walks
+events in pack order through a small cache of whole packs. A week's
+packs are deleted with its partition, by the `packs` table — never by
+bucket lifecycle rules, which the previous object store used and which
+expired objects rows still pointed at (`internal/store/packs.go`,
+`internal/blob`).
 
 **Symbolicate at ingest, fall back to a job.** ProGuard and source maps
 resolve in-process (mappings cached from the database); dSYM goes through
@@ -225,12 +241,20 @@ refreshes a recent window is not).
 A plan goes here until it is built; once built, its definition is the
 code and the entry is deleted.
 
-**`crashcart blob-gc`.** The blob store accepts two bounded orphan
-windows rather than risking a row without its bytes: a crash between a
-row's commit and the post-commit delete of the object it replaced, and an
+**`crashcart blob-gc`.** The blob store accepts bounded orphan windows
+rather than risking a row without its bytes: a crash between a symbol
+row's commit and the post-commit delete of the object it replaced, an
 `import` into a `postgres`-mode instance over rows that held a
-`blob_key` (nothing there can delete the object). A `List(prefix)` on
-`blob.Store` plus a command that removes objects under `symbols/` no row
-references would close both. Not built: neither window has been seen in
+`blob_key`, and a pack whose object was written but whose flush
+transaction failed (the spool rows are repacked; the object and its
+`packs` row wait for the week sweep). A `List(prefix)` on `blob.Store`
+plus a command that removes objects under `symbols/` and `events/` no
+row references would close them all. Not built: none has been seen in
 practice, and the previous object store's lifecycle-rule shortcut is the
 thing this design exists to avoid.
+
+**`crashcart blob-migrate`.** Switching `BLOB_STORE` to `s3` leaves the
+rows written before it where they are (by design). For a large existing
+instance the honest way to move *them* is a background job that reads
+`events.payload` rows a partition at a time, spools and packs them, and
+NULLs the column — not `export`/`import` of a 300 GB database. Not built.

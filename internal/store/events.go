@@ -48,18 +48,38 @@ const insertEventSQL = `INSERT INTO events (occurred_at, project_id, event_id, l
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 	ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING`
 
+// insertEventSpoolSQL is insertEventSQL for a process with a blob store:
+// payload NULL on the row, the bytes ($22) spooled — only when the row
+// was inserted, and only when there are bytes (an import without one).
+const insertEventSpoolSQL = `WITH ins AS (INSERT INTO events (occurred_at, project_id, event_id, level, message, platform, environment, release,
+	device_id, device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id,
+	fingerprint, symbolicated, tags, symbols, payload)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NULL)
+	ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING
+	RETURNING project_id, event_id, occurred_at)
+	INSERT INTO payload_spool (project_id, event_id, occurred_at, data)
+	SELECT project_id, event_id, occurred_at, $22::bytea FROM ins WHERE $22::bytea IS NOT NULL`
+
 // InsertEvents writes a batch in one round trip (pipelined) and marks
 // the hours it touched dirty in the same batch — the one rule every
 // writer of events must follow, so it lives with the insert. Duplicate
 // keys are skipped, so re-delivery is safe.
-func InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
+func (s *Store) InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert) error {
 	if len(rows) == 0 {
 		return nil
+	}
+	// With a blob store the payload goes to the spool instead of the
+	// column, in the same statement: a spool row exists only for an event
+	// row that was actually inserted (a resend conflicts and spools
+	// nothing), and both roll back together (packs.go).
+	sql := insertEventSQL
+	if s.Blobs != nil {
+		sql = insertEventSpoolSQL
 	}
 	b := &pgx.Batch{}
 	hours := map[int64][]time.Time{}
 	for _, r := range rows {
-		b.Queue(insertEventSQL, r.OccurredAt, r.ProjectID, r.EventID, r.Level, r.Message, r.Platform, r.Environment, r.Release,
+		b.Queue(sql, r.OccurredAt, r.ProjectID, r.EventID, r.Level, r.Message, r.Platform, r.Environment, r.Release,
 			r.DeviceID, r.DeviceModel, r.OSVersion, r.Transaction, r.ErrorType, r.Culprit, r.Handled, r.SDKName, r.UserID,
 			r.Fingerprint, r.Symbolicated, r.Tags, r.Symbols, r.Payload)
 		hours[r.ProjectID] = addHour(hours[r.ProjectID], r.OccurredAt)

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
@@ -17,6 +18,13 @@ import (
 type Store struct {
 	Pool *pgxpool.Pool
 	*sqlc.Queries
+
+	// Blobs is the object store symbol files and event payloads are
+	// written to when BLOB_STORE=s3; nil (the default) keeps them in their
+	// tables. A row is read the way it was written (symbol_files.data xor
+	// blob_key; events.payload, else the spool, else a pack — packs.go), so
+	// switching is safe at any time. Set once by cmd/crashcart.
+	Blobs blob.Store
 
 	// lockPool is a small pool dedicated to RunAsLeader's session-scoped
 	// advisory locks, kept apart from Pool. A held lock pins a connection
@@ -32,12 +40,12 @@ type Store struct {
 // maxLeaderLocks bounds lockPool: the number of distinct RunAsLeader keys
 // that can be held at once by a single process (one per tick() call in
 // cmd/crashcart/main.go — LeaderSpikeCheck, LeaderSweep, LeaderRollup,
-// LeaderIgnoreCheck, LeaderMonitorCheck; LeaderPartitions and LeaderSetup
-// are transaction-scoped and never reach RunAsLeader). Each key maps to
-// exactly one goroutine, so this can never be exceeded — sizing lockPool to
-// it means a lock holder can never itself be starved waiting for a lock
-// slot, whatever Pool's own size is.
-const maxLeaderLocks = 5
+// LeaderIgnoreCheck, LeaderMonitorCheck, LeaderPack; LeaderPartitions and
+// LeaderSetup are transaction-scoped and never reach RunAsLeader). Each
+// key maps to exactly one goroutine, so this can never be exceeded —
+// sizing lockPool to it means a lock holder can never itself be starved
+// waiting for a lock slot, whatever Pool's own size is.
+const maxLeaderLocks = 6
 
 // New builds a Store on an open pool, plus a small pool of its own for
 // RunAsLeader's advisory locks (see lockPool).
@@ -49,15 +57,6 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 		return nil, err
 	}
 	return &Store{Pool: pool, lockPool: lockPool, Queries: sqlc.New(pool)}, nil
-}
-
-// Payload is an event's raw payload, decoded. nil, nil when the event has
-// none (imported without one).
-func Payload(e sqlc.Event) ([]byte, error) {
-	if len(e.Payload) == 0 {
-		return nil, nil
-	}
-	return Gunzip(e.Payload)
 }
 
 // Tx runs fn inside a transaction with a transaction-scoped Queries.
@@ -82,6 +81,7 @@ const (
 	LeaderSetup        int64 = 0x63726173 + 5 // transaction-scoped: the first user is created once
 	LeaderIgnoreCheck  int64 = 0x63726173 + 6 // ignored issues: time / count expiry and escalation
 	LeaderMonitorCheck int64 = 0x63726173 + 7 // monitors: missed check-ins and timed-out runs
+	LeaderPack         int64 = 0x63726173 + 8 // payload spool → packs in the blob store (packs.go)
 )
 
 // CreateFirstUser creates u only while the users table is empty, under a

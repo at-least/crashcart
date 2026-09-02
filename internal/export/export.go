@@ -60,7 +60,6 @@ var Tables = []string{"users", "api_keys", "projects", "project_keys", "releases
 // Options narrows an export.
 type Options struct {
 	Project string       // slug; "" = all
-	Blobs   blob.Store   // where symbol files with a blob_key are read from (nil: none may have one)
 	Log     *slog.Logger // nil = slog.Default
 }
 
@@ -329,9 +328,16 @@ const (
 	selectIssues = `SELECT project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count, stored_count,
 	first_seen, last_seen, first_release, last_release, releases, resolved_releases, ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at
 	FROM issues WHERE project_id = $1 ORDER BY fingerprint`
-	selectEvents = `SELECT occurred_at, project_id, event_id, level, message, platform, environment, release, device_id, device_model,
-	os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated, tags,
-	symbols, payload FROM events WHERE project_id = $1 ORDER BY occurred_at, event_id`
+	// Events in pack order — the rows whose payload is in the column or the
+	// spool first, by time, then the packed ones pack by pack, in offset
+	// order — so the export reads each pack once (PackReader), whatever
+	// order the events arrived in (a late crash lands in a later pack than
+	// its neighbours in time). Import does not care about row order.
+	selectEvents = `SELECT e.occurred_at, e.project_id, e.event_id, e.level, e.message, e.platform, e.environment, e.release, e.device_id, e.device_model,
+	e.os_version, e.transaction, e.error_type, e.culprit, e.handled, e.sdk_name, e.user_id, e.fingerprint, e.symbolicated, e.tags,
+	e.symbols, e.payload FROM events e
+	LEFT JOIN event_packs k ON k.project_id = e.project_id AND k.event_id = e.event_id AND k.occurred_at = e.occurred_at
+	WHERE e.project_id = $1 ORDER BY k.pack_id NULLS FIRST, k.pack_offset, e.occurred_at, e.event_id`
 	selectAttachments = `SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data FROM attachments WHERE project_id = $1 ORDER BY occurred_at, event_id, n`
 	selectUserReports = `SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 ORDER BY event_id`
 	selectProjectKeys = `SELECT id, project_id, public_key, retired_at, last_used_at FROM project_keys WHERE project_id = $1 ORDER BY retired_at`
@@ -416,9 +422,16 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 			return fmt.Errorf("export issues: %w", err)
 		}
 	}
+	// Payloads in packs are read through a small cache of whole packs: the
+	// stream is in pack order, so this is about one GET per pack, not per
+	// event. The location is read on the pool, not the snapshot connection
+	// (it is busy streaming the rows) — PayloadLocation is one statement,
+	// so it needs no snapshot of its own: a row packed since the snapshot
+	// reads from its pack, one expired since reads as having no payload.
+	packs := st.NewPackReader()
 	for _, p := range projects {
 		if err := stream(ctx, tx, selectEvents, func(r sqlc.Event) error {
-			payload, err := store.Payload(r)
+			payload, err := packs.Payload(ctx, nil, r)
 			if err != nil {
 				return fmt.Errorf("payload %s: %w", r.EventID, err)
 			}
@@ -596,13 +609,13 @@ func exportSymbolBytes(ctx context.Context, st *store.Store, opt Options, r sqlc
 	if r.BlobKey == nil {
 		return r.Data, true, nil
 	}
-	if opt.Blobs == nil {
+	if st.Blobs == nil {
 		return nil, false, fmt.Errorf("symbol file %d is in the blob store, but BLOB_STORE is not configured", r.ID)
 	}
-	data, err = opt.Blobs.Get(ctx, *r.BlobKey)
+	data, err = st.Blobs.Get(ctx, *r.BlobKey)
 	if errors.Is(err, blob.ErrNotFound) {
 		if row, rerr := st.SymbolFileData(ctx, r.ID); rerr == nil && row.BlobKey != nil {
-			data, err = opt.Blobs.Get(ctx, *row.BlobKey)
+			data, err = st.Blobs.Get(ctx, *row.BlobKey)
 		} else if rerr == nil {
 			data, err = row.Data, nil
 		}
@@ -767,8 +780,8 @@ var CommitEvery = 20000
 // fresh public key). The hours written are marked dirty at each commit,
 // so the stats are exact as soon as the rows are and rolled up by the
 // next rollup run.
-func Import(ctx context.Context, st *store.Store, r io.Reader, blobs blob.Store) (Report, error) {
-	im := &importer{ctx: ctx, st: st, projects: map[string]int64{}, batch: &pgx.Batch{}, blobs: blobs,
+func Import(ctx context.Context, st *store.Store, r io.Reader) (Report, error) {
+	im := &importer{ctx: ctx, st: st, projects: map[string]int64{}, batch: &pgx.Batch{}, blobs: st.Blobs,
 		dirtyS: map[int64]map[time.Time]bool{}, report: Report{Rows: map[string]int64{}}}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), maxLine)
@@ -799,6 +812,16 @@ func Import(ctx context.Context, st *store.Store, r io.Reader, blobs blob.Store)
 			return im.flush()
 		})
 		im.endChunk(err == nil)
+		if err == nil && im.blobs != nil {
+			// Pack what this chunk spooled before reading the next: the spool
+			// then holds at most CommitEvery lines, not the whole file.
+			var drainErr error
+			if _, lerr := st.RunAsLeader(ctx, store.LeaderPack, func() { _, drainErr = st.Drain(ctx) }); lerr != nil {
+				err = lerr
+			} else if drainErr != nil {
+				err = fmt.Errorf("pack imported payloads: %w", drainErr)
+			}
+		}
 		if err != nil {
 			if committed > 0 {
 				err = fmt.Errorf("%w (lines 1-%d were committed; import is idempotent, re-run the file)", err, committed)
@@ -808,6 +831,16 @@ func Import(ctx context.Context, st *store.Store, r io.Reader, blobs blob.Store)
 		committed = line
 		im.report.Committed = committed
 		if !more {
+			// With a blob store the payloads are in the spool: pack them now,
+			// so the import is complete when the command returns (under the
+			// same lock as the running flusher, which otherwise does it).
+			var drainErr error
+			if _, err := st.RunAsLeader(ctx, store.LeaderPack, func() { _, drainErr = st.Drain(ctx) }); err != nil {
+				return im.report, err
+			}
+			if drainErr != nil {
+				return im.report, fmt.Errorf("pack imported payloads: %w", drainErr)
+			}
 			return im.report, nil
 		}
 	}
@@ -1205,7 +1238,7 @@ func (im *importer) flushEvents() error {
 	}
 	rows := im.events
 	im.events = nil
-	return store.InsertEvents(im.ctx, im.tx, rows)
+	return im.st.InsertEvents(im.ctx, im.tx, rows)
 }
 
 func (im *importer) flushBatch() error {

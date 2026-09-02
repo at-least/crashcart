@@ -71,7 +71,7 @@ func insertUnhandled(t *testing.T, st *store.Store, projectID int64, n int, ago 
 			EventID: sentry.DerivedID([]byte(fmt.Sprint(seed, projectID, ago, i))), Level: "fatal", Message: "boom", Handled: &h, Fingerprint: &fp, Tags: []byte("{}"),
 		})
 	}
-	if err := st.Tx(context.Background(), func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return store.InsertEvents(ctx, tx, rows) }); err != nil {
+	if err := st.Tx(context.Background(), func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return st.InsertEvents(ctx, tx, rows) }); err != nil {
 		t.Fatal(err)
 	}
 }

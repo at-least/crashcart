@@ -40,7 +40,8 @@ func TestBlobStoreRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	mem := &blob.Memory{}
-	s := &Service{Store: st, DSYM: NewDSYMClient(""), Blobs: mem}
+	st.Blobs = mem
+	s := &Service{Store: st, DSYM: NewDSYMClient("")}
 
 	rows, err := s.Upload(ctx, p.ID, "1.0", KindProGuard, "mapping.txt", []byte(mappingA))
 	if err != nil || len(rows) != 1 {
@@ -104,7 +105,8 @@ func TestBlobStoreExpireAndProjectDelete(t *testing.T) {
 	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
 	p2, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "other", Name: "Other", PublicKey: "k2"})
 	mem := &blob.Memory{}
-	s := &Service{Store: st, DSYM: NewDSYMClient(""), Blobs: mem}
+	st.Blobs = mem
+	s := &Service{Store: st, DSYM: NewDSYMClient("")}
 	for _, c := range []struct {
 		pid  int64
 		name string
@@ -117,7 +119,7 @@ func TestBlobStoreExpireAndProjectDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Retention drops old.txt (2 × 7 days) and its object; the others stay.
-	if err := retention.Sweep(ctx, st, config.Config{RetentionDays: 7}, mem, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))); err != nil {
+	if err := retention.Sweep(ctx, st, config.Config{RetentionDays: 7}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))); err != nil {
 		t.Fatal(err)
 	}
 	if keys := mem.Keys(); len(keys) != 2 {
@@ -163,7 +165,8 @@ func TestBlobStoreFailures(t *testing.T) {
 	ctx := context.Background()
 	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
 	f := &failing{err: errors.New("bucket down")}
-	s := &Service{Store: st, DSYM: NewDSYMClient(""), Blobs: f}
+	st.Blobs = f
+	s := &Service{Store: st, DSYM: NewDSYMClient("")}
 	if _, err := s.Upload(ctx, p.ID, "1.0", KindProGuard, "mapping.txt", []byte(mappingA)); err == nil || !strings.Contains(err.Error(), "bucket down") {
 		t.Fatalf("put failure: %v", err)
 	}
@@ -184,10 +187,11 @@ func TestBlobStoreFailures(t *testing.T) {
 	if _, err := s.Upload(ctx, p.ID, "1.0", KindProGuard, "mapping.txt", []byte(mappingA)); err != nil {
 		t.Fatal(err)
 	}
-	noStore := &Service{Store: st, DSYM: NewDSYMClient("")}
-	if _, _, err := noStore.fetch(ctx, cacheKey{projectID: p.ID, kind: KindProGuard, key: "1.0"}); !errors.Is(err, errNoBlobStore) {
+	st.Blobs = nil
+	if _, _, err := s.fetch(ctx, cacheKey{projectID: p.ID, kind: KindProGuard, key: "1.0"}); !errors.Is(err, errNoBlobStore) {
 		t.Fatalf("fetch without a store: %v", err)
 	}
+	st.Blobs = f
 	// And the transient case: the object vanishes under a reader once.
 	rows, _ := st.SymbolFilesForRelease(ctx, sqlc.SymbolFilesForReleaseParams{ProjectID: p.ID, Release: "1.0", Kind: KindProGuard})
 	f.Delete(ctx, *rows[0].BlobKey)

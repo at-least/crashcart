@@ -264,7 +264,7 @@ func TestCheckSpikes(t *testing.T) {
 			Message: "boom", Handled: &f, Fingerprint: &fp, Tags: []byte("{}"),
 		})
 	}
-	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return store.InsertEvents(ctx, tx, rows) })
+	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return st.InsertEvents(ctx, tx, rows) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func TestCheckIgnored(t *testing.T) {
 				Level: "error", Message: "boom", Fingerprint: &fp, Tags: []byte("{}"),
 			})
 		}
-		if err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return store.InsertEvents(ctx, tx, rows) }); err != nil {
+		if err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return st.InsertEvents(ctx, tx, rows) }); err != nil {
 			t.Fatal(err)
 		}
 	}

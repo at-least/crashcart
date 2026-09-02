@@ -108,6 +108,35 @@ CREATE TABLE attachments (
     PRIMARY KEY (project_id, event_id, occurred_at, n)
 );
 
+-- Event payloads in the blob store (BLOB_STORE=s3): the spool ingest writes,
+-- the packs built from it, and each packed event's place.
+CREATE TABLE payload_spool (
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id    UUID NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    data        BYTEA NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, event_id, occurred_at)
+);
+
+CREATE TABLE packs (
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    week       DATE NOT NULL,
+    bytes      BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE event_packs (
+    project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
+    event_id    UUID NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    pack_id     BIGINT NOT NULL REFERENCES packs ON DELETE CASCADE,
+    pack_offset INTEGER NOT NULL,
+    pack_len    INTEGER NOT NULL,
+    PRIMARY KEY (project_id, event_id, occurred_at)
+);
+
 CREATE TABLE user_reports (
     project_id  BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
     event_id    UUID NOT NULL,

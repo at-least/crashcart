@@ -40,12 +40,12 @@ func LockKey(projectID int64, kind string, release *string, filename string) str
 // same file does — and is deleted only after the commit. A row failure
 // deletes the new object; nothing points at it.
 func (s *Service) putSymbolFile(ctx context.Context, p sqlc.UpsertSymbolFileParams, data []byte) (sqlc.UpsertSymbolFileRow, error) {
-	if s.Blobs == nil {
+	if s.Store.Blobs == nil {
 		p.Data, p.BlobKey = data, nil
 		return s.Store.UpsertSymbolFile(ctx, p)
 	}
 	key := blob.SymbolKey(p.ProjectID)
-	if err := s.Blobs.Put(ctx, key, data); err != nil {
+	if err := s.Store.Blobs.Put(ctx, key, data); err != nil {
 		return sqlc.UpsertSymbolFileRow{}, fmt.Errorf("blob store: %w", err)
 	}
 	p.Data, p.BlobKey = nil, &key
@@ -64,7 +64,7 @@ func (s *Service) putSymbolFile(ctx context.Context, p sqlc.UpsertSymbolFilePara
 		return err
 	})
 	if err != nil {
-		s.Blobs.Delete(context.WithoutCancel(ctx), key) // best effort; nothing references it
+		s.Store.Blobs.Delete(context.WithoutCancel(ctx), key) // best effort; nothing references it
 		return sqlc.UpsertSymbolFileRow{}, err
 	}
 	s.deleteBlobs(context.WithoutCancel(ctx), old)
@@ -78,10 +78,10 @@ func (s *Service) symbolBytes(ctx context.Context, data []byte, blobKey *string)
 	if blobKey == nil {
 		return data, nil
 	}
-	if s.Blobs == nil {
+	if s.Store.Blobs == nil {
 		return nil, errNoBlobStore
 	}
-	return s.Blobs.Get(ctx, *blobKey)
+	return s.Store.Blobs.Get(ctx, *blobKey)
 }
 
 // deleteBlobs removes objects (nil keys are rows that live in Postgres) —
@@ -94,13 +94,13 @@ func (s *Service) deleteBlobs(ctx context.Context, keys ...*string) error {
 		if k == nil {
 			continue
 		}
-		if s.Blobs == nil {
+		if s.Store.Blobs == nil {
 			if first == nil {
 				first = fmt.Errorf("%w: object %s left behind", errNoBlobStore, *k)
 			}
 			continue
 		}
-		if err := s.Blobs.Delete(ctx, *k); err != nil && first == nil {
+		if err := s.Store.Blobs.Delete(ctx, *k); err != nil && first == nil {
 			first = fmt.Errorf("delete blob %s: %w", *k, err)
 		}
 	}

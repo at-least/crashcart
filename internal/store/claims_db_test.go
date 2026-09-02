@@ -24,7 +24,7 @@ func insertEvents(t *testing.T, st *store.Store, rows []store.EventInsert) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.InsertEvents(ctx, tx, rows); err != nil {
+	if err := st.InsertEvents(ctx, tx, rows); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -199,7 +199,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 	if !bytes.Equal(e.Payload, gz) {
 		t.Fatal("the stored bytes are not what Gzip produced (the column must hold the gzip as is)")
 	}
-	got, err := store.Payload(e)
+	got, err := st.Payload(ctx, nil, e)
 	if err != nil || !bytes.Equal(got, raw) {
 		t.Fatalf("Payload: %v, equal=%v", err, bytes.Equal(got, raw))
 	}
@@ -207,7 +207,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := store.Payload(e); err != nil || got != nil {
+	if got, err := st.Payload(ctx, nil, e); err != nil || got != nil {
 		t.Fatalf("Payload of a row without one = %v, %v (want nil, nil)", got, err)
 	}
 	if _, err := store.Gunzip([]byte("not gzip")); err == nil {

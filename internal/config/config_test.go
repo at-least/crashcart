@@ -110,12 +110,10 @@ func TestLoadBlobStore(t *testing.T) {
 	}{
 		{nil, ""},
 		{map[string]string{"BLOB_STORE": "postgres"}, ""},
-		{map[string]string{"BLOB_STORE": "fs"}, "BLOB_DIR"},
-		{map[string]string{"BLOB_STORE": "fs", "BLOB_DIR": "/tmp/x"}, ""},
 		{map[string]string{"BLOB_STORE": "s3"}, "S3_BUCKET"},
 		{map[string]string{"BLOB_STORE": "s3", "S3_BUCKET": "b"}, ""},
 		{map[string]string{"BLOB_STORE": "s3", "S3_BUCKET": "b", "S3_ACCESS_KEY": "a"}, "set together"},
-		{map[string]string{"BLOB_STORE": "minio"}, "postgres, s3 or fs"},
+		{map[string]string{"BLOB_STORE": "minio"}, "postgres or s3"},
 	} {
 		for k, v := range c.env {
 			t.Setenv(k, v)

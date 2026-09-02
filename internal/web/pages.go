@@ -753,7 +753,7 @@ func (w *Web) event(rw http.ResponseWriter, r *http.Request) {
 // without one) or it does not decode — the page still renders from the
 // columns.
 func (w *Web) payload(e sqlc.Event) []byte {
-	b, err := store.Payload(e)
+	b, err := w.Store.Payload(context.Background(), nil, e)
 	if err != nil {
 		w.Log.Error("event payload", "event", e.EventID, "err", err)
 		return nil

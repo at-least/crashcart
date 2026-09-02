@@ -90,8 +90,9 @@ func main() {
 	if err != nil {
 		fatal(log, err)
 	}
-	log.Info("symbol files", "store", cfg.BlobStore)
-	syms := &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient(cfg.SymbolicateURL), Blobs: blobs}
+	st.Blobs = blobs
+	log.Info("blob store", "backend", cfg.BlobStore)
+	syms := &symbolicate.Service{Store: st, DSYM: symbolicate.NewDSYMClient(cfg.SymbolicateURL)}
 	in := &ingest.Ingester{Store: st, Cfg: cfg, Symbols: syms, Log: log}
 	notifier := &alerts.Notifier{Store: st, Cfg: cfg, Log: log} // HTTP left nil: the hardened client (post-DNS address check, no redirects)
 
@@ -103,7 +104,7 @@ func main() {
 		if err := retention.Reconcile(ctx, st, cfg, log); err != nil {
 			fatal(log, err)
 		}
-		if err := retention.Sweep(ctx, st, cfg, blobs, log); err != nil {
+		if err := retention.Sweep(ctx, st, cfg, log); err != nil {
 			fatal(log, err)
 		}
 		if err := retention.RollupAll(ctx, st, cfg); err != nil {
@@ -124,11 +125,14 @@ func main() {
 		if err := seed.Run(ctx, in, slug); err != nil {
 			fatal(log, err)
 		}
+		if _, err := st.RunAsLeader(ctx, store.LeaderPack, func() { st.Drain(ctx) }); err != nil { // BLOB_STORE=s3: pack what seed spooled
+			fatal(log, err)
+		}
 		if err := retention.RollupAll(ctx, st, cfg); err != nil {
 			fatal(log, err)
 		}
 	case "export":
-		opt := export.Options{Blobs: blobs, Log: log}
+		opt := export.Options{Log: log}
 		if len(args) > 0 {
 			opt.Project = args[0]
 		}
@@ -139,7 +143,7 @@ func main() {
 		if err := retention.Reconcile(ctx, st, cfg, log); err != nil { // partitions
 			fatal(log, err)
 		}
-		rep, err := export.Import(ctx, st, os.Stdin, blobs)
+		rep, err := export.Import(ctx, st, os.Stdin)
 		if err != nil {
 			fatal(log, err)
 		}
@@ -274,7 +278,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	tick(cfg.AlertInterval, store.LeaderSpikeCheck, "unhandled-spike check", notifier.CheckSpikes)
 	tick(time.Minute, store.LeaderIgnoreCheck, "ignored-issue check", notifier.CheckIgnored)
 	tick(time.Minute, store.LeaderMonitorCheck, "monitor check", notifier.CheckMonitors)
-	tick(time.Hour, store.LeaderSweep, "retention sweep", func(ctx context.Context) error { return retention.Sweep(ctx, st, cfg, syms.Blobs, log) })
+	tick(time.Hour, store.LeaderSweep, "retention sweep", func(ctx context.Context) error { return retention.Sweep(ctx, st, cfg, log) })
+	tick(5*time.Second, store.LeaderPack, "payload packs", func(ctx context.Context) error { _, err := st.Pack(ctx, time.Now()); return err })
 
 	// Pool stats are per-process, not leader-elected: every replica logs
 	// its own (see Store.LogPoolStats).
@@ -324,16 +329,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	}
 }
 
-// blobStore is BLOB_STORE as a blob.Store: nil for postgres (symbol files
-// stay in their table), fs or s3 checked for reachability now rather
-// than at the first upload.
+// blobStore is BLOB_STORE as a blob.Store: nil for postgres (symbol files and
+// payloads stay in their tables); s3 is checked for reachability now
+// rather than at the first upload.
 func blobStore(ctx context.Context, cfg config.Config) (blob.Store, error) {
 	switch cfg.BlobStore {
 	case "", "postgres":
 		return nil, nil
-	case "fs":
-		f := &blob.FS{Dir: cfg.BlobDir}
-		return f, f.Ping(ctx)
 	case "s3":
 		s, err := blob.NewS3(ctx, cfg.S3)
 		if err != nil {
@@ -341,7 +343,7 @@ func blobStore(ctx context.Context, cfg config.Config) (blob.Store, error) {
 		}
 		return s, s.Ping(ctx)
 	}
-	return nil, fmt.Errorf("BLOB_STORE %q: postgres, s3 or fs", cfg.BlobStore)
+	return nil, fmt.Errorf("BLOB_STORE %q: postgres or s3", cfg.BlobStore)
 }
 
 // leader wraps a tick so it runs only on the replica that wins the lock.

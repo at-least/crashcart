@@ -14,7 +14,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/store"
 )
@@ -195,6 +194,15 @@ func dropExpiredPartitions(ctx context.Context, st *store.Store, cfg config.Conf
 			return fmt.Errorf("expire %s_default: %w", t.table, err)
 		}
 	}
+	// The weeks' packs go after their rows (the drops and the default
+	// expiry above), by the packs table — never by bucket lifecycle rules,
+	// which once expired objects rows still pointed at. Best effort: an
+	// object that cannot be deleted keeps its row for the next sweep.
+	if n, err := st.ExpirePacks(ctx, cutoff); err != nil {
+		log.Warn("retention: expire packs", "deleted", n, "err", err)
+	} else if n > 0 {
+		log.Info("retention: packs expired", "packs", n)
+	}
 	return nil
 }
 
@@ -203,7 +211,7 @@ func dropExpiredPartitions(ctx context.Context, st *store.Store, cfg config.Conf
 // Sweep runs hourly: partitions (create ahead, drop expired), then the
 // row-level expiries — issues, jobs, usage counters, user sessions, upload
 // chunks, symbol files and rollup history past AggregateRetentionDays.
-func Sweep(ctx context.Context, st *store.Store, cfg config.Config, blobs blob.Store, log *slog.Logger) error {
+func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
 	now := time.Now()
 	retention := cfg.Retention()
 	if err := EnsurePartitions(ctx, st, cfg, now); err != nil {
@@ -241,11 +249,11 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, blobs blob.S
 		if k == nil {
 			continue
 		}
-		if blobs == nil {
+		if st.Blobs == nil {
 			log.Warn("retention: symbol file expired but BLOB_STORE is not configured; object left behind", "key", *k)
 			continue
 		}
-		if err := blobs.Delete(ctx, *k); err != nil {
+		if err := st.Blobs.Delete(ctx, *k); err != nil {
 			log.Warn("retention: delete symbol blob", "key", *k, "err", err)
 		}
 	}

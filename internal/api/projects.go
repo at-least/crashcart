@@ -194,12 +194,20 @@ func (h *Handler) deleteProject(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
+	packs, err := h.Store.ProjectPacks(r.Context(), p.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	if err := h.Store.DeleteProject(r.Context(), p.ID); err != nil {
 		h.fail(w, err)
 		return
 	}
 	if err := h.Symbols.DeleteBlobs(context.WithoutCancel(r.Context()), keys); err != nil {
 		h.Log.Warn("project delete: symbol blobs left behind", "project", p.Slug, "err", err)
+	}
+	if err := h.Store.DeleteProjectPacks(context.WithoutCancel(r.Context()), p.ID, packs); err != nil {
+		h.Log.Warn("project delete: payload packs left behind", "project", p.Slug, "err", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

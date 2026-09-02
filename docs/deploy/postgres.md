@@ -3,9 +3,9 @@
 CrashCart needs **Postgres 15 or newer**, any build, and nothing else:
 projects, issues, events with their raw payloads (gzipped), sessions,
 statistics, symbol files and users all live in the one database. No
-extensions, nothing to install in it, one thing to back up. (Symbol files
-alone can be moved to an S3 bucket or a directory with `BLOB_STORE` — see
-[Symbolication](/guide/symbolication#where-symbol-files-are-stored).)
+extensions, nothing to install in it, one thing to back up. (The big
+bytes — symbol files and raw payloads — can go to an S3-compatible bucket
+instead: [Payloads in a bucket](#payloads-in-a-bucket).)
 
 | | |
 |---|---|
@@ -18,6 +18,39 @@ connection URL as `DATABASE_URL`:
 ```
 DATABASE_URL=postgres://user:pass@host/crashcart?sslmode=require
 ```
+
+## Payloads in a bucket
+
+Raw event payloads are most of the database: 30,000 events with 30 KB
+payloads are about 1 GB with them and 20 MB without. Everything that
+scales with database size — backups, restores, replication lag, the
+export file — scales with those bytes. `BLOB_STORE=s3` keeps them (and
+uploaded symbol files) in an S3-compatible bucket instead — AWS, MinIO,
+Cloudflare R2, Backblaze — and the database to metadata:
+
+```
+BLOB_STORE=s3
+S3_BUCKET=crashcart
+S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com   # empty for AWS
+S3_ACCESS_KEY=…  S3_SECRET_KEY=…                          # or the AWS credential chain
+```
+
+Ingest does not slow down and does not depend on the bucket: a payload
+is written to Postgres in the same transaction as its event and packed
+into the bucket in the background, in ~8 MB objects per project and week
+(one request per object, which is what keeps an object-store bill
+small); a bucket outage only means a growing spool. Reading an event
+fetches its bytes from its pack. A week's packs are deleted when its
+events expire, and a project's when the project is.
+
+Switching is safe at any time, in either direction: each event and
+symbol file is read from wherever it was written, so rows from before
+the change stay put and new ones go to the bucket. `crashcart export`
+carries the bytes whichever way they are held, and `import` writes them
+the destination's way — that is also how you move an existing instance
+over. A Postgres backup alone is then metadata: pair it with the bucket
+(its own versioning or replication), or use the export. All variables:
+[Configuration](./configuration).
 
 ## How big it gets
 

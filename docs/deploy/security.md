@@ -5,8 +5,8 @@ What CrashCart stores, who can see it, and where it goes.
 ## Where the data lives
 
 In your Postgres — all of it, raw crash payloads and symbol files
-included (symbol files go to the S3 bucket or directory you name instead
-when `BLOB_STORE` is set). CrashCart makes no outbound connections of its
+included (symbol files and raw payloads go to the S3 bucket you name
+instead when `BLOB_STORE=s3`). CrashCart makes no outbound connections of its
 own: no telemetry, no update checks, no third-party services. The only
 outbound traffic is the alert channels you configure — a webhook URL or
 Telegram — the S3 endpoint if you configured one, and the dSYM sidecar
@@ -29,7 +29,7 @@ replays are discarded on arrival.
   and status — no user data — after their events are gone.
 - **Deleting a project** (`DELETE /api/projects/{slug}`) removes its
   events, sessions, issues and symbol files — the objects in the bucket
-  or directory too, when symbol files live there.
+  too, when `BLOB_STORE=s3`.
 - **Export** (`crashcart export`) produces the full data set as plain
   text, so you can audit exactly what is held.
 

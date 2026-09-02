@@ -59,7 +59,7 @@ func TestCountEventsAndSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.InsertEvents(ctx, tx, rows); err != nil {
+	if err := st.InsertEvents(ctx, tx, rows); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -167,7 +167,7 @@ func TestRunAsLeaderDoesNotStarveQueryPool(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	keys := []int64{store.LeaderSpikeCheck, store.LeaderSweep, store.LeaderRollup, store.LeaderIgnoreCheck, store.LeaderMonitorCheck}
+	keys := []int64{store.LeaderSpikeCheck, store.LeaderSweep, store.LeaderRollup, store.LeaderIgnoreCheck, store.LeaderMonitorCheck, store.LeaderPack}
 	var wg sync.WaitGroup
 	var ran atomic.Int32
 	for _, key := range keys {
@@ -227,8 +227,8 @@ func TestLogPoolStats(t *testing.T) {
 			}
 		case strings.Contains(l, "pool=lock"):
 			seen["lock"] = true
-			if !strings.Contains(l, "max=5") {
-				t.Errorf("lock pool max should be maxLeaderLocks (5): %s", l)
+			if !strings.Contains(l, "max=6") {
+				t.Errorf("lock pool max should be maxLeaderLocks (6): %s", l)
 			}
 		default:
 			t.Errorf("unexpected pool line: %s", l)

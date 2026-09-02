@@ -42,8 +42,7 @@ data too.
 | `TELEGRAM_BOT_TOKEN` | — | Bot token for Telegram alerts |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` | Let webhooks target private addresses (10/8, 172.16/12, 192.168/16, fc00::/7) — a service on your LAN. Loopback, link-local (cloud metadata) and redirects are always refused |
 | `CUSTOM_TAGS` | — | Comma-separated tag keys to offer as filters in the viewer, e.g. `tenant,feature_flag` |
-| `BLOB_STORE` | `postgres` | Where uploaded symbol files (ProGuard mappings, dSYMs, source maps) are kept: `postgres` — in the database, nothing else to run; `s3` — an S3-compatible bucket, for large mapping files and several replicas; `fs` — a local directory, one replica only. Files already uploaded stay where they are; `crashcart export` / `import` moves them |
-| `BLOB_DIR` | — | `BLOB_STORE=fs`: the directory symbol files are written to |
+| `BLOB_STORE` | `postgres` | Where the big bytes go — uploaded symbol files (ProGuard mappings, dSYMs, source maps) and raw event payloads: `postgres` — in the database, nothing else to run; `s3` — an S3-compatible bucket, which keeps the database to metadata (a fiftieth of the size) so backups, replication and exports stay small. Rows already written stay where they are |
 | `S3_BUCKET` | — | `BLOB_STORE=s3`: the bucket (must exist) |
 | `S3_ENDPOINT` | AWS | `BLOB_STORE=s3`: host[:port] of an S3-compatible store — MinIO, R2, Backblaze, Ceph — e.g. `minio:9000` or `https://<account>.r2.cloudflarestorage.com` (`http://` for a plain-HTTP MinIO on the LAN). Empty means AWS S3 |
 | `S3_REGION` | `us-east-1` | `BLOB_STORE=s3`: the bucket's region (AWS); other stores ignore it |
