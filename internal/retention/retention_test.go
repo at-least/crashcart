@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -116,7 +116,7 @@ func TestRollup(t *testing.T) {
 		if _, err := st.Pool.Exec(ctx, `INSERT INTO events (occurred_at, project_id, event_id, level, message, fingerprint, release, handled) VALUES ($1, 1, $2, $3, 'm', 'f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1', '1.0', CASE WHEN $3::event_level = 'fatal' THEN false END)`, at, id, level); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{at.Truncate(time.Hour)}}); err != nil {
+		if err := store.MarkEventStatsDirty(ctx, st.Pool, 1, []time.Time{at.Truncate(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -125,9 +125,9 @@ func TestRollup(t *testing.T) {
 	insert(cur, "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3", "fatal")
 
 	from, to := old.Add(-72*time.Hour).Truncate(24*time.Hour), cur.Add(time.Hour)
-	totals := func() sqlc.TotalsRow {
+	totals := func() store.TotalsRow {
 		t.Helper()
-		r, err := st.Totals(ctx, sqlc.TotalsParams{ProjectID: 1, FromAt: from, ToAt: to})
+		r, err := store.Totals(ctx, st.Pool, 1, from, to)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,7 +145,7 @@ func TestRollup(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("rolled %d keys, want 1", n)
 	}
-	dirty, _ := st.CountDirtyStats(ctx)
+	dirty, _ := store.CountDirtyStats(ctx, st.Pool)
 	if dirty != 1 {
 		t.Fatalf("dirty after rollup = %d, want 1 (the current hour)", dirty)
 	}
@@ -158,7 +158,7 @@ func TestRollup(t *testing.T) {
 		t.Fatalf("totals after rollup = %+v", r)
 	}
 	// The per-issue counts came along.
-	spark, err := st.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: 1, Fingerprint: "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1", FromAt: from, ToAt: to, Width: 3600})
+	spark, err := store.IssueTimeline(ctx, st.Pool, 1, "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1", from, to, 3600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,14 +192,14 @@ func TestRollup(t *testing.T) {
 	if _, err := st.Pool.Exec(ctx, `INSERT INTO sessions (started_at, project_id, sid, release, status, count) VALUES ($1, 1, 's1', '1.0', 'ok', 5)`, sat); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkSessionStatsDirty(ctx, sqlc.MarkSessionStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{sat.Truncate(time.Hour)}}); err != nil {
+	if err := store.MarkSessionStatsDirty(ctx, st.Pool, 1, []time.Time{sat.Truncate(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := RollupAll(ctx, st, config.Config{}); err != nil {
 		t.Fatal(err)
 	}
 	health := func() (total, crashed int64) {
-		rows, err := st.ReleaseHealth(ctx, sqlc.ReleaseHealthParams{ProjectID: 1, Bucket: from, Bucket_2: to})
+		rows, err := store.ReleaseHealth(ctx, st.Pool, 1, from, to)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,7 +215,7 @@ func TestRollup(t *testing.T) {
 	if _, err := st.Pool.Exec(ctx, `UPDATE sessions SET status = 'crashed' WHERE sid = 's1'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkSessionStatsDirty(ctx, sqlc.MarkSessionStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{sat.Truncate(time.Hour)}}); err != nil {
+	if err := store.MarkSessionStatsDirty(ctx, st.Pool, 1, []time.Time{sat.Truncate(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	if total, crashed := health(); total != 5 || crashed != 5 {
@@ -248,7 +248,7 @@ func TestRollupKeepsExpiredHours(t *testing.T) {
 		VALUES ($1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'fatal', 'late', '1.0', 'android', false)`, old.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{old}}); err != nil {
+	if err := store.MarkEventStatsDirty(ctx, st.Pool, 1, []time.Time{old}); err != nil {
 		t.Fatal(err)
 	}
 	if err := RollupAll(ctx, st, cfg); err != nil {
@@ -258,7 +258,7 @@ func TestRollupKeepsExpiredHours(t *testing.T) {
 	if err := st.Pool.QueryRow(ctx, `SELECT events FROM event_stats_hourly_rolled WHERE project_id = 1 AND bucket = $1`, old).Scan(&events); err != nil || events != 1000 {
 		t.Fatalf("rolled row after late event = %d %v (want 1000, untouched)", events, err)
 	}
-	if n, _ := st.CountDirtyStats(ctx); n != 0 {
+	if n, _ := store.CountDirtyStats(ctx, st.Pool); n != 0 {
 		t.Fatalf("dirty keys left = %d", n)
 	}
 	// An hour inside the window is recomputed as usual.
@@ -267,7 +267,7 @@ func TestRollupKeepsExpiredHours(t *testing.T) {
 		VALUES ($1, 1, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'error', 'x', '1.0', 'android', true)`, recent.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{recent}}); err != nil {
+	if err := store.MarkEventStatsDirty(ctx, st.Pool, 1, []time.Time{recent}); err != nil {
 		t.Fatal(err)
 	}
 	if err := RollupAll(ctx, st, cfg); err != nil {

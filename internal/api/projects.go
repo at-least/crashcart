@@ -14,8 +14,8 @@ import (
 	"github.com/at-least/crashcart/internal/alerts"
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // projectOut is the JSON shape of a project (public key exposed as the DSN).
@@ -31,7 +31,7 @@ type projectOut struct {
 	DSN             string    `json:"dsn"`
 }
 
-func (h *Handler) projectOut(r *http.Request, p sqlc.Project) projectOut {
+func (h *Handler) projectOut(r *http.Request, p store.Project) projectOut {
 	return projectOut{
 		ID: p.ID, Slug: p.Slug, Name: p.Name, Platform: p.Platform,
 		SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota, CreatedAt: p.CreatedAt.UTC(),
@@ -41,7 +41,7 @@ func (h *Handler) projectOut(r *http.Request, p sqlc.Project) projectOut {
 
 // DSN renders the project's DSN on the externally visible origin
 // (cfg.PublicURL, else derived from the request; r may be nil).
-func DSN(cfg config.Config, r *http.Request, p sqlc.Project) string {
+func DSN(cfg config.Config, r *http.Request, p store.Project) string {
 	base := cfg.PublicURL
 	if base == "" && r != nil {
 		base = auth.BaseURL(r, "", cfg.TrustProxy)
@@ -55,7 +55,7 @@ func DSN(cfg config.Config, r *http.Request, p sqlc.Project) string {
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 func (h *Handler) listProjects(w http.ResponseWriter, r *http.Request) {
-	ps, err := h.Store.ListProjects(r.Context())
+	ps, err := store.ListProjects(r.Context(), h.Store.Pool)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -94,9 +94,7 @@ func (h *Handler) createProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "platform must be one of "+strings.Join(sentry.Families, ", "))
 		return
 	}
-	p, err := h.Store.CreateProject(r.Context(), sqlc.CreateProjectParams{
-		Slug: in.Slug, Name: in.Name, Platform: nilIfEmpty(in.Platform), PublicKey: auth.NewProjectKey(),
-	})
+	p, err := store.CreateProject(r.Context(), h.Store.Pool, in.Slug, in.Name, nilIfEmpty(in.Platform), auth.NewProjectKey())
 	if err != nil {
 		var pg *pgconn.PgError
 		if errors.As(err, &pg) && pg.Code == "23505" {
@@ -137,7 +135,7 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	upd := sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}
+	upd := store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}
 	if in.Name != nil {
 		if strings.TrimSpace(*in.Name) == "" {
 			writeErr(w, http.StatusBadRequest, "name must not be empty")
@@ -173,7 +171,7 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		upd.DailyQuota = *in.DailyQuota
 	}
-	np, err := h.Store.UpdateProject(r.Context(), upd)
+	np, err := store.UpdateProject(r.Context(), h.Store.Pool, upd)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -189,17 +187,17 @@ func (h *Handler) deleteProject(w http.ResponseWriter, r *http.Request) {
 	// The rows go with the project (ON DELETE CASCADE); the objects its
 	// symbol files point at do not, so their keys are read first and
 	// deleted after.
-	keys, err := h.Store.SymbolFileBlobKeys(r.Context(), p.ID)
+	keys, err := store.SymbolFileBlobKeys(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	packs, err := h.Store.ProjectPacks(r.Context(), p.ID)
+	packs, err := store.ProjectPacks(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	if err := h.Store.DeleteProject(r.Context(), p.ID); err != nil {
+	if err := store.DeleteProject(r.Context(), h.Store.Pool, p.ID); err != nil {
 		h.fail(w, err)
 		return
 	}
@@ -267,14 +265,14 @@ func (h *Handler) listProjectKeys(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	keys, err := h.Store.ListProjectKeys(r.Context(), p.ID)
+	keys, err := store.ListProjectKeys(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	out := make([]projectKeyOut, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, projectKeyOut{ID: k.ID, DSN: DSN(h.Cfg, r, sqlc.Project{ID: p.ID, PublicKey: k.PublicKey}), RetiredAt: k.RetiredAt.UTC(), LastUsedAt: k.LastUsedAt})
+		out = append(out, projectKeyOut{ID: k.ID, DSN: DSN(h.Cfg, r, store.Project{ID: p.ID, PublicKey: k.PublicKey}), RetiredAt: k.RetiredAt.UTC(), LastUsedAt: k.LastUsedAt})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
 }
@@ -291,7 +289,7 @@ func (h *Handler) deleteProjectKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid key id")
 		return
 	}
-	n, err := h.Store.DeleteProjectKey(r.Context(), sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: id})
+	n, err := store.DeleteProjectKey(r.Context(), h.Store.Pool, p.ID, id)
 	if err != nil {
 		h.fail(w, err)
 		return

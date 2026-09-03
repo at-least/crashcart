@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
@@ -192,7 +191,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 		{OccurredAt: now, ProjectID: 1, EventID: sentry.DerivedID([]byte("with")), Level: "error", Message: "m", Tags: []byte("{}"), Payload: gz},
 		{OccurredAt: now, ProjectID: 1, EventID: sentry.DerivedID([]byte("without")), Level: "error", Message: "m", Tags: []byte("{}")},
 	})
-	e, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: 1, EventID: sentry.DerivedID([]byte("with"))})
+	e, err := store.GetEvent(ctx, st.Pool, 1, sentry.DerivedID([]byte("with")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +202,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 	if err != nil || !bytes.Equal(got, raw) {
 		t.Fatalf("Payload: %v, equal=%v", err, bytes.Equal(got, raw))
 	}
-	e, err = st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: 1, EventID: sentry.DerivedID([]byte("without"))})
+	e, err = store.GetEvent(ctx, st.Pool, 1, sentry.DerivedID([]byte("without")))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -233,7 +233,7 @@ func EventBody(pg Page, d EventData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = Meta("OS", deref(d.E.OsVersion), "").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Meta("OS", deref(d.E.OSVersion), "").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -245,7 +245,7 @@ func EventBody(pg Page, d EventData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = Meta("SDK", deref(d.E.SdkName), "").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Meta("SDK", deref(d.E.SDKName), "").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

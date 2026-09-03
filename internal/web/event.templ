@@ -54,10 +54,10 @@ templ EventBody(pg Page, d EventData) {
 			@Meta("Time", formatDateTime(d.E.OccurredAt), "")
 			@Meta("Release", deref(d.E.Release), "")
 			@Meta("Device", deref(d.E.DeviceModel), "")
-			@Meta("OS", deref(d.E.OsVersion), "")
+			@Meta("OS", deref(d.E.OSVersion), "")
 			@Meta("User", deref(d.E.UserID), "")
 			@Meta("Transaction", deref(d.E.Transaction), "event.transaction")
-			@Meta("SDK", deref(d.E.SdkName), "")
+			@Meta("SDK", deref(d.E.SDKName), "")
 			@Meta("Device ID", deref(d.E.DeviceID), "")
 			@Meta("Event ID", string(d.E.EventID), "")
 			<div class="min-w-0">

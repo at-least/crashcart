@@ -101,7 +101,7 @@ templ IssuePage(pg Page, d IssueData) {
 							{ " · " }
 							<span class="font-mono text-xs">{ orDash(deref(d.Latest.Release)) }</span>
 							{ " · " }
-							<span class="font-mono text-xs">{ orDash(deref(d.Latest.DeviceModel)) } { deref(d.Latest.OsVersion) }</span>
+							<span class="font-mono text-xs">{ orDash(deref(d.Latest.DeviceModel)) } { deref(d.Latest.OSVersion) }</span>
 						</p>
 						if len(d.Stacks) == 0 {
 							<p class="message-block">{ d.Latest.Message }</p>

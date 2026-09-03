@@ -1,6 +1,23 @@
-// Package store is the data-access layer: a pgx pool plus the sqlc-generated
-// queries, and the few dynamic queries sqlc cannot express (event listing
+// Package store is the data-access layer: a pgx pool, hand-written queries,
+// and the dynamic queries that were always hand-written (event listing
 // with optional filters, tag breakdowns).
+//
+// Convention for queries: a package-level function per query, `func
+// X(ctx, db DB, args...) (Row, error)`, taking DB explicitly rather than
+// a *Store method — so a call site inside a Tx callback reads as a
+// visible choice between the pool and the transaction (`X(ctx, s.Pool,
+// ...)` vs `X(ctx, tx, ...)`) instead of an implicit one via method
+// receiver. *Store methods remain only for composite/dynamic operations
+// that pick pool-vs-tx internally (ListEvents, RotateProjectKey,
+// PackWeek, InsertEvents). Row structs and enum types live in this
+// package (no separate models package: every consumer already needs the
+// pool/Tx to do anything with them). Scanning uses pgx.CollectRows /
+// pgx.CollectExactlyOneRow with pgx.RowToStructByName[T] or a hand-written
+// Scan helper — a plain `type X string` needs no Scan/Value methods for
+// pgx to decode/encode a Postgres enum column, and CollectRows starts
+// from []T{} (empty slice, not nil, preserved on the JSON wire for
+// :many-shaped API responses). A struct that crosses the HTTP API
+// boundary keeps its exact json:"snake_case" tags.
 package store
 
 import (
@@ -8,16 +25,25 @@ import (
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/at-least/crashcart/internal/blob"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 )
+
+// DB is a pool or a transaction — whichever a hand-written query function
+// is handed. Copied from sqlc's generated DBTX so query functions written
+// before and after the migration have the same shape.
+type DB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+}
 
 // Store wraps the pool. Queries are usable directly (auto-commit) or via Tx.
 type Store struct {
 	Pool *pgxpool.Pool
-	*sqlc.Queries
 
 	// Blobs is the object store symbol files and event payloads are
 	// written to when BLOB_STORE=s3; nil (the default) keeps them in their
@@ -56,17 +82,19 @@ func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{Pool: pool, lockPool: lockPool, Queries: sqlc.New(pool)}, nil
+	return &Store{Pool: pool, lockPool: lockPool}, nil
 }
 
-// Tx runs fn inside a transaction with a transaction-scoped Queries.
-func (s *Store) Tx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error) error {
+// Tx runs fn inside a transaction. fn calls hand-written query functions
+// with the tx it's given (`X(ctx, tx, ...)`), never s.Pool — that
+// distinction is what TestTxCallbacksNeverUseThePool enforces.
+func (s *Store) Tx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	if err := fn(ctx, tx, s.Queries.WithTx(tx)); err != nil {
+	if err := fn(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -84,19 +112,20 @@ const (
 	LeaderPack         int64 = 0x63726173 + 8 // payload spool → packs in the blob store (packs.go)
 )
 
-// CreateFirstUser creates u only while the users table is empty, under a
-// transaction-scoped advisory lock so two concurrent setup posts cannot
-// both succeed. created is false when a user already existed.
-func (s *Store) CreateFirstUser(ctx context.Context, u sqlc.CreateUserParams) (user sqlc.User, created bool, err error) {
-	err = s.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+// CreateFirstUser creates a user with the given email/name/passwordHash
+// only while the users table is empty, under a transaction-scoped
+// advisory lock so two concurrent setup posts cannot both succeed.
+// created is false when a user already existed.
+func (s *Store) CreateFirstUser(ctx context.Context, email, name, passwordHash string) (user User, created bool, err error) {
+	err = s.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", LeaderSetup); err != nil {
 			return err
 		}
-		n, err := q.CountUsers(ctx)
+		n, err := CountUsers(ctx, tx)
 		if err != nil || n > 0 {
 			return err
 		}
-		user, err = q.CreateUser(ctx, u)
+		user, err = CreateUser(ctx, tx, email, name, passwordHash)
 		created = err == nil
 		return err
 	})

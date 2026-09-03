@@ -3,35 +3,35 @@ package web
 import (
 	"strconv"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
-func monitorHref(pg Page, m sqlc.Monitor) string {
+func monitorHref(pg Page, m store.Monitor) string {
 	return pg.S.Persist().Href("/monitors/" + m.Slug)
 }
 
-func monitorSchedule(m sqlc.Monitor) string {
+func monitorSchedule(m store.Monitor) string {
 	if m.ScheduleType == "interval" {
 		return "every " + m.ScheduleValue + " " + deref(m.ScheduleUnit)
 	}
 	return m.ScheduleValue
 }
 
-func monitorStatusLabel(s sqlc.NullCheckinStatus) string {
-	if !s.Valid {
+func monitorStatusLabel(s *store.CheckinStatus) string {
+	if s == nil {
 		return "waiting for first check-in"
 	}
-	return string(s.CheckinStatus)
+	return string(*s)
 }
 
-func monitorNextExpected(m sqlc.Monitor) string {
+func monitorNextExpected(m store.Monitor) string {
 	if m.NextExpectedAt == nil {
 		return "—"
 	}
 	return ago(*m.NextExpectedAt)
 }
 
-func checkInDuration(c sqlc.MonitorCheckin) string {
+func checkInDuration(c store.MonitorCheckin) string {
 	if c.DurationS == nil {
 		return "—"
 	}
@@ -41,7 +41,7 @@ func checkInDuration(c sqlc.MonitorCheckin) string {
 // Monitors: every monitor the project's SDKs have upserted a schedule
 // for — created only that way, never by hand (Feedback's counterpart:
 // a list with no create form).
-templ Monitors(pg Page, rows []sqlc.Monitor) {
+templ Monitors(pg Page, rows []store.Monitor) {
 	<h1 class="page-title">Monitors</h1>
 	if len(rows) == 0 {
 		@Empty("No monitors", "No check_in envelope items received yet — a monitor appears here once an SDK's crons integration sends its first check-in with a schedule.")
@@ -78,7 +78,7 @@ templ Monitors(pg Page, rows []sqlc.Monitor) {
 }
 
 // MonitorPage: one monitor's config/state and its recent check-ins.
-templ MonitorPage(pg Page, m sqlc.Monitor, checkIns []sqlc.MonitorCheckin) {
+templ MonitorPage(pg Page, m store.Monitor, checkIns []store.MonitorCheckin) {
 	<h1 class="page-title">{ m.Slug }</h1>
 	<dl class="meta-grid">
 		<div><dt>Schedule</dt><dd>{ monitorSchedule(m) }</dd></div>

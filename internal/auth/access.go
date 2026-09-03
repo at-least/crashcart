@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 )
 
@@ -83,9 +82,9 @@ func CheckPassword(hash, pw string) bool {
 // ── API keys ──
 
 // CreateAPIKey makes a key and returns its row and the secret (shown once).
-func (a *Access) CreateAPIKey(ctx context.Context, name string, createdBy *int64) (sqlc.CreateAPIKeyRow, string, error) {
+func (a *Access) CreateAPIKey(ctx context.Context, name string, createdBy *int64) (store.APIKey, string, error) {
 	secret := KeyPrefix + NewToken()
-	row, err := a.Store.CreateAPIKey(ctx, sqlc.CreateAPIKeyParams{Name: name, KeyHash: HashToken(secret), Prefix: secret[:len(KeyPrefix)+8], CreatedBy: createdBy})
+	row, err := store.CreateAPIKey(ctx, a.Store.Pool, name, HashToken(secret), secret[:len(KeyPrefix)+8], createdBy)
 	return row, secret, err
 }
 
@@ -98,7 +97,7 @@ func (a *Access) APIKey(next http.Handler) http.Handler {
 			unauthorized(w)
 			return
 		}
-		k, err := a.Store.GetAPIKeyByHash(r.Context(), HashToken(tok))
+		k, err := store.GetAPIKeyByHash(r.Context(), a.Store.Pool, HashToken(tok))
 		if errors.Is(err, pgx.ErrNoRows) {
 			unauthorized(w)
 			return
@@ -107,7 +106,7 @@ func (a *Access) APIKey(next http.Handler) http.Handler {
 			http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
 			return
 		}
-		a.Store.TouchAPIKey(r.Context(), k.ID)
+		store.TouchAPIKey(r.Context(), a.Store.Pool, k.ID)
 		next.ServeHTTP(w, r.WithContext(WithActor(r.Context(), Actor{KeyID: k.ID, Name: k.Name})))
 	})
 }
@@ -122,7 +121,7 @@ func unauthorized(w http.ResponseWriter) {
 // Login creates a session for the user and returns the cookie to set.
 func (a *Access) Login(ctx context.Context, r *http.Request, userID int64) (*http.Cookie, error) {
 	tok := NewToken()
-	if err := a.Store.CreateUserSession(ctx, sqlc.CreateUserSessionParams{TokenHash: HashToken(tok), UserID: userID, ExpiresAt: time.Now().Add(SessionTTL)}); err != nil {
+	if err := store.CreateUserSession(ctx, a.Store.Pool, HashToken(tok), userID, time.Now().Add(SessionTTL)); err != nil {
 		return nil, err
 	}
 	return a.cookie(r, tok, int(SessionTTL/time.Second)), nil
@@ -131,7 +130,7 @@ func (a *Access) Login(ctx context.Context, r *http.Request, userID int64) (*htt
 // Logout deletes the request's session and returns the clearing cookie.
 func (a *Access) Logout(ctx context.Context, r *http.Request) *http.Cookie {
 	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
-		a.Store.DeleteUserSession(ctx, HashToken(c.Value))
+		store.DeleteUserSession(ctx, a.Store.Pool, HashToken(c.Value))
 	}
 	return a.cookie(r, "", -1)
 }
@@ -190,7 +189,7 @@ func NewProjectKey() string {
 func (a *Access) Identify(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
-			if u, err := a.Store.GetUserSession(r.Context(), HashToken(c.Value)); err == nil {
+			if u, err := store.GetUserSession(r.Context(), a.Store.Pool, HashToken(c.Value)); err == nil {
 				r = r.WithContext(WithActor(r.Context(), Actor{UserID: u.ID, Name: u.Email}))
 			}
 		}
@@ -204,7 +203,7 @@ func (a *Access) Identify(next http.Handler) http.Handler {
 func (a *Access) Session(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
-			u, err := a.Store.GetUserSession(r.Context(), HashToken(c.Value))
+			u, err := store.GetUserSession(r.Context(), a.Store.Pool, HashToken(c.Value))
 			if err == nil {
 				next.ServeHTTP(w, r.WithContext(WithActor(r.Context(), Actor{UserID: u.ID, Name: u.Email})))
 				return
@@ -215,7 +214,7 @@ func (a *Access) Session(next http.Handler) http.Handler {
 			}
 		}
 		to := "/login"
-		if n, err := a.Store.CountUsers(r.Context()); err == nil && n == 0 {
+		if n, err := store.CountUsers(r.Context(), a.Store.Pool); err == nil && n == 0 {
 			to = "/setup"
 		} else if r.Method == http.MethodGet && r.URL.Path != "/" {
 			to += "?next=" + url.QueryEscape(r.URL.RequestURI())

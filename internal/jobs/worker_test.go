@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
@@ -30,17 +29,17 @@ func TestWorkerRetryThenSucceed(t *testing.T) {
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
 	args, _ := json.Marshal(map[string]any{"event": 42})
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, args, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "alert", 1, []byte("{}"), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
 	var calls int
 	var secondAttempts int32 = -1
 	w := &Worker{Store: st, Poll: 10 * time.Millisecond, Handlers: map[string]Handler{
-		"symbolicate": func(ctx context.Context, j sqlc.Job, a json.RawMessage) error {
+		"symbolicate": func(ctx context.Context, j store.Job, a json.RawMessage) error {
 			calls++
 			var got struct {
 				Event int64 `json:"event"`
@@ -86,7 +85,7 @@ func TestWorkerRetryThenSucceed(t *testing.T) {
 	go func() { w.Run(runCtx); close(done) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		cnt, _ := st.CountJobs(ctx)
+		cnt, _ := store.CountJobs(ctx, st.Pool)
 		if cnt == 0 || time.Now().After(deadline) {
 			break
 		}
@@ -98,7 +97,7 @@ func TestWorkerRetryThenSucceed(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not stop on cancel")
 	}
-	if cnt, _ := st.CountJobs(ctx); cnt != 0 {
+	if cnt, _ := store.CountJobs(ctx, st.Pool); cnt != 0 {
 		t.Fatalf("job not deleted, %d left", cnt)
 	}
 	if calls != 2 || secondAttempts != 2 { // attempts are counted at claim time
@@ -110,11 +109,11 @@ func TestWorkerPanicIsRetry(t *testing.T) {
 	st := testdb.New(t)
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, []byte("{}"), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	w := &Worker{Store: st, Handlers: map[string]Handler{
-		"symbolicate": func(context.Context, sqlc.Job, json.RawMessage) error { panic("nope") },
+		"symbolicate": func(context.Context, store.Job, json.RawMessage) error { panic("nope") },
 	}}
 	if _, err := w.RunOnce(ctx); err != nil {
 		t.Fatal(err)
@@ -140,7 +139,7 @@ func TestWorkerWakesOnNotify(t *testing.T) {
 	go l.Run(ctx)
 	done := make(chan struct{}, 10)
 	w := &Worker{Store: st, Poll: time.Minute, Wake: wake, Handlers: map[string]Handler{
-		"symbolicate": func(context.Context, sqlc.Job, json.RawMessage) error { done <- struct{}{}; return nil },
+		"symbolicate": func(context.Context, store.Job, json.RawMessage) error { done <- struct{}{}; return nil },
 	}}
 	go w.Run(ctx)
 	// The worker is idle on a one-minute poll; a queued job must run within a
@@ -148,7 +147,7 @@ func TestWorkerWakesOnNotify(t *testing.T) {
 	// race the LISTEN; retry until it lands.)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+		if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, []byte("{}"), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		select {
@@ -166,18 +165,18 @@ func TestWorkerLeaseExpires(t *testing.T) {
 	st := testdb.New(t)
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, []byte("{}"), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	// A worker that died mid-job: the lease is taken but no outcome is recorded.
-	if got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(50 * time.Millisecond)}); err != nil || len(got) != 1 {
+	if got, err := store.ClaimJobs(ctx, st.Pool, time.Now().Add(50*time.Millisecond), 10); err != nil || len(got) != 1 {
 		t.Fatalf("claim: %d %v", len(got), err)
 	}
-	if got, _ := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)}); len(got) != 0 {
+	if got, _ := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10); len(got) != 0 {
 		t.Fatalf("leased job claimed again: %d", len(got))
 	}
 	time.Sleep(60 * time.Millisecond)
-	got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	got, err := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10)
 	if err != nil || len(got) != 1 || got[0].Attempts != 2 {
 		t.Fatalf("after lease expiry: %d %v %+v", len(got), err, got)
 	}
@@ -193,22 +192,22 @@ func TestEnqueueWhileLeasedOrBackingOff(t *testing.T) {
 	args := []byte(`{"event": 1}`)
 	enqueue := func(at time.Time) {
 		t.Helper()
-		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: at}); err != nil {
+		if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, args, at); err != nil {
 			t.Fatal(err)
 		}
 	}
 	enqueue(time.Now())
-	got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	got, err := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("claim: %d %v", len(got), err)
 	}
 	enqueue(time.Now()) // while leased
-	if n, _ := st.CountJobs(ctx); n != 1 {
+	if n, _ := store.CountJobs(ctx, st.Pool); n != 1 {
 		t.Fatalf("jobs after enqueue during lease = %d, want 1", n)
 	}
 	// The retry must not collide with a second row.
 	msg := "x"
-	if err := st.RetryJob(ctx, sqlc.RetryJobParams{ID: got[0].ID, LastError: &msg, RunAfter: time.Now().Add(10 * time.Minute)}); err != nil {
+	if err := store.RetryJob(ctx, st.Pool, got[0].ID, &msg, time.Now().Add(10*time.Minute)); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	// Backing off: a new enqueue makes it due now.
@@ -217,7 +216,7 @@ func TestEnqueueWhileLeasedOrBackingOff(t *testing.T) {
 	if err := st.Pool.QueryRow(ctx, "SELECT run_after FROM jobs").Scan(&runAfter); err != nil || runAfter.After(time.Now().Add(time.Second)) {
 		t.Fatalf("run_after after re-enqueue = %v %v (want now)", runAfter, err)
 	}
-	if n, _ := st.CountJobs(ctx); n != 1 {
+	if n, _ := store.CountJobs(ctx, st.Pool); n != 1 {
 		t.Fatalf("jobs = %d", n)
 	}
 }
@@ -228,12 +227,12 @@ func TestHandlerDeadlineIsLease(t *testing.T) {
 	st := testdb.New(t)
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "alert", 1, []byte("{}"), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	var deadline time.Time
 	w := &Worker{Store: st, Lease: 200 * time.Millisecond, Handlers: map[string]Handler{
-		"alert": func(ctx context.Context, j sqlc.Job, _ json.RawMessage) error {
+		"alert": func(ctx context.Context, j store.Job, _ json.RawMessage) error {
 			deadline, _ = ctx.Deadline()
 			if j.LockedUntil == nil || !deadline.Equal(*j.LockedUntil) {
 				t.Errorf("deadline %v != locked_until %v", deadline, j.LockedUntil)
@@ -258,19 +257,19 @@ func TestReleaseJobAtAttemptCap(t *testing.T) {
 	testdb.Projects(t, st, 1)
 	ctx := context.Background()
 	args := []byte(`{"event": 1}`)
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, args, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	// Claimed for the 8th time: attempts = 8.
 	st.Pool.Exec(ctx, "UPDATE jobs SET attempts = 7")
-	got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	got, err := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10)
 	if err != nil || len(got) != 1 || got[0].Attempts != 8 {
 		t.Fatalf("claim: %+v %v", got, err)
 	}
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, args, time.Now()); err != nil {
 		t.Fatal(err) // a second row: the first is no longer pending
 	}
-	if err := st.ReleaseJob(ctx, got[0].ID); err != nil {
+	if err := store.ReleaseJob(ctx, st.Pool, got[0].ID); err != nil {
 		t.Fatalf("release with a duplicate pending: %v", err)
 	}
 	var n int
@@ -280,9 +279,9 @@ func TestReleaseJobAtAttemptCap(t *testing.T) {
 	}
 	// Without a duplicate the release un-counts the attempt as before.
 	st.Pool.Exec(ctx, "DELETE FROM jobs")
-	st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()})
-	got, _ = st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
-	if err := st.ReleaseJob(ctx, got[0].ID); err != nil {
+	store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, args, time.Now())
+	got, _ = store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10)
+	if err := store.ReleaseJob(ctx, st.Pool, got[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	var attempts int

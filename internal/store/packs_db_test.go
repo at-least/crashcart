@@ -14,7 +14,6 @@ import (
 
 	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/retention"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
@@ -23,7 +22,7 @@ import (
 
 // insertPayloads writes events with the given raw payloads at t (one
 // minute apart) through st.InsertEvents, the way ingest does.
-func insertPayloads(t *testing.T, st *store.Store, pid int64, at time.Time, raws ...[]byte) []sqlc.Event {
+func insertPayloads(t *testing.T, st *store.Store, pid int64, at time.Time, raws ...[]byte) []store.Event {
 	t.Helper()
 	ctx := context.Background()
 	var rows []store.EventInsert
@@ -36,9 +35,9 @@ func insertPayloads(t *testing.T, st *store.Store, pid int64, at time.Time, raws
 	if err := pgx.BeginFunc(ctx, st.Pool, func(tx pgx.Tx) error { return st.InsertEvents(ctx, tx, rows) }); err != nil {
 		t.Fatal(err)
 	}
-	var out []sqlc.Event
+	var out []store.Event
 	for _, r := range rows {
-		e, err := st.GetEventAt(ctx, sqlc.GetEventAtParams{ProjectID: pid, EventID: r.EventID, OccurredAt: r.OccurredAt})
+		e, err := store.GetEventAt(ctx, st.Pool, pid, r.EventID, r.OccurredAt)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -49,14 +48,14 @@ func insertPayloads(t *testing.T, st *store.Store, pid int64, at time.Time, raws
 
 func spoolCount(t *testing.T, st *store.Store) int64 {
 	t.Helper()
-	n, err := st.SpoolCount(context.Background())
+	n, err := store.SpoolCount(context.Background(), st.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return n
 }
 
-func payloadOf(t *testing.T, st *store.Store, e sqlc.Event) []byte {
+func payloadOf(t *testing.T, st *store.Store, e store.Event) []byte {
 	t.Helper()
 	b, err := st.Payload(context.Background(), nil, e)
 	if err != nil {
@@ -146,7 +145,7 @@ func TestPacksSpoolAndPack(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Blobs = mem
-	e, _ := st.GetEventAt(ctx, sqlc.GetEventAtParams{ProjectID: 1, EventID: old.EventID, OccurredAt: old.OccurredAt})
+	e, _ := store.GetEventAt(ctx, st.Pool, 1, old.EventID, old.OccurredAt)
 	if got := payloadOf(t, st, e); string(got) != `{"old":true}` {
 		t.Fatalf("column row: %q", got)
 	}
@@ -194,9 +193,9 @@ func TestPacksSizeAndProjects(t *testing.T) {
 	}
 	// Every payload reads back through its range.
 	rows, _ := st.Pool.Query(ctx, "SELECT project_id, event_id, occurred_at FROM events")
-	var evs []sqlc.Event
+	var evs []store.Event
 	for rows.Next() {
-		var e sqlc.Event
+		var e store.Event
 		rows.Scan(&e.ProjectID, &e.EventID, &e.OccurredAt)
 		evs = append(evs, e)
 	}
@@ -299,11 +298,11 @@ func TestPacksRetentionAndProjectDelete(t *testing.T) {
 		t.Fatalf("packs rows after the sweep = %d", left)
 	}
 	// Project delete: keys read first, then the project, then the objects.
-	packs, err := st.ProjectPacks(ctx, 1)
+	packs, err := store.ProjectPacks(ctx, st.Pool, 1)
 	if err != nil || len(packs) != 1 {
 		t.Fatalf("project 1 packs: %v %v", packs, err)
 	}
-	if err := st.DeleteProject(ctx, 1); err != nil {
+	if err := store.DeleteProject(ctx, st.Pool, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.DeleteProjectPacks(ctx, 1, packs); err != nil {

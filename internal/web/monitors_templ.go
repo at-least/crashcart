@@ -11,35 +11,35 @@ import templruntime "github.com/a-h/templ/runtime"
 import (
 	"strconv"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
-func monitorHref(pg Page, m sqlc.Monitor) string {
+func monitorHref(pg Page, m store.Monitor) string {
 	return pg.S.Persist().Href("/monitors/" + m.Slug)
 }
 
-func monitorSchedule(m sqlc.Monitor) string {
+func monitorSchedule(m store.Monitor) string {
 	if m.ScheduleType == "interval" {
 		return "every " + m.ScheduleValue + " " + deref(m.ScheduleUnit)
 	}
 	return m.ScheduleValue
 }
 
-func monitorStatusLabel(s sqlc.NullCheckinStatus) string {
-	if !s.Valid {
+func monitorStatusLabel(s *store.CheckinStatus) string {
+	if s == nil {
 		return "waiting for first check-in"
 	}
-	return string(s.CheckinStatus)
+	return string(*s)
 }
 
-func monitorNextExpected(m sqlc.Monitor) string {
+func monitorNextExpected(m store.Monitor) string {
 	if m.NextExpectedAt == nil {
 		return "—"
 	}
 	return ago(*m.NextExpectedAt)
 }
 
-func checkInDuration(c sqlc.MonitorCheckin) string {
+func checkInDuration(c store.MonitorCheckin) string {
 	if c.DurationS == nil {
 		return "—"
 	}
@@ -49,7 +49,7 @@ func checkInDuration(c sqlc.MonitorCheckin) string {
 // Monitors: every monitor the project's SDKs have upserted a schedule
 // for — created only that way, never by hand (Feedback's counterpart:
 // a list with no create form).
-func Monitors(pg Page, rows []sqlc.Monitor) templ.Component {
+func Monitors(pg Page, rows []store.Monitor) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -185,7 +185,7 @@ func Monitors(pg Page, rows []sqlc.Monitor) templ.Component {
 }
 
 // MonitorPage: one monitor's config/state and its recent check-ins.
-func MonitorPage(pg Page, m sqlc.Monitor, checkIns []sqlc.MonitorCheckin) templ.Component {
+func MonitorPage(pg Page, m store.Monitor, checkIns []store.MonitorCheckin) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {

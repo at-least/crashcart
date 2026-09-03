@@ -36,7 +36,6 @@ import (
 
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/monitors"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
@@ -97,7 +96,7 @@ func nextUTCDay(t time.Time) time.Time {
 
 // quotaExhausted reports whether the project's quota is known to be used
 // up for the day (see exhaustedQuota).
-func (in *Ingester) quotaExhausted(p sqlc.Project, now time.Time) bool {
+func (in *Ingester) quotaExhausted(p store.Project, now time.Time) bool {
 	if p.DailyQuota <= 0 {
 		return false
 	}
@@ -119,11 +118,11 @@ func (in *Ingester) quotaExhausted(p sqlc.Project, now time.Time) bool {
 // not from the day's true total. Sessions ride along with events, so a
 // rejected envelope loses its sessions too — acceptable for a project
 // that is being flooded.
-func (in *Ingester) checkQuota(ctx context.Context, q *sqlc.Queries, p sqlc.Project, n int, now time.Time) error {
+func (in *Ingester) checkQuota(ctx context.Context, db store.DB, p store.Project, n int, now time.Time) error {
 	if n == 0 || p.DailyQuota <= 0 {
 		return nil
 	}
-	total, err := q.AddProjectUsage(ctx, sqlc.AddProjectUsageParams{ProjectID: p.ID, Day: now.UTC().Truncate(24 * time.Hour), Events: int64(n)})
+	total, err := store.AddProjectUsage(ctx, db, p.ID, now.UTC().Truncate(24*time.Hour), int64(n))
 	if err != nil {
 		return fmt.Errorf("quota: %w", err)
 	}
@@ -150,7 +149,7 @@ func (in *Ingester) checkQuota(ctx context.Context, q *sqlc.Queries, p sqlc.Proj
 }
 
 type cachedProject struct {
-	p   sqlc.Project
+	p   store.Project
 	exp time.Time
 }
 
@@ -186,33 +185,33 @@ func (in *Ingester) Handler() http.Handler {
 }
 
 // Project resolves the DSN key (cached 60 s) and checks the path id.
-func (in *Ingester) Project(r *http.Request) (sqlc.Project, error) {
+func (in *Ingester) Project(r *http.Request) (store.Project, error) {
 	key := auth.SentryKey(r)
 	if key == "" {
-		return sqlc.Project{}, errUnauthorized
+		return store.Project{}, errUnauthorized
 	}
 	in.mu.Lock()
 	c, ok := in.byKey[key]
 	in.mu.Unlock()
 	if !ok || time.Now().After(c.exp) {
-		p, err := in.Store.GetProjectByKey(r.Context(), key)
+		p, err := store.GetProjectByKey(r.Context(), in.Store.Pool, key)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Not the current key — a retired-but-not-yet-deleted one, kept
 			// alive since Rotate no longer discards the outgoing key. Nothing
 			// downstream reads .PublicKey off the cached project, so caching
 			// it under this request's key (not the project's current one) is
 			// safe regardless of which table supplied the row.
-			retired, rerr := in.Store.GetProjectByRetiredKey(r.Context(), key)
+			retired, rerr := store.GetProjectByRetiredKey(r.Context(), in.Store.Pool, key)
 			if errors.Is(rerr, pgx.ErrNoRows) {
-				return sqlc.Project{}, errUnauthorized
+				return store.Project{}, errUnauthorized
 			}
 			if rerr != nil {
-				return sqlc.Project{}, rerr
+				return store.Project{}, rerr
 			}
-			in.Store.TouchProjectKey(r.Context(), retired.KeyID) // best-effort, throttled to 1/minute
+			store.TouchProjectKey(r.Context(), in.Store.Pool, retired.KeyID) // best-effort, throttled to 1/minute
 			p = retired.Project
 		} else if err != nil {
-			return sqlc.Project{}, err
+			return store.Project{}, err
 		}
 		c = cachedProject{p: p, exp: time.Now().Add(keyCacheTTL)}
 		in.mu.Lock()
@@ -223,7 +222,7 @@ func (in *Ingester) Project(r *http.Request) (sqlc.Project, error) {
 		in.mu.Unlock()
 	}
 	if pid := r.PathValue("project"); pid != "" && pid != fmt.Sprint(c.p.ID) && pid != c.p.Slug {
-		return sqlc.Project{}, errUnauthorized
+		return store.Project{}, errUnauthorized
 	}
 	return c.p, nil
 }
@@ -372,7 +371,7 @@ type prepared struct {
 }
 
 // Ingest writes one parsed envelope for project p.
-func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envelope, now time.Time) (Result, error) {
+func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Envelope, now time.Time) (Result, error) {
 	var res Result
 	res.Received = len(env.Events)
 	if len(env.Events) == 0 && len(env.Sessions) == 0 && env.UserReport == nil && len(env.ClientReportCounts) == 0 && env.CheckIn == nil {
@@ -433,8 +432,8 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 	// 2. One transaction: drop resends, fold by fingerprint, upsert issues,
 	//    decide sampling, write events, sessions, jobs; the quota bump
 	//    last, so its per-project row lock is held only until the commit.
-	var jobs []sqlc.EnqueueJobParams
-	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
+	var jobs []store.EnqueueJobParams
+	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		// An envelope the SDK resends (after a timeout, or from its crash
 		// cache) carries event_ids already stored: those must not be
 		// counted twice.
@@ -450,7 +449,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 					to = pr.ev.Timestamp
 				}
 			}
-			existing, err := q.ExistingEventIDs(ctx, sqlc.ExistingEventIDsParams{ProjectID: p.ID, Column2: ids, FromAt: from, ToAt: to.Add(time.Microsecond)})
+			existing, err := store.ExistingEventIDs(ctx, tx, p.ID, ids, from, to.Add(time.Microsecond))
 			if err != nil {
 				return fmt.Errorf("dedupe: %w", err)
 			}
@@ -464,7 +463,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				}
 			}
 			if len(clamped) > 0 {
-				more, err := q.ExistingEventIDsAnyTime(ctx, sqlc.ExistingEventIDsAnyTimeParams{ProjectID: p.ID, Column2: clamped})
+				more, err := store.ExistingEventIDsAnyTime(ctx, tx, p.ID, clamped)
 				if err != nil {
 					return fmt.Errorf("dedupe: %w", err)
 				}
@@ -518,14 +517,15 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		if len(rels) > 0 {
 			// Sorted: the upsert locks one row per release until commit,
 			// and two envelopes taking them in opposite orders would deadlock.
-			rp := sqlc.UpsertReleasesParams{ProjectID: p.ID}
+			var releases, platforms []string
+			var firstSeens []time.Time
 			for _, r := range slices.Sorted(maps.Keys(rels)) {
 				seen := rels[r]
-				rp.Releases = append(rp.Releases, r)
-				rp.Platforms = append(rp.Platforms, seen.platform)
-				rp.FirstSeens = append(rp.FirstSeens, seen.at)
+				releases = append(releases, r)
+				platforms = append(platforms, seen.platform)
+				firstSeens = append(firstSeens, seen.at)
 			}
-			if err := q.UpsertReleases(ctx, rp); err != nil {
+			if err := store.UpsertReleases(ctx, tx, p.ID, releases, platforms, firstSeens); err != nil {
 				return fmt.Errorf("upsert releases: %w", err)
 			}
 		}
@@ -579,8 +579,8 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				}
 				stored = int64(len(g))
 			}
-			row, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
-				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: sqlc.EventLevel(level),
+			row, err := store.UpsertIssue(ctx, tx, store.UpsertIssueParams{
+				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: store.EventLevel(level),
 				ErrorType: nilIfEmpty(first.ev.ErrorType), Transaction: nilIfEmpty(first.ev.Transaction), Platform: nilIfEmpty(first.ev.Platform),
 				EventCount: int64(len(g)), StoredCount: stored, FirstSeen: minAt, LastSeen: maxAt, FirstRelease: lastRelease,
 				Releases: releases, Regress: true,
@@ -613,7 +613,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				}
 			}
 			if stored > 0 {
-				if err := q.AddIssueStored(ctx, sqlc.AddIssueStoredParams{ProjectID: p.ID, Fingerprint: fp, StoredCount: stored}); err != nil {
+				if err := store.AddIssueStored(ctx, tx, p.ID, fp, stored); err != nil {
 					return err
 				}
 			}
@@ -642,7 +642,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			})
 			if pr.retry && pr.fingerprint != "" {
 				args, _ := json.Marshal(map[string]any{"event": ev.EventID, "at": JobTime(ev.Timestamp)})
-				jobs = append(jobs, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
+				jobs = append(jobs, store.EnqueueJobParams{Kind: "symbolicate", ProjectID: p.ID, Args: args, RunAfter: now})
 			}
 		}
 		if err := in.Store.InsertEvents(ctx, tx, rows); err != nil {
@@ -688,9 +688,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				name, email = "", "" // the user's own name/email are PII like any other; an operator's redaction setting is not opted out of by the user typing it in
 				comments = RedactText(comments)
 			}
-			if err := q.UpsertUserReport(ctx, sqlc.UpsertUserReportParams{
-				ProjectID: p.ID, EventID: ur.EventID, Name: nilIfEmpty(name), Email: nilIfEmpty(email), Comments: comments,
-			}); err != nil {
+			if err := store.UpsertUserReport(ctx, tx, p.ID, ur.EventID, nilIfEmpty(name), nilIfEmpty(email), comments); err != nil {
 				return fmt.Errorf("upsert user report: %w", err)
 			}
 			res.UserReports = 1
@@ -706,10 +704,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 			for i, c := range env.ClientReportCounts {
 				reasons[i], categories[i], quantities[i] = c.Reason, c.Category, c.Quantity
 			}
-			if err := q.UpsertClientReportCounts(ctx, sqlc.UpsertClientReportCountsParams{
-				ProjectID: p.ID, Bucket: now.UTC().Truncate(time.Hour),
-				Reasons: reasons, Categories: categories, Quantities: quantities,
-			}); err != nil {
+			if err := store.UpsertClientReportCounts(ctx, tx, p.ID, now.UTC().Truncate(time.Hour), reasons, categories, quantities); err != nil {
 				return fmt.Errorf("upsert client report counts: %w", err)
 			}
 			res.ClientReportCounts = len(env.ClientReportCounts)
@@ -721,10 +716,10 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		// has no config for is dropped, like Sentry does for an orphan
 		// check-in, rather than creating a bare, unscheduled monitor.
 		if ci := env.CheckIn; ci != nil {
-			var mon sqlc.Monitor
+			var mon store.Monitor
 			var haveMonitor bool
 			if ci.Config != nil {
-				m, err := q.UpsertMonitor(ctx, sqlc.UpsertMonitorParams{
+				m, err := store.UpsertMonitor(ctx, tx, store.UpsertMonitorParams{
 					ProjectID: p.ID, Slug: ci.MonitorSlug, ScheduleType: ci.Config.ScheduleType, ScheduleValue: ci.Config.ScheduleValue,
 					ScheduleUnit: nilIfEmpty(ci.Config.ScheduleUnit), Timezone: ci.Config.Timezone,
 					CheckinMarginMin: ci.Config.CheckinMarginMin, MaxRuntimeMin: ci.Config.MaxRuntimeMin,
@@ -735,7 +730,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 				}
 				mon, haveMonitor = m, true
 				res.Monitors = 1
-			} else if m, err := q.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: ci.MonitorSlug}); err == nil {
+			} else if m, err := store.GetMonitor(ctx, tx, p.ID, ci.MonitorSlug); err == nil {
 				mon, haveMonitor = m, true
 			} else if !errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("get monitor: %w", err)
@@ -747,13 +742,13 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 					d := float32(*ci.DurationS)
 					durationS = &d
 				}
-				existing, err := q.FindOpenCheckIn(ctx, sqlc.FindOpenCheckInParams{ProjectID: p.ID, MonitorSlug: ci.MonitorSlug, Zero: zero, CheckInID: ci.CheckInID})
+				existing, err := store.FindOpenCheckIn(ctx, tx, p.ID, ci.MonitorSlug, zero, ci.CheckInID)
 				switch {
 				case err == nil:
 					// A later check-in of the same run: advance status.
-					if err := q.UpdateCheckIn(ctx, sqlc.UpdateCheckInParams{
+					if err := store.UpdateCheckIn(ctx, tx, store.UpdateCheckInParams{
 						ProjectID: p.ID, MonitorSlug: ci.MonitorSlug, CheckInID: existing.CheckInID, StartedAt: existing.StartedAt,
-						Status: sqlc.CheckinStatus(ci.Status), DurationS: durationS, Release: nilIfEmpty(ci.Release), Environment: nilIfEmpty(ci.Environment),
+						Status: store.CheckinStatus(ci.Status), DurationS: durationS, Release: nilIfEmpty(ci.Release), Environment: nilIfEmpty(ci.Environment),
 					}); err != nil {
 						return fmt.Errorf("update check-in: %w", err)
 					}
@@ -762,9 +757,9 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 					if !zero {
 						// A fresh run: the zero-id shorthand with nothing open
 						// to update is a no-op instead (no real id to key a row on).
-						if err := q.InsertCheckIn(ctx, sqlc.InsertCheckInParams{
+						if err := store.InsertCheckIn(ctx, tx, store.InsertCheckInParams{
 							StartedAt: now, ProjectID: p.ID, MonitorSlug: ci.MonitorSlug, CheckInID: ci.CheckInID,
-							Status: sqlc.CheckinStatus(ci.Status), DurationS: durationS, Release: nilIfEmpty(ci.Release), Environment: nilIfEmpty(ci.Environment),
+							Status: store.CheckinStatus(ci.Status), DurationS: durationS, Release: nilIfEmpty(ci.Release), Environment: nilIfEmpty(ci.Environment),
 						}); err != nil {
 							return fmt.Errorf("insert check-in: %w", err)
 						}
@@ -788,8 +783,8 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 					}
 					next := sched.Next(now.In(loc)).UTC().Add(time.Duration(mon.CheckinMarginMin) * time.Minute)
 					tr := monitors.Record(mon.ConsecutiveFailures, mon.ConsecutiveSuccesses, mon.Alerting, mon.FailureThreshold, mon.RecoveryThreshold, ci.Status == "ok")
-					if err := q.RecordMonitorResult(ctx, sqlc.RecordMonitorResultParams{
-						ProjectID: p.ID, Slug: ci.MonitorSlug, LastStatus: sqlc.CheckinStatus(ci.Status),
+					if err := store.RecordMonitorResult(ctx, tx, store.RecordMonitorResultParams{
+						ProjectID: p.ID, Slug: ci.MonitorSlug, LastStatus: store.CheckinStatus(ci.Status),
 						ConsecutiveFailures: tr.ConsecutiveFailures, ConsecutiveSuccesses: tr.ConsecutiveSuccesses, Alerting: tr.Alerting,
 						NextExpectedAt: next, LastCheckinAt: now,
 					}); err != nil {
@@ -817,22 +812,25 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 		}
 		res.Sessions = len(sessions)
 		if len(jobs) > 0 {
-			slices.SortFunc(jobs, func(a, b sqlc.EnqueueJobParams) int { // one lock order on jobs_pending
+			slices.SortFunc(jobs, func(a, b store.EnqueueJobParams) int { // one lock order on jobs_pending
 				return cmp.Or(cmp.Compare(a.Kind, b.Kind), bytes.Compare(a.Args, b.Args))
 			})
-			jp := sqlc.EnqueueJobsParams{}
+			var kinds []string
+			var projectIDs []int64
+			var jargs []json.RawMessage
+			var runAfters []time.Time
 			for _, j := range jobs {
-				jp.Kinds = append(jp.Kinds, string(j.Kind))
-				jp.ProjectIds = append(jp.ProjectIds, j.ProjectID)
-				jp.Args = append(jp.Args, j.Args)
-				jp.RunAfters = append(jp.RunAfters, j.RunAfter)
+				kinds = append(kinds, string(j.Kind))
+				projectIDs = append(projectIDs, j.ProjectID)
+				jargs = append(jargs, j.Args)
+				runAfters = append(runAfters, j.RunAfter)
 			}
-			if err := q.EnqueueJobs(ctx, jp); err != nil {
+			if err := store.EnqueueJobs(ctx, tx, kinds, projectIDs, jargs, runAfters); err != nil {
 				return fmt.Errorf("enqueue jobs: %w", err)
 			}
 		}
 		res.Jobs = len(jobs)
-		return in.checkQuota(ctx, q, p, len(env.Events), now)
+		return in.checkQuota(ctx, tx, p, len(env.Events), now)
 	})
 	if err != nil {
 		res = Result{Received: res.Received, Invalid: res.Invalid}
@@ -843,7 +841,7 @@ func (in *Ingester) Ingest(ctx context.Context, p sqlc.Project, env sentry.Envel
 // warnMismatch logs a platform mismatch at most once a minute per project:
 // a wrong DSN in one app would otherwise write a line per event. The
 // events are stored regardless; the viewer shows the same mismatch.
-func (in *Ingester) warnMismatch(p sqlc.Project, ev *sentry.Event, family string) {
+func (in *Ingester) warnMismatch(p store.Project, ev *sentry.Event, family string) {
 	in.mu.Lock()
 	last, ok := in.warned[p.ID]
 	if !ok || time.Since(last) > time.Minute {
@@ -876,16 +874,16 @@ func sessionID(s sentry.Session) string {
 // SQL, so the two enqueue paths dedupe onto one job.
 func JobTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000Z") }
 
-func alertJob(projectID int64, typ string, fp sentry.ID) sqlc.EnqueueJobParams {
+func alertJob(projectID int64, typ string, fp sentry.ID) store.EnqueueJobParams {
 	args, _ := json.Marshal(map[string]any{"type": typ, "fingerprint": fp})
-	return sqlc.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
+	return store.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
 }
 
 // monitorAlertJob: like alertJob, keyed by monitor slug instead of a
 // fingerprint (the "alert" job handler dispatches on which one is set).
-func monitorAlertJob(projectID int64, typ, slug string) sqlc.EnqueueJobParams {
+func monitorAlertJob(projectID int64, typ, slug string) store.EnqueueJobParams {
 	args, _ := json.Marshal(map[string]any{"type": typ, "monitor": slug})
-	return sqlc.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
+	return store.EnqueueJobParams{Kind: "alert", ProjectID: projectID, Args: args, RunAfter: time.Now()}
 }
 
 func deref(s *string) string {

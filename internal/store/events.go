@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 )
 
@@ -89,8 +88,9 @@ func (s *Store) InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert)
 
 // The dirty marks insert in bucket order (ORDER BY): the upsert locks one
 // row per hour until commit, and two envelopes spanning the same hours in
-// opposite orders would otherwise deadlock. The sqlc MarkEventStatsDirty /
-// MarkSessionStatsDirty are the same statements for callers without a batch.
+// opposite orders would otherwise deadlock. MarkEventStatsDirty /
+// MarkSessionStatsDirty (stats.go) are the same statements for callers
+// without a batch.
 const (
 	markEventHours   = `INSERT INTO event_stats_dirty (project_id, bucket) SELECT $1, b FROM unnest($2::timestamptz[]) AS b ORDER BY b ON CONFLICT (project_id, bucket) DO UPDATE SET gen = event_stats_dirty.gen + 1`
 	markSessionHours = `INSERT INTO session_stats_dirty (project_id, bucket) SELECT $1, b FROM unnest($2::timestamptz[]) AS b ORDER BY b ON CONFLICT (project_id, bucket) DO UPDATE SET gen = session_stats_dirty.gen + 1`
@@ -387,5 +387,144 @@ func (s *Store) Breakdowns(ctx context.Context, f EventFilter, columns []string,
 	return out, rows.Err()
 }
 
-// EventDetail is the full row.
-type EventDetail = sqlc.Event
+// Event is the full row (payload column included — nil when the process
+// has a blob store: the bytes are in the spool or a pack instead, see
+// packs.go).
+type Event struct {
+	OccurredAt   time.Time       `json:"occurred_at"`
+	ProjectID    int64           `json:"project_id"`
+	EventID      sentry.ID       `json:"event_id"`
+	Level        EventLevel      `json:"level"`
+	Message      string          `json:"message"`
+	Platform     *string         `json:"platform"`
+	Environment  *string         `json:"environment"`
+	Release      *string         `json:"release"`
+	DeviceID     *string         `json:"device_id"`
+	DeviceModel  *string         `json:"device_model"`
+	OSVersion    *string         `json:"os_version"`
+	Transaction  *string         `json:"transaction"`
+	ErrorType    *string         `json:"error_type"`
+	Culprit      *string         `json:"culprit"`
+	Handled      *bool           `json:"handled"`
+	SDKName      *string         `json:"sdk_name"`
+	UserID       *string         `json:"user_id"`
+	Fingerprint  *sentry.ID      `json:"fingerprint"`
+	Symbolicated bool            `json:"symbolicated"`
+	Tags         json.RawMessage `json:"tags"`
+	Symbols      json.RawMessage `json:"symbols"`
+	Payload      []byte          `json:"payload"`
+}
+
+// EventDetail is Event (kept as an alias: callers across the codebase
+// spell it either way).
+type EventDetail = Event
+
+const eventColumns = `occurred_at, project_id, event_id, level, message, platform, environment, release, device_id,
+	device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated,
+	tags, symbols, payload`
+
+func scanEvent(row pgx.Row) (Event, error) {
+	var e Event
+	err := row.Scan(&e.OccurredAt, &e.ProjectID, &e.EventID, &e.Level, &e.Message, &e.Platform, &e.Environment, &e.Release,
+		&e.DeviceID, &e.DeviceModel, &e.OSVersion, &e.Transaction, &e.ErrorType, &e.Culprit, &e.Handled, &e.SDKName, &e.UserID,
+		&e.Fingerprint, &e.Symbolicated, &e.Tags, &e.Symbols, &e.Payload)
+	return e, err
+}
+
+// GetEvent is by Sentry event_id alone (the viewer and the API: URLs carry
+// only the id). Without a time this touches every partition; the newest
+// row wins when a resend carried another timestamp.
+func GetEvent(ctx context.Context, db DB, projectID int64, eventID sentry.ID) (Event, error) {
+	return scanEvent(db.QueryRow(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1", projectID, eventID))
+}
+
+// GetEventAt is by primary key: the time lets the planner open one
+// partition. Jobs carry it.
+func GetEventAt(ctx context.Context, db DB, projectID int64, eventID sentry.ID, occurredAt time.Time) (Event, error) {
+	return scanEvent(db.QueryRow(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3", projectID, eventID, occurredAt))
+}
+
+func SetEventSymbols(ctx context.Context, db DB, projectID int64, eventID sentry.ID, symbols json.RawMessage, fingerprint *sentry.ID, culprit *string, occurredAt time.Time) error {
+	_, err := db.Exec(ctx, "UPDATE events SET symbols = $3, symbolicated = true, fingerprint = $4, culprit = $5 WHERE project_id = $1 AND event_id = $2 AND occurred_at = $6",
+		projectID, eventID, symbols, fingerprint, culprit, occurredAt)
+	return err
+}
+
+// IssueUsersRow is one issue's distinct user count in a window.
+type IssueUsersRow struct {
+	Fingerprint *sentry.ID `json:"fingerprint"`
+	Users       int64      `json:"users"`
+}
+
+// IssueUsers is distinct users per issue in a window (index: project_id,
+// fingerprint, occurred_at).
+func IssueUsers(ctx context.Context, db DB, projectID int64, fingerprints []sentry.ID, from, to time.Time) ([]IssueUsersRow, error) {
+	rows, err := db.Query(ctx, `SELECT fingerprint, count(DISTINCT user_id)::bigint AS users
+		FROM events WHERE project_id = $1 AND fingerprint = ANY($2::uuid[]) AND occurred_at >= $3 AND occurred_at < $4 AND user_id IS NOT NULL
+		GROUP BY fingerprint`, projectID, fingerprints, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueUsersRow{}
+	for rows.Next() {
+		var r IssueUsersRow
+		if err := rows.Scan(&r.Fingerprint, &r.Users); err != nil {
+			return nil, err
+		}
+		items = append(items, r)
+	}
+	return items, rows.Err()
+}
+
+// IssueEventRangeRow is the newest and oldest stored event of an issue.
+type IssueEventRangeRow struct {
+	Latest sentry.ID `json:"latest"`
+	Oldest sentry.ID `json:"oldest"`
+}
+
+// IssueEventRange is the newest and oldest stored event of an issue (NULL
+// when none are stored), within the issue's own [first_seen, last_seen] so
+// only those partitions are read.
+func IssueEventRange(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID, from, to time.Time) (IssueEventRangeRow, error) {
+	var r IssueEventRangeRow
+	err := db.QueryRow(ctx, `SELECT (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
+          AND e.occurred_at >= $3::timestamptz AND e.occurred_at < $4::timestamptz ORDER BY e.occurred_at DESC LIMIT 1)::uuid AS latest,
+       (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
+          AND e.occurred_at >= $3::timestamptz AND e.occurred_at < $4::timestamptz ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest`,
+		projectID, fingerprint, from, to).Scan(&r.Latest, &r.Oldest)
+	return r, err
+}
+
+// ExistingEventIDs is which of ids are already stored (resent envelopes). A
+// resend carries the SDK's own timestamp, so the window is the envelope's
+// own time range: only the partitions it spans are read.
+func ExistingEventIDs(ctx context.Context, db DB, projectID int64, ids []sentry.ID, from, to time.Time) ([]sentry.ID, error) {
+	return scanIDs(ctx, db, "SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::uuid[]) AND occurred_at >= $3::timestamptz AND occurred_at < $4::timestamptz",
+		projectID, ids, from, to)
+}
+
+// ExistingEventIDsAnyTime is ExistingEventIDs without a window, for the few
+// events whose timestamp was replaced by the server's (a clock far off): a
+// resend of those carries a different time, so the stored copy can be in
+// any partition.
+func ExistingEventIDsAnyTime(ctx context.Context, db DB, projectID int64, ids []sentry.ID) ([]sentry.ID, error) {
+	return scanIDs(ctx, db, "SELECT event_id FROM events WHERE project_id = $1 AND event_id = ANY($2::uuid[])", projectID, ids)
+}
+
+func scanIDs(ctx context.Context, db DB, sql string, args ...any) ([]sentry.ID, error) {
+	rows, err := db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []sentry.ID{}
+	for rows.Next() {
+		var id sentry.ID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	return items, rows.Err()
+}

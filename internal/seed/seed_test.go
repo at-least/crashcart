@@ -8,6 +8,7 @@ import (
 	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/ingest"
 	"github.com/at-least/crashcart/internal/retention"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -21,7 +22,7 @@ func TestRun(t *testing.T) {
 	if err := retention.RollupAll(ctx, st, config.Config{}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := st.GetProject(ctx, "demo")
+	p, err := store.GetProject(ctx, st.Pool, "demo")
 	if err != nil {
 		t.Fatal(err)
 	}

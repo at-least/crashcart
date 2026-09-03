@@ -19,17 +19,17 @@ tests, do not "update the docs" with a second copy.
 
 ## Stack
 
-Go 1.27+ (std `net/http` mux, pgx/v5, sqlc, templ, goose for migrations),
-plain Postgres 15+ (no extensions; the one store — payloads, symbol files
-included by default), htmx + Tailwind v4 + shadless for the viewer.
-Optional: symbol files and event payloads in an S3-compatible bucket
-(`BLOB_STORE=s3`, minio-go), dSYM symbolication sidecar
-(`container/symbolicate`).
+Go 1.27+ (std `net/http` mux, pgx/v5 with hand-written queries, templ,
+goose for migrations), plain Postgres 15+ (no extensions; the one store —
+payloads, symbol files included by default), htmx + Tailwind v4 +
+shadless for the viewer. Optional: symbol files and event payloads in an
+S3-compatible bucket (`BLOB_STORE=s3`, minio-go), dSYM symbolication
+sidecar (`container/symbolicate`).
 
 ## Commands
 
 ```
-make generate      sqlc generate + templ generate + gendocs (generated files are committed)
+make generate      templ generate + gendocs (generated files are committed)
 make build         → bin/crashcart
 make test          go vet + gendocs -check + unit tests
 make test-db       DB-backed tests too; provisions a disposable Postgres via Docker
@@ -47,10 +47,11 @@ internal/
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, Culprit, ID
   db/                 migrations/*.sql (goose, applied on every start; 00001_baseline.sql is
-                      the whole schema), sqlc_schema.sql
-                      (mirror for sqlc; the stats views appear as tables), queries/*.sql → sqlc/ (generated), db.go (Init)
-  store/              Store = pool + sqlc.Queries + Blobs; dynamic event listing/breakdown (only hand-written SQL);
-                      packs.go (payload spool → packs, Payload read path);
+                      the whole schema), db.go (Init)
+  store/              Store = pool + Blobs; one file per domain, each a package-level
+                      function per query (`func X(ctx, db DB, args...) (Row, error)`) plus
+                      that domain's row structs; enums.go (the Postgres enums, as plain
+                      Go string types); packs.go (payload spool → packs, Payload read path);
                       Cursor (keyset paging), Listener (LISTEN/NOTIFY fan-out), RunAsLeader
   auth/               Access (API keys, user sessions), CORS, RateLimit, SentryKey
   ingest/             POST /api/{id}/envelope|store; Ingest(); PII redaction
@@ -71,18 +72,34 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
 
 ## Conventions (rules for changes — not a description of the code)
 
-- Regenerate after editing: `sqlc generate` (queries or `sqlc_schema.sql`),
-  `templ generate` (`.templ`), `go run ./cmd/gendocs` (`config.Vars`,
-  `cli.Commands` — rewrites `docs/deploy/configuration.md` /
-  `docs/reference/cli.md`; also checks `docs/reference/api.md`,
-  `docs/reference/export-format.md` and `GLOSSARY.md` against the code and
-  fails if they drifted). Keep `internal/db/sqlc_schema.sql` in sync by
-  hand with `internal/db/migrations/` (it is the plain-SQL mirror sqlc
-  parses — sqlc can't parse partitioning DDL or the stats-views-as-tables
-  trick; the stats views appear here as tables).
-- Hand-written SQL only in: `internal/db/migrations/`, `internal/store`
-  (dynamic filters), `internal/export`, `internal/retention` (partitions,
-  rollup). Everything else goes through sqlc queries.
+- Regenerate after editing: `templ generate` (`.templ`), `go run
+  ./cmd/gendocs` (`config.Vars`, `cli.Commands` — rewrites
+  `docs/deploy/configuration.md` / `docs/reference/cli.md`; also checks
+  `docs/reference/api.md`, `docs/reference/export-format.md` and
+  `GLOSSARY.md` against the code and fails if they drifted).
+- Queries are hand-written pgx, one file per domain in `internal/store`
+  (`events.go`, `issues.go`, …): a package-level function per query,
+  `func X(ctx context.Context, db DB, args...) (Row, error)`, taking `DB`
+  (pool or transaction) explicitly rather than a `*Store` method — a call
+  site inside a `Tx` callback then reads as a visible, greppable choice
+  between the pool and the transaction (`X(ctx, s.Pool, ...)` vs `X(ctx,
+  tx, ...)`) instead of an implicit one via method receiver. `*Store`
+  methods remain only for composite/dynamic operations that pick
+  pool-vs-tx internally (`ListEvents`, `RotateProjectKey`, `PackWeek`,
+  `InsertEvents`). Row structs and the enum types (`enums.go`) live in
+  `internal/store` — no separate models package, since every consumer
+  already needs the pool/`Tx` to do anything with them. Scan with
+  `pgx.CollectRows`/`pgx.RowToStructByPos[T]` for a query's own shape, or
+  a hand-written `scanX(row pgx.Row) (X, error)` helper when the shape is
+  reused across queries. `internal/store/tx_scope_test.go` greps every
+  `Tx(func(ctx, tx) {...})` callback in the repo for a `.Pool` reference
+  and fails the build if it finds one — the mechanical check that
+  replaces sqlc's inability to compile a query against the wrong
+  connection.
+- SQL only lives in: `internal/db/migrations/`, `internal/store` (every
+  query, plus its dynamic filters), `internal/export`, `internal/retention`
+  (partitions, rollup). A handler package (`internal/api`, `internal/web`,
+  …) never writes a query string itself — it calls a `store` function.
 - A schema change is a new file in `internal/db/migrations/` (never an
   edit to an existing one) — sequential 5-digit prefix, `-- +goose Up` /
   `-- +goose Down` (forward-only: leave Down a no-op comment; this project
@@ -116,10 +133,13 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   `sentry.ParseID`, make test ids with `sentry.DerivedID([]byte("name"))`
   (an `event_id` that is not 32-hex is replaced by an id derived from the
   event body — don't look such an event up by `DerivedID("name")`).
-- sqlc conventions: nullable text → `*string`, `TIMESTAMPTZ` → `time.Time`,
-  `JSONB` → `json.RawMessage`, Postgres enums → `sqlc.X` types (convert
-  with `string(v)` / `sqlc.X(s)` at the edges). Every per-project table has
-  a FK to `projects` `ON DELETE CASCADE` (a test enumerates them).
+- Row-struct conventions: nullable text → `*string`, `TIMESTAMPTZ` →
+  `time.Time`, `JSONB` → `json.RawMessage`, Postgres enums → `store.X`
+  types — a plain `type X string` needs no `Scan`/`Value` methods for pgx
+  to decode/encode an enum column. A struct that crosses the HTTP API
+  boundary keeps its exact `json:"snake_case"` tags. Every per-project
+  table has a FK to `projects` `ON DELETE CASCADE` (a test enumerates
+  them).
 - API JSON is snake_case, times RFC3339 UTC, identity ids are integers,
   events are keyed by `event_id`.
 - Security boundaries to preserve: HTML mutations require `HX-Request`

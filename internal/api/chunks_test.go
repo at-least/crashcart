@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 func sha(b []byte) string {
@@ -72,7 +72,7 @@ func TestChunkUpload(t *testing.T) {
 	if res[file].State != "ok" || res[file].Dif == nil || res[file].Dif.DebugID != "564ca29d-9553-5cda-b46b-135303369724" || res[file].Dif.SymbolType != "proguard" {
 		t.Fatalf("assemble: %s", rec.Body.String())
 	}
-	if n, _ := e.st.CountJobs(t.Context()); n != 0 { // release "" → no resymbolicate job
+	if n, _ := store.CountJobs(t.Context(), e.st.Pool); n != 0 { // release "" → no resymbolicate job
 		t.Fatalf("jobs = %d", n)
 	}
 	syms := e.get("/api/projects/app/symbols", 200)["symbols"].([]any)
@@ -128,7 +128,7 @@ func TestProguardArtifactRelease(t *testing.T) {
 	}
 	for i, id := range []string{uuid, other} {
 		id := id
-		if _, err := e.st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", DebugID: &id, Filename: fmt.Sprintf("mapping%d.txt", i), Size: int64(len(mapping)), Data: mapping}); err != nil {
+		if _, err := store.UpsertSymbolFile(ctx, e.st.Pool, store.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", DebugID: &id, Filename: fmt.Sprintf("mapping%d.txt", i), Size: int64(len(mapping)), Data: mapping}); err != nil {
 			t.Fatal(err)
 		}
 	}

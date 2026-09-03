@@ -16,8 +16,8 @@ import (
 	"github.com/at-least/crashcart/internal/auth"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
 	"github.com/at-least/crashcart/internal/testdb"
 )
@@ -41,7 +41,7 @@ func TestEndToEnd(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
 	cfg := config.Config{CORSOrigin: "*", APICORSOrigin: "*", RetentionDays: 30}
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "shop", Name: "Shop", PublicKey: "dsnkey"})
+	p, err := store.CreateProject(ctx, st.Pool, "shop", "Shop", nil, "dsnkey")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash, _ := auth.HashPassword("correct horse battery")
-	user, err := st.CreateUser(ctx, sqlc.CreateUserParams{Email: "dev@example.com", PasswordHash: hash})
+	user, err := store.CreateUser(ctx, st.Pool, "dev@example.com", "", hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestEndToEnd(t *testing.T) {
 	if res, body := do("POST", "/p/shop/issues/bulk", form, map[string]string{"Cookie": sessionCookie.String(), "Content-Type": "application/x-www-form-urlencoded", "HX-Request": "true"}); res.StatusCode != 200 {
 		t.Errorf("bulk → %d %.200s", res.StatusCode, body)
 	}
-	iss, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)})
+	iss, _ := store.GetIssue(ctx, st.Pool, p.ID, sentry.ID(fp))
 	if iss.Status != "ignored" {
 		t.Errorf("bulk did not apply: %s", iss.Status)
 	}

@@ -10,7 +10,7 @@ import (
 	"github.com/at-least/crashcart/internal/alerts"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 var alertTypes = map[string]bool{
@@ -23,12 +23,12 @@ func (h *Handler) getAlerts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rules, err := h.Store.ListAlertRules(r.Context(), p.ID)
+	rules, err := store.ListAlertRules(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	channels, err := h.Store.ListAlertChannels(r.Context(), p.ID)
+	channels, err := store.ListAlertChannels(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -54,9 +54,9 @@ func (h *Handler) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	cur, err := h.Store.GetAlertRule(r.Context(), sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ)})
+	cur, err := store.GetAlertRule(r.Context(), h.Store.Pool, p.ID, store.AlertType(typ))
 	if errors.Is(err, pgx.ErrNoRows) {
-		cur = sqlc.AlertRule{Enabled: true, CooldownMinutes: 60}
+		cur = store.AlertRule{Enabled: true, CooldownMinutes: 60}
 	} else if err != nil { // a read error must not re-enable a disabled rule with defaults
 		h.fail(w, err)
 		return
@@ -71,7 +71,7 @@ func (h *Handler) updateAlertRule(w http.ResponseWriter, r *http.Request) {
 		}
 		cur.CooldownMinutes = *in.CooldownMinutes
 	}
-	rule, err := h.Store.UpsertAlertRule(r.Context(), sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ), Enabled: cur.Enabled, CooldownMinutes: cur.CooldownMinutes})
+	rule, err := store.UpsertAlertRule(r.Context(), h.Store.Pool, p.ID, store.AlertType(typ), cur.Enabled, cur.CooldownMinutes)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -114,7 +114,7 @@ func (h *Handler) createAlertChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Config = config
-	ch, err := h.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: sqlc.ChannelKind(in.Kind), Config: in.Config})
+	ch, err := store.CreateAlertChannel(r.Context(), h.Store.Pool, p.ID, store.ChannelKind(in.Kind), in.Config)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -132,7 +132,7 @@ func (h *Handler) deleteAlertChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid channel id")
 		return
 	}
-	n, err := h.Store.DeleteAlertChannel(r.Context(), sqlc.DeleteAlertChannelParams{ProjectID: p.ID, ID: id})
+	n, err := store.DeleteAlertChannel(r.Context(), h.Store.Pool, p.ID, id)
 	if err != nil {
 		h.fail(w, err)
 		return

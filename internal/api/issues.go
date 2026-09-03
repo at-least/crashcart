@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 )
@@ -53,7 +52,7 @@ type issueOut struct {
 	Sparkline             []int64    `json:"sparkline,omitempty"`
 }
 
-func toIssueOut(i sqlc.Issue) issueOut {
+func toIssueOut(i store.Issue) issueOut {
 	return issueOut{
 		Fingerprint: string(i.Fingerprint), Title: i.Title, Level: string(i.Level), ErrorType: i.ErrorType, Transaction: i.Transaction,
 		Platform: i.Platform, Status: string(i.Status), StatusBy: i.StatusBy, EventCount: i.EventCount, StoredCount: i.StoredCount,
@@ -86,7 +85,7 @@ type statusChange struct {
 }
 
 // params validates the change; the error is the user-facing message.
-func (c statusChange) params(at time.Time) (status sqlc.IssueStatus, until *time.Time, events *int64, escalating bool, err error) {
+func (c statusChange) params(at time.Time) (status store.IssueStatus, until *time.Time, events *int64, escalating bool, err error) {
 	if !writableStatuses[c.Status] {
 		return "", nil, nil, false, badRequest("status must be one of unresolved, resolved, ignored")
 	}
@@ -94,7 +93,7 @@ func (c statusChange) params(at time.Time) (status sqlc.IssueStatus, until *time
 		if c.IgnoreMinutes != nil || c.IgnoreEvents != nil || c.IgnoreUntilEscalating {
 			return "", nil, nil, false, badRequest("ignore_* fields need status ignored")
 		}
-		return sqlc.IssueStatus(c.Status), nil, nil, false, nil
+		return store.IssueStatus(c.Status), nil, nil, false, nil
 	}
 	if c.IgnoreMinutes != nil {
 		if *c.IgnoreMinutes <= 0 || *c.IgnoreMinutes > 366*24*60*10 {
@@ -106,7 +105,7 @@ func (c statusChange) params(at time.Time) (status sqlc.IssueStatus, until *time
 	if c.IgnoreEvents != nil && (*c.IgnoreEvents <= 0 || *c.IgnoreEvents > 1_000_000_000) {
 		return "", nil, nil, false, badRequest("ignore_events must be between 1 and 1000000000")
 	}
-	return sqlc.IssueStatusIgnored, until, c.IgnoreEvents, c.IgnoreUntilEscalating, nil
+	return store.IssueStatusIgnored, until, c.IgnoreEvents, c.IgnoreUntilEscalating, nil
 }
 
 type timelineBucket struct {
@@ -162,9 +161,7 @@ func (h *Handler) listIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(fps) > 0 {
 		end := to.Truncate(time.Hour).Add(time.Hour)
-		sp, err := h.Store.IssueSparklines(r.Context(), sqlc.IssueSparklinesParams{
-			ProjectID: p.ID, Fingerprints: fps, FromAt: end.Add(-sparklineHours * time.Hour), ToAt: end, Width: hourly,
-		})
+		sp, err := store.IssueSparklines(r.Context(), h.Store.Pool, p.ID, fps, end.Add(-sparklineHours*time.Hour), end, hourly)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -211,14 +208,14 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	issue, err := h.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	issue, err := store.GetIssue(ctx, h.Store.Pool, p.ID, fp)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	out := issueDetailOut{issueOut: toIssueOut(issue), Breakdown: map[string][]store.Breakdown{}}
 
-	users, err := h.Store.IssueUsers(ctx, sqlc.IssueUsersParams{ProjectID: p.ID, Column2: []sentry.ID{fp}, OccurredAt: from, OccurredAt_2: to})
+	users, err := store.IssueUsers(ctx, h.Store.Pool, p.ID, []sentry.ID{fp}, from, to)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -227,7 +224,7 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		out.Users = &users[0].Users
 	}
 	hlo := from.Truncate(time.Hour)
-	tl, err := h.Store.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: p.ID, Fingerprint: fp, FromAt: hlo, ToAt: to, Width: hourly})
+	tl, err := store.IssueTimeline(ctx, h.Store.Pool, p.ID, fp, hlo, to, hourly)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -241,7 +238,7 @@ func (h *Handler) getIssue(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	rng, err := h.Store.IssueEventRange(ctx, sqlc.IssueEventRangeParams{ProjectID: p.ID, Fingerprint: fp, FromAt: issue.FirstSeen, ToAt: issue.LastSeen.Add(time.Second)})
+	rng, err := store.IssueEventRange(ctx, h.Store.Pool, p.ID, fp, issue.FirstSeen, issue.LastSeen.Add(time.Second))
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -270,7 +267,7 @@ func (h *Handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	issue, err := h.Store.SetIssueStatus(r.Context(), sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: status, StatusBy: actorName(r),
+	issue, err := store.SetIssueStatus(r.Context(), h.Store.Pool, store.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: status, StatusBy: actorName(r),
 		IgnoreUntil: until, IgnoreEvents: events, IgnoreEscalating: escalating})
 	if err != nil {
 		h.fail(w, err)
@@ -310,7 +307,7 @@ func (h *Handler) bulkIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		fps = append(fps, fp)
 	}
-	n, err := h.Store.SetIssuesStatus(r.Context(), sqlc.SetIssuesStatusParams{ProjectID: p.ID, Column2: fps, Status: status, StatusBy: actorName(r),
+	n, err := store.SetIssuesStatus(r.Context(), h.Store.Pool, p.ID, fps, store.SetIssueStatusParams{Status: status, StatusBy: actorName(r),
 		IgnoreUntil: until, IgnoreEvents: events, IgnoreEscalating: escalating})
 	if err != nil {
 		h.fail(w, err)

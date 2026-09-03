@@ -11,9 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/monitors"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // CheckMonitors (scheduler, every minute like CheckIgnored) notices
@@ -24,7 +24,7 @@ import (
 // instead of a stats-rollup baseline.
 func (n *Notifier) CheckMonitors(ctx context.Context) error {
 	now := time.Now().UTC()
-	due, err := n.Store.DueMonitors(ctx, now)
+	due, err := store.DueMonitors(ctx, n.Store.Pool, now)
 	if err != nil {
 		return fmt.Errorf("due monitors: %w", err)
 	}
@@ -34,7 +34,7 @@ func (n *Notifier) CheckMonitors(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("monitor %s (project %d): %w", m.Slug, m.ProjectID, err))
 		}
 	}
-	timedOut, err := n.Store.TimedOutCheckIns(ctx, now)
+	timedOut, err := store.TimedOutCheckIns(ctx, n.Store.Pool, now)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("timed out check-ins: %w", err))
 		return errors.Join(errs...)
@@ -52,7 +52,7 @@ func (n *Notifier) CheckMonitors(ctx context.Context) error {
 // its state — a miss counts as a failure, like a terminal `error` does.
 // next_expected_at is advanced past now, bounded, so a monitor dead for a
 // long time does not spin this loop and is not re-flagged every tick.
-func (n *Notifier) monitorMissed(ctx context.Context, m sqlc.Monitor, now time.Time) error {
+func (n *Notifier) monitorMissed(ctx context.Context, m store.Monitor, now time.Time) error {
 	sched, err := monitors.ParseSchedule(m.ScheduleType, m.ScheduleValue, strOrEmpty(m.ScheduleUnit))
 	if err != nil {
 		return fmt.Errorf("stored schedule no longer parses: %w", err)
@@ -69,7 +69,7 @@ func (n *Notifier) monitorMissed(ctx context.Context, m sqlc.Monitor, now time.T
 	if err != nil {
 		return err
 	}
-	if err := n.Store.InsertCheckIn(ctx, sqlc.InsertCheckInParams{
+	if err := store.InsertCheckIn(ctx, n.Store.Pool, store.InsertCheckInParams{
 		StartedAt: now, ProjectID: m.ProjectID, MonitorSlug: m.Slug, CheckInID: id, Status: "missed",
 	}); err != nil {
 		return fmt.Errorf("insert missed check-in: %w", err)
@@ -81,13 +81,13 @@ func (n *Notifier) monitorMissed(ctx context.Context, m sqlc.Monitor, now time.T
 // max_runtime_min to `timeout` and counts it as a failure. It does not
 // move next_expected_at: only a terminal check-in or a miss does — the
 // monitor's own next scheduled slot is unaffected by this run overstaying.
-func (n *Notifier) monitorTimeout(ctx context.Context, c sqlc.TimedOutCheckInsRow, now time.Time) error {
-	if err := n.Store.UpdateCheckIn(ctx, sqlc.UpdateCheckInParams{
+func (n *Notifier) monitorTimeout(ctx context.Context, c store.TimedOutCheckInsRow, now time.Time) error {
+	if err := store.UpdateCheckIn(ctx, n.Store.Pool, store.UpdateCheckInParams{
 		ProjectID: c.ProjectID, MonitorSlug: c.MonitorSlug, CheckInID: c.CheckInID, StartedAt: c.StartedAt, Status: "timeout",
 	}); err != nil {
 		return fmt.Errorf("mark timeout: %w", err)
 	}
-	m, err := n.Store.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: c.ProjectID, Slug: c.MonitorSlug})
+	m, err := store.GetMonitor(ctx, n.Store.Pool, c.ProjectID, c.MonitorSlug)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // deleted meanwhile
 	}
@@ -107,10 +107,10 @@ func (n *Notifier) monitorTimeout(ctx context.Context, c sqlc.TimedOutCheckInsRo
 // spike), not inside a client-facing ingest transaction, so unlike
 // ingest (which only enqueues a job for the worker to deliver) there is
 // no reason to defer it.
-func (n *Notifier) recordAndAlert(ctx context.Context, m sqlc.Monitor, status string, next, now time.Time) error {
+func (n *Notifier) recordAndAlert(ctx context.Context, m store.Monitor, status string, next, now time.Time) error {
 	tr := monitors.Record(m.ConsecutiveFailures, m.ConsecutiveSuccesses, m.Alerting, m.FailureThreshold, m.RecoveryThreshold, status == "ok")
-	if err := n.Store.RecordMonitorResult(ctx, sqlc.RecordMonitorResultParams{
-		ProjectID: m.ProjectID, Slug: m.Slug, LastStatus: sqlc.CheckinStatus(status),
+	if err := store.RecordMonitorResult(ctx, n.Store.Pool, store.RecordMonitorResultParams{
+		ProjectID: m.ProjectID, Slug: m.Slug, LastStatus: store.CheckinStatus(status),
 		ConsecutiveFailures: tr.ConsecutiveFailures, ConsecutiveSuccesses: tr.ConsecutiveSuccesses, Alerting: tr.Alerting,
 		NextExpectedAt: next, LastCheckinAt: now,
 	}); err != nil {
@@ -136,7 +136,7 @@ func (n *Notifier) Monitor(ctx context.Context, projectID int64, typ, slug strin
 	if typ != TypeMonitorFailed && typ != TypeMonitorRecovered {
 		return fmt.Errorf("alert: unknown type %q", typ)
 	}
-	m, err := n.Store.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: projectID, Slug: slug})
+	m, err := store.GetMonitor(ctx, n.Store.Pool, projectID, slug)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // deleted meanwhile
 	}
@@ -146,7 +146,7 @@ func (n *Notifier) Monitor(ctx context.Context, projectID int64, typ, slug strin
 	if err := EnsureRules(ctx, n.Store, projectID); err != nil {
 		return err
 	}
-	p, err := n.Store.GetProjectByID(ctx, projectID)
+	p, err := store.GetProjectByID(ctx, n.Store.Pool, projectID)
 	if err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func (n *Notifier) Monitor(ctx context.Context, projectID int64, typ, slug strin
 	if typ == TypeMonitorFailed {
 		title = fmt.Sprintf("%s: %d consecutive failed check-ins (threshold %d)", m.Slug, m.ConsecutiveFailures, m.FailureThreshold)
 	}
-	return n.deliver(ctx, projectID, sqlc.AlertType(typ), func(*time.Time) Payload {
+	return n.deliver(ctx, projectID, store.AlertType(typ), func(*time.Time) Payload {
 		return Payload{Type: typ, Project: p.Name, ProjectSlug: p.Slug, Title: title, URL: n.link(p.Slug, "/monitors/"+url.PathEscape(m.Slug))}
 	})
 }

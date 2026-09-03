@@ -20,16 +20,15 @@ import (
 	"time"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/retention"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
-func newProject(t *testing.T, st *store.Store, key string) sqlc.Project {
+func newProject(t *testing.T, st *store.Store, key string) store.Project {
 	t.Helper()
-	p, err := st.CreateProject(context.Background(), sqlc.CreateProjectParams{Slug: "app-" + key, Name: "App", PublicKey: key})
+	p, err := store.CreateProject(context.Background(), st.Pool, "app-", "App", nil, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +88,7 @@ func TestIngestQuotaRollbackIsWhole(t *testing.T) {
 				t.Fatalf("%s: %s = %d, want 0", step, q, n)
 			}
 		}
-		if used, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); used != 0 {
+		if used, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day); used != 0 {
 			t.Fatalf("%s: usage = %d, want 0", step, used)
 		}
 	}
@@ -123,7 +122,7 @@ func TestIngestQuotaRollbackIsWhole(t *testing.T) {
 	if res, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("a6", ts, "E")), tomorrow), tomorrow); err != nil || res.Stored != 1 {
 		t.Fatalf("next UTC day: res=%+v err=%v", res, err)
 	}
-	if used, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); used != 1 {
+	if used, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day); used != 1 {
 		t.Fatalf("today's usage = %d, want 1 (only the accepted event)", used)
 	}
 }
@@ -168,7 +167,7 @@ func TestIngestDerivedIDAndInEnvelopeDuplicates(t *testing.T) {
 	if err != nil || res.Received != 2 || res.Duplicates != 1 || res.Stored != 1 {
 		t.Fatalf("twice in one envelope: %+v %v", res, err)
 	}
-	iss, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0]})
+	iss, err := store.GetIssue(ctx, st.Pool, p.ID, res.NewIssues[0])
 	if err != nil || iss.EventCount != 1 || iss.StoredCount != 1 {
 		t.Fatalf("issue counts = %d/%d %v, want 1/1", iss.EventCount, iss.StoredCount, err)
 	}
@@ -199,7 +198,7 @@ func TestIngestSamplingHandledAndRateOne(t *testing.T) {
 			t.Fatalf("event %d: %+v, want stored=%v", i, res, wantStored)
 		}
 	}
-	iss, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	iss, _ := store.GetIssue(ctx, st.Pool, p.ID, fp)
 	if iss.EventCount != 5 || iss.StoredCount != 2 {
 		t.Fatalf("counts = %d/%d, want 5/2", iss.EventCount, iss.StoredCount)
 	}
@@ -210,7 +209,7 @@ func TestIngestSamplingHandledAndRateOne(t *testing.T) {
 	if res, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("h6", ts, "E"), handled("h7", ts, "E")), now), now); err != nil || res.Stored != 2 || res.Sampled != 0 {
 		t.Fatalf("rate 1: %+v %v", res, err)
 	}
-	iss, _ = st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	iss, _ = store.GetIssue(ctx, st.Pool, p.ID, fp)
 	if iss.EventCount != 7 || iss.StoredCount != 4 {
 		t.Fatalf("counts after rate 1 = %d/%d, want 7/4", iss.EventCount, iss.StoredCount)
 	}
@@ -277,7 +276,7 @@ func TestIngestIgnoredIssueStaysIgnored(t *testing.T) {
 		t.Fatalf("first: %+v %v", res, err)
 	}
 	fp := res.NewIssues[0]
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "ignored"}); err != nil {
+	if _, err := store.SetIssueStatus(ctx, st.Pool, store.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "ignored"}); err != nil {
 		t.Fatal(err)
 	}
 	st.Pool.Exec(ctx, "DELETE FROM jobs")
@@ -285,7 +284,7 @@ func TestIngestIgnoredIssueStaysIgnored(t *testing.T) {
 	if err != nil || len(res.Regressions) != 0 || len(res.NewIssues) != 0 {
 		t.Fatalf("event on an ignored issue: %+v %v", res, err)
 	}
-	iss, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	iss, _ := store.GetIssue(ctx, st.Pool, p.ID, fp)
 	if iss.Status != "ignored" || iss.EventCount != 2 || *iss.LastRelease != "2.0" {
 		t.Fatalf("issue = status %s count %d last %v", iss.Status, iss.EventCount, iss.LastRelease)
 	}
@@ -423,7 +422,7 @@ func TestIngestRedactsStoredPayload(t *testing.T) {
 	if err != nil || res.Stored != 1 {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
-	e, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: sentry.DerivedID([]byte("p1"))})
+	e, err := store.GetEvent(ctx, st.Pool, p.ID, sentry.DerivedID([]byte("p1")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +430,7 @@ func TestIngestRedactsStoredPayload(t *testing.T) {
 	if err != nil || len(raw) == 0 {
 		t.Fatalf("payload: %d bytes %v", len(raw), err)
 	}
-	iss, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: *e.Fingerprint})
+	iss, _ := store.GetIssue(ctx, st.Pool, p.ID, *e.Fingerprint)
 	var tags map[string]string
 	json.Unmarshal(e.Tags, &tags)
 	for name, text := range map[string]string{"payload": string(raw), "message": e.Message, "transaction": *e.Transaction, "user_id": *e.UserID, "title": iss.Title, "tags": string(e.Tags)} {
@@ -517,7 +516,7 @@ func TestIngestUserReportKeptRegardlessOfEvent(t *testing.T) {
 	if err != nil || res.UserReports != 1 || res.Stored != 0 {
 		t.Fatalf("report-only envelope: %+v %v", res, err)
 	}
-	ur, err := st.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: sentry.ID(id)})
+	ur, err := store.GetUserReport(ctx, st.Pool, p.ID, sentry.ID(id))
 	if err != nil || ur.Comments != "it crashed" || ur.Name == nil || *ur.Name != "Alex" || ur.Email == nil || *ur.Email != "alex@example.com" {
 		t.Fatalf("stored report = %+v %v", ur, err)
 	}
@@ -530,7 +529,7 @@ func TestIngestUserReportKeptRegardlessOfEvent(t *testing.T) {
 	if n := count(t, st, "SELECT count(*) FROM user_reports WHERE project_id = $1", p.ID); n != 1 {
 		t.Fatalf("resend duplicated: %d rows", n)
 	}
-	if ur, err = st.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: sentry.ID(id)}); err != nil || ur.Comments != "it crashed again" {
+	if ur, err = store.GetUserReport(ctx, st.Pool, p.ID, sentry.ID(id)); err != nil || ur.Comments != "it crashed again" {
 		t.Fatalf("resend did not overwrite: %+v %v", ur, err)
 	}
 
@@ -543,7 +542,7 @@ func TestIngestUserReportKeptRegardlessOfEvent(t *testing.T) {
 	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Sampled != 1 || res.Stored != 0 || res.UserReports != 1 {
 		t.Fatalf("sampled-out event: %+v %v", res, err)
 	}
-	if ur, err = st.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: sentry.ID(id2)}); err != nil || ur.Comments != "sampled but keep the feedback" {
+	if ur, err = store.GetUserReport(ctx, st.Pool, p.ID, sentry.ID(id2)); err != nil || ur.Comments != "sampled but keep the feedback" {
 		t.Fatalf("sampled-out report = %+v %v", ur, err)
 	}
 }
@@ -564,7 +563,7 @@ func TestIngestUserReportPIIRedact(t *testing.T) {
 	if err != nil || res.UserReports != 1 {
 		t.Fatalf("ingest: %+v %v", res, err)
 	}
-	ur, err := st.GetUserReport(ctx, sqlc.GetUserReportParams{ProjectID: p.ID, EventID: sentry.ID(id)})
+	ur, err := store.GetUserReport(ctx, st.Pool, p.ID, sentry.ID(id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,9 +600,7 @@ func TestIngestClientReportCountsAccumulate(t *testing.T) {
 		t.Fatalf("second envelope: %+v %v", res, err)
 	}
 
-	rows, err := st.ListClientReportCounts(ctx, sqlc.ListClientReportCountsParams{
-		ProjectID: p.ID, Bucket: now.Add(-time.Hour), Bucket_2: now.Add(time.Hour),
-	})
+	rows, err := store.ListClientReportCounts(ctx, st.Pool, p.ID, now.Add(-time.Hour), now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +649,7 @@ func TestIngestCheckInMonitorConfigUpsert(t *testing.T) {
 	if err != nil || res.Monitors != 1 || res.CheckIns != 1 {
 		t.Fatalf("ingest: %+v %v", res, err)
 	}
-	m, err := st.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: "nightly-backup"})
+	m, err := store.GetMonitor(ctx, st.Pool, p.ID, "nightly-backup")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,10 +657,10 @@ func TestIngestCheckInMonitorConfigUpsert(t *testing.T) {
 		m.FailureThreshold != 2 || m.RecoveryThreshold != 1 {
 		t.Fatalf("monitor config = %+v", m)
 	}
-	if m.NextExpectedAt != nil || m.LastCheckinAt != nil || m.LastStatus.Valid {
+	if m.NextExpectedAt != nil || m.LastCheckinAt != nil || m.LastStatus != nil {
 		t.Fatalf("in_progress advanced monitor state: %+v", m)
 	}
-	rows, err := st.ListCheckIns(ctx, sqlc.ListCheckInsParams{ProjectID: p.ID, MonitorSlug: "nightly-backup", Limit: 10})
+	rows, err := store.ListCheckIns(ctx, st.Pool, p.ID, "nightly-backup", 10)
 	if err != nil || len(rows) != 1 || rows[0].Status != "in_progress" {
 		t.Fatalf("check-in row = %+v %v", rows, err)
 	}
@@ -693,11 +690,11 @@ func TestIngestCheckInZeroIDCompletesLatestInProgress(t *testing.T) {
 	if n := count(t, st, "SELECT count(*) FROM monitor_checkins WHERE project_id = $1 AND monitor_slug = 'sync-job'", p.ID); n != 1 {
 		t.Fatalf("zero-id created a new row instead of completing the existing one: %d rows", n)
 	}
-	m, err := st.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: "sync-job"})
+	m, err := store.GetMonitor(ctx, st.Pool, p.ID, "sync-job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.LastStatus.Valid || m.LastStatus.CheckinStatus != "ok" || m.ConsecutiveSuccesses != 1 || m.NextExpectedAt == nil {
+	if m.LastStatus == nil || *m.LastStatus != "ok" || m.ConsecutiveSuccesses != 1 || m.NextExpectedAt == nil {
 		t.Fatalf("monitor state after terminal check-in = %+v", m)
 	}
 
@@ -810,7 +807,7 @@ func TestIngestMonitorFailureAndRecoveryFireOnce(t *testing.T) {
 func TestRetiredKeyKeepsAuthenticating(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "rotate-app", Name: "App", PublicKey: "oldkey"})
+	p, _ := store.CreateProject(ctx, st.Pool, "rotate-app", "App", nil, "oldkey")
 	now := time.Now().UTC().Format(time.RFC3339)
 	body := envelope(crash("1.0", now, 1))
 
@@ -837,7 +834,7 @@ func TestRetiredKeyKeepsAuthenticating(t *testing.T) {
 		t.Fatalf("retired key should still authenticate: %d", c)
 	}
 
-	keys, err := st.ListProjectKeys(ctx, p.ID)
+	keys, err := store.ListProjectKeys(ctx, st.Pool, p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +842,7 @@ func TestRetiredKeyKeepsAuthenticating(t *testing.T) {
 		t.Fatalf("retired keys = %+v", keys)
 	}
 
-	if n, err := st.DeleteProjectKey(ctx, sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: keys[0].ID}); err != nil || n != 1 {
+	if n, err := store.DeleteProjectKey(ctx, st.Pool, p.ID, keys[0].ID); err != nil || n != 1 {
 		t.Fatalf("delete: n=%d err=%v", n, err)
 	}
 	if c := do("oldkey"); c != 401 {
@@ -861,14 +858,14 @@ func TestRetiredKeyKeepsAuthenticating(t *testing.T) {
 func TestRotateTwiceListsBothRetiredKeys(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "rotate-twice", Name: "App", PublicKey: "k0"})
+	p, _ := store.CreateProject(ctx, st.Pool, "rotate-twice", "App", nil, "k0")
 	if _, err := st.RotateProjectKey(ctx, p.ID, "k1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.RotateProjectKey(ctx, p.ID, "k2"); err != nil {
 		t.Fatal(err)
 	}
-	keys, err := st.ListProjectKeys(ctx, p.ID)
+	keys, err := store.ListProjectKeys(ctx, st.Pool, p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,10 +879,10 @@ func TestRotateTwiceListsBothRetiredKeys(t *testing.T) {
 	if !strings.Contains(strings.Join(got, ","), "k0") || !strings.Contains(strings.Join(got, ","), "k1") {
 		t.Fatalf("retired keys = %v, want k0 and k1", got)
 	}
-	if n, err := st.DeleteProjectKey(ctx, sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: keys[0].ID}); err != nil || n != 1 {
+	if n, err := store.DeleteProjectKey(ctx, st.Pool, p.ID, keys[0].ID); err != nil || n != 1 {
 		t.Fatalf("delete one: n=%d err=%v", n, err)
 	}
-	keys, err = st.ListProjectKeys(ctx, p.ID)
+	keys, err = store.ListProjectKeys(ctx, st.Pool, p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

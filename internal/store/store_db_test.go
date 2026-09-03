@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
@@ -250,7 +249,7 @@ func TestCreateFirstUser(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			u, ok, err := st.CreateFirstUser(ctx, sqlc.CreateUserParams{Email: fmt.Sprintf("u%d@example.com", i), Name: "u", PasswordHash: "x"})
+			u, ok, err := st.CreateFirstUser(ctx, fmt.Sprintf("u%d@example.com", i), "u", "x")
 			if err != nil {
 				t.Error(err)
 			}
@@ -263,7 +262,7 @@ func TestCreateFirstUser(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if n, _ := st.CountUsers(ctx); created.Load() != 1 || n != 1 {
+	if n, _ := store.CountUsers(ctx, st.Pool); created.Load() != 1 || n != 1 {
 		t.Fatalf("created=%d users=%d", created.Load(), n)
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // monitorCheckInsPageSize bounds getMonitor's check-in history: enough to
@@ -12,9 +12,8 @@ import (
 // project-wide event list).
 const monitorCheckInsPageSize = 100
 
-// monitorOut is sqlc.Monitor with last_status flattened to a plain
-// nullable string — the generated NullCheckinStatus has no MarshalJSON
-// and would otherwise serialize as {"checkin_status":"ok","valid":true}.
+// monitorOut is store.Monitor with last_status as a plain nullable string
+// instead of the CheckinStatus enum type.
 type monitorOut struct {
 	Slug                 string     `json:"slug"`
 	ScheduleType         string     `json:"schedule_type"`
@@ -34,7 +33,7 @@ type monitorOut struct {
 	CreatedAt            time.Time  `json:"created_at"`
 }
 
-func toMonitorOut(m sqlc.Monitor) monitorOut {
+func toMonitorOut(m store.Monitor) monitorOut {
 	out := monitorOut{
 		Slug: m.Slug, ScheduleType: m.ScheduleType, ScheduleValue: m.ScheduleValue, ScheduleUnit: m.ScheduleUnit,
 		Timezone: m.Timezone, CheckinMarginMin: m.CheckinMarginMin, MaxRuntimeMin: m.MaxRuntimeMin,
@@ -42,8 +41,8 @@ func toMonitorOut(m sqlc.Monitor) monitorOut {
 		ConsecutiveFailures: m.ConsecutiveFailures, ConsecutiveSuccesses: m.ConsecutiveSuccesses, Alerting: m.Alerting,
 		NextExpectedAt: m.NextExpectedAt, LastCheckinAt: m.LastCheckinAt, CreatedAt: m.CreatedAt,
 	}
-	if m.LastStatus.Valid {
-		s := string(m.LastStatus.CheckinStatus)
+	if m.LastStatus != nil {
+		s := string(*m.LastStatus)
 		out.LastStatus = &s
 	}
 	return out
@@ -56,7 +55,7 @@ func (h *Handler) listMonitors(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Store.ListMonitors(r.Context(), p.ID)
+	rows, err := store.ListMonitors(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -76,12 +75,12 @@ func (h *Handler) getMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := r.PathValue("monitor")
-	m, err := h.Store.GetMonitor(r.Context(), sqlc.GetMonitorParams{ProjectID: p.ID, Slug: slug})
+	m, err := store.GetMonitor(r.Context(), h.Store.Pool, p.ID, slug)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	checkIns, err := h.Store.ListCheckIns(r.Context(), sqlc.ListCheckInsParams{ProjectID: p.ID, MonitorSlug: slug, Limit: monitorCheckInsPageSize})
+	checkIns, err := store.ListCheckIns(r.Context(), h.Store.Pool, p.ID, slug, monitorCheckInsPageSize)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -97,7 +96,7 @@ func (h *Handler) deleteMonitor(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	n, err := h.Store.DeleteMonitor(r.Context(), sqlc.DeleteMonitorParams{ProjectID: p.ID, Slug: r.PathValue("monitor")})
+	n, err := store.DeleteMonitor(r.Context(), h.Store.Pool, p.ID, r.PathValue("monitor"))
 	if err != nil {
 		h.fail(w, err)
 		return

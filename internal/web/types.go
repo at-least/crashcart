@@ -1,17 +1,16 @@
 package web
 
 import (
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 )
 
 // Short aliases so templates stay readable.
 type (
-	sqlcIssue         = sqlc.Issue
-	sqlcEvent         = sqlc.Event
-	sqlcAlertChannel  = sqlc.AlertChannel
-	sqlcAttachmentRow = sqlc.ListAttachmentsRow
+	sqlcIssue         = store.Issue
+	sqlcEvent         = store.Event
+	sqlcAlertChannel  = store.AlertChannel
+	sqlcAttachmentRow = store.AttachmentMeta
 )
 
 type sentryFrame = sentry.Frame

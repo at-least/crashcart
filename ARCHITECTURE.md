@@ -63,9 +63,9 @@ per chart. Definitions: the `*_dirty` / `*_rolled` tables, views and
 `internal/store` for the dynamic breakdowns.
 
 **Enumerations are Postgres types.** Levels, statuses and kinds are
-`CREATE TYPE … AS ENUM` in `internal/db/migrations/`; sqlc generates the
-Go constants, so the allowed values have one definition and the database
-rejects a bad one.
+`CREATE TYPE … AS ENUM` in `internal/db/migrations/`, mirrored by a plain
+`type X string` with its constants in `internal/store/enums.go`, so the
+allowed values have one definition and the database rejects a bad one.
 
 **Issues are the one stateful table.** Sentry's statuses (unresolved →
 resolved → regression / ignored), no substatuses and no "triaged"; exact

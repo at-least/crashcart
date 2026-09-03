@@ -224,20 +224,20 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	if err != nil {
 		return fmt.Errorf("expire issues: %w", err)
 	}
-	jobs, err := st.ExpireJobs(ctx)
+	jobs, err := store.ExpireJobs(ctx, st.Pool)
 	if err != nil {
 		return fmt.Errorf("expire jobs: %w", err)
 	}
-	if _, err := st.ExpireProjectUsage(ctx, now.Add(-retention)); err != nil {
+	if _, err := store.ExpireProjectUsage(ctx, st.Pool, now.Add(-retention)); err != nil {
 		return fmt.Errorf("expire project usage: %w", err)
 	}
-	if _, err := st.ExpireUserSessions(ctx); err != nil {
+	if _, err := store.ExpireUserSessions(ctx, st.Pool); err != nil {
 		return fmt.Errorf("expire user sessions: %w", err)
 	}
-	if _, err := st.ExpireUploadChunks(ctx, now.Add(-24*time.Hour)); err != nil {
+	if _, err := store.ExpireUploadChunks(ctx, st.Pool, now.Add(-24*time.Hour)); err != nil {
 		return fmt.Errorf("expire upload chunks: %w", err)
 	}
-	symbolKeys, err := st.ExpireSymbolFiles(ctx, now.Add(-2*retention))
+	symbolKeys, err := store.ExpireSymbolFiles(ctx, st.Pool, now.Add(-2*retention))
 	if err != nil {
 		return fmt.Errorf("expire symbol files: %w", err)
 	}
@@ -259,7 +259,7 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	}
 	// user_reports has no partition of its own to ride out with events (see
 	// schema.sql): its own cutoff, on the same retention window.
-	if _, err := st.SweepUserReports(ctx, now.Add(-retention)); err != nil {
+	if _, err := store.SweepUserReports(ctx, st.Pool, now.Add(-retention)); err != nil {
 		return fmt.Errorf("expire user reports: %w", err)
 	}
 	for _, t := range rolled {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -19,7 +19,7 @@ func TestSessionStorage(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
 	hash, _ := HashPassword("correct horse battery")
-	u, err := st.CreateUser(ctx, sqlc.CreateUserParams{Email: "a@example.com", PasswordHash: hash})
+	u, err := store.CreateUser(ctx, st.Pool, "a@example.com", "", hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,13 +178,13 @@ func TestAPIKeyStorage(t *testing.T) {
 	if third := lastUsed(); !third.After(*stale) {
 		t.Errorf("last_used_at not refreshed after a minute: %v → %v", stale, third)
 	}
-	if n, err := st.RevokeAPIKey(ctx, row.ID); err != nil || n != 1 {
+	if n, err := store.RevokeAPIKey(ctx, st.Pool, row.ID); err != nil || n != 1 {
 		t.Fatal(n, err)
 	}
 	if rec := call(secret); rec.Code != 401 {
 		t.Errorf("revoked key accepted: %d", rec.Code)
 	}
-	if n, _ := st.RevokeAPIKey(ctx, row.ID); n != 0 {
+	if n, _ := store.RevokeAPIKey(ctx, st.Pool, row.ID); n != 0 {
 		t.Errorf("revoking twice touched %d rows", n)
 	}
 }

@@ -1,12 +1,12 @@
 package web
 
-import "github.com/at-least/crashcart/internal/db/sqlc"
+import "github.com/at-least/crashcart/internal/store"
 
-func feedbackEventHref(pg Page, r sqlc.UserReport) string {
+func feedbackEventHref(pg Page, r store.UserReport) string {
 	return pg.S.Persist().Href("/events/" + string(r.EventID))
 }
 
-func feedbackName(r sqlc.UserReport) string {
+func feedbackName(r store.UserReport) string {
 	if r.Name != nil && *r.Name != "" {
 		return *r.Name
 	}
@@ -16,7 +16,7 @@ func feedbackName(r sqlc.UserReport) string {
 // Feedback: every user_report of the project, newest first — including
 // ones whose event was sampled out or never arrived (there is no join to
 // events), so the link may lead to a 404 for those.
-templ Feedback(pg Page, rows []sqlc.UserReport) {
+templ Feedback(pg Page, rows []store.UserReport) {
 	<h1 class="page-title">Feedback</h1>
 	if len(rows) == 0 {
 		@Empty("No feedback", "No user reports (Sentry's user_report envelope item) received yet.")

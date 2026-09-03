@@ -15,9 +15,9 @@ import (
 
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/ingest"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
 	"github.com/at-least/crashcart/internal/testdb"
 )
@@ -29,12 +29,12 @@ const sessionItem = `{"started":"%s","status":"crashed","attrs":{"release":"2.4.
 // sessionCookie signs the test requests in (set by setup).
 var sessionCookie *http.Cookie
 
-func setup(t *testing.T) (*Web, sqlc.Project, *http.ServeMux) {
+func setup(t *testing.T) (*Web, store.Project, *http.ServeMux) {
 	t.Helper()
 	st := testdb.New(t)
 	ctx := context.Background()
 	plat := "android"
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "shop", Name: "Shop App", Platform: &plat, PublicKey: "0123456789abcdef0123456789abcdef"})
+	p, err := store.CreateProject(ctx, st.Pool, "shop", "Shop App", &plat, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func setup(t *testing.T) (*Web, sqlc.Project, *http.ServeMux) {
 	mux := http.NewServeMux()
 	w.Register(mux)
 	hash, _ := auth.HashPassword("correct horse battery")
-	user, err := st.CreateUser(ctx, sqlc.CreateUserParams{Email: "dev@example.com", PasswordHash: hash})
+	user, err := store.CreateUser(ctx, st.Pool, "dev@example.com", "", hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 403 {
 		t.Fatalf("bulk without HX-Request = %d", rec.Code)
 	}
-	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "unresolved" {
+	if got, _ := store.GetIssue(ctx, w.Store.Pool, p.ID, sentry.ID(fp)); got.Status != "unresolved" {
 		t.Errorf("status changed without htmx: %s", got.Status)
 	}
 
@@ -158,7 +158,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 200 || !strings.HasPrefix(strings.TrimSpace(rec.Body.String()), "<div id=\"issues-table\"") || !strings.Contains(rec.Body.String(), "No issues") {
 		t.Fatalf("bulk = %d %.120s", rec.Code, rec.Body.String())
 	}
-	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "resolved" || got.ResolvedReleases == nil {
+	if got, _ := store.GetIssue(ctx, w.Store.Pool, p.ID, sentry.ID(fp)); got.Status != "resolved" || got.ResolvedReleases == nil {
 		t.Errorf("bulk resolve: %+v", got)
 	}
 	assertPage(t, mux, "/p/shop/issues?status=resolved", "/p/shop/issues/"+fp)
@@ -173,7 +173,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 303 || rec.Header().Get("Location") != "/p/shop/issues/"+fp {
 		t.Errorf("status = %d %s", rec.Code, rec.Header().Get("Location"))
 	}
-	if got, _ := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: sentry.ID(fp)}); got.Status != "ignored" || got.StatusBy == nil || *got.StatusBy != "dev@example.com" {
+	if got, _ := store.GetIssue(ctx, w.Store.Pool, p.ID, sentry.ID(fp)); got.Status != "ignored" || got.StatusBy == nil || *got.StatusBy != "dev@example.com" {
 		t.Errorf("status select: %+v", got)
 	}
 	patch := func(path, body string) int {
@@ -208,29 +208,29 @@ func TestBulkAndMutations(t *testing.T) {
 	if r := hx("PATCH", "/p/shop/settings/sampling", "keep_first=10&rate=0.5"); r.Code != 303 {
 		t.Errorf("sampling = %d %s", r.Code, r.Body)
 	}
-	if got, _ := w.Store.GetProject(ctx, "shop"); got.SampleKeepFirst != 10 || got.SampleRate != 0.5 {
+	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.SampleKeepFirst != 10 || got.SampleRate != 0.5 {
 		t.Errorf("sampling not saved: %+v", got)
 	}
 	if r := hx("PATCH", "/p/shop/settings/sampling", "keep_first=10&rate=0.5&daily_quota=2000"); r.Code != 303 {
 		t.Errorf("quota = %d %s", r.Code, r.Body)
 	}
-	if got, _ := w.Store.GetProject(ctx, "shop"); got.DailyQuota != 2000 {
+	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.DailyQuota != 2000 {
 		t.Errorf("quota not saved: %d", got.DailyQuota)
 	}
 	oldKey := ""
-	if got, _ := w.Store.GetProject(ctx, "shop"); true {
+	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); true {
 		oldKey = got.PublicKey
 	}
 	if r := hx("POST", "/p/shop/settings/rotate-key", ""); r.Code != 303 {
 		t.Errorf("rotate = %d %s", r.Code, r.Body)
 	}
-	if got, _ := w.Store.GetProject(ctx, "shop"); got.PublicKey == oldKey {
+	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.PublicKey == oldKey {
 		t.Errorf("key not rotated")
 	}
 	if r := hx("PATCH", "/p/shop/settings/name", "name=Shop+Renamed"); r.Code != 303 {
 		t.Errorf("name = %d %s", r.Code, r.Body)
 	}
-	if got, _ := w.Store.GetProject(ctx, "shop"); got.Name != "Shop Renamed" {
+	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.Name != "Shop Renamed" {
 		t.Errorf("name not saved: %+v", got.Name)
 	}
 	if r := hx("PATCH", "/p/shop/settings/name", "name="); r.Code != 400 {
@@ -239,7 +239,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if r := hx("PATCH", "/p/shop/settings/platform", "platform=android"); r.Code != 303 {
 		t.Errorf("platform = %d %s", r.Code, r.Body)
 	}
-	if got, _ := w.Store.GetProject(ctx, "shop"); got.Platform == nil || *got.Platform != "android" {
+	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.Platform == nil || *got.Platform != "android" {
 		t.Errorf("platform not saved: %+v", got.Platform)
 	}
 	if r := hx("PATCH", "/p/shop/settings/platform", "platform=windows"); r.Code != 400 {
@@ -248,7 +248,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if r := hx("PATCH", "/p/shop/settings/alerts/unhandled_spike", "cooldown=30"); r.Code != 303 {
 		t.Errorf("alert = %d", r.Code)
 	}
-	if ru, err := w.Store.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: "unhandled_spike"}); err != nil || ru.Enabled || ru.CooldownMinutes != 30 {
+	if ru, err := store.GetAlertRule(ctx, w.Store.Pool, p.ID, "unhandled_spike"); err != nil || ru.Enabled || ru.CooldownMinutes != 30 {
 		t.Errorf("alert rule = %+v %v", ru, err)
 	}
 	if r := hx("POST", "/p/shop/settings/channels", "kind=webhook&url=https://hooks.example.com/x"); r.Code != 303 {
@@ -263,7 +263,7 @@ func TestBulkAndMutations(t *testing.T) {
 		t.Errorf("bad channel = %d", r.Code)
 	}
 	assertPage(t, mux, "/p/shop/settings", "hooks.example.com/x")
-	chans, _ := w.Store.ListAlertChannels(ctx, p.ID)
+	chans, _ := store.ListAlertChannels(ctx, w.Store.Pool, p.ID)
 	if r := hx("DELETE", "/p/shop/settings/channels/"+itoa(int(chans[0].ID)), ""); r.Code != 303 {
 		t.Errorf("delete channel = %d", r.Code)
 	}
@@ -281,7 +281,7 @@ func TestBulkAndMutations(t *testing.T) {
 	if rec.Code != 303 {
 		t.Fatalf("upload = %d %s", rec.Code, rec.Body)
 	}
-	files, _ := w.Store.ListSymbolFiles(ctx, p.ID)
+	files, _ := store.ListSymbolFiles(ctx, w.Store.Pool, p.ID)
 	if len(files) != 1 || files[0].Kind != "proguard" || deref(files[0].Release) != "2.4.1" || files[0].Filename != "mapping.txt" {
 		t.Errorf("symbol files = %+v", files)
 	}
@@ -305,11 +305,11 @@ func TestBulkAndMutations(t *testing.T) {
 	if r := hx("POST", "/projects", "slug=ios-app&name=iOS+App&platform=ios"); r.Code != 200 || r.Header().Get("HX-Redirect") != "/p/ios-app/settings" {
 		t.Errorf("create = %d %s", r.Code, r.Header().Get("HX-Redirect"))
 	}
-	np, err := w.Store.GetProject(ctx, "ios-app")
+	np, err := store.GetProject(ctx, w.Store.Pool, "ios-app")
 	if err != nil || len(np.PublicKey) != 32 {
 		t.Fatalf("new project: %+v %v", np, err)
 	}
-	if rules, _ := w.Store.ListAlertRules(ctx, np.ID); len(rules) != 6 {
+	if rules, _ := store.ListAlertRules(ctx, w.Store.Pool, np.ID); len(rules) != 6 {
 		t.Errorf("default alert rules = %d", len(rules))
 	}
 	assertPage(t, mux, "/p/ios-app/settings", np.PublicKey+"@")
@@ -436,17 +436,17 @@ func TestAuthFlow(t *testing.T) {
 		t.Fatalf("create key: %d %.300s", rec.Code, body)
 	}
 	secret := body[i : i+len(auth.KeyPrefix)+64]
-	if k, err := st.GetAPIKeyByHash(context.Background(), auth.HashToken(secret)); err != nil || k.Name != "ci" {
+	if k, err := store.GetAPIKeyByHash(context.Background(), st.Pool, auth.HashToken(secret)); err != nil || k.Name != "ci" {
 		t.Fatalf("key lookup: %v %+v", err, k)
 	}
 	if rec := do("GET", "/account", "", cookie, false); strings.Contains(rec.Body.String(), secret) {
 		t.Error("secret shown again")
 	}
-	keys, _ := st.ListAPIKeys(context.Background())
+	keys, _ := store.ListAPIKeys(context.Background(), st.Pool)
 	if rec := do("DELETE", "/account/keys/"+strconv.FormatInt(keys[0].ID, 10), "", cookie, true); rec.Code != 303 {
 		t.Errorf("revoke: %d", rec.Code)
 	}
-	if _, err := st.GetAPIKeyByHash(context.Background(), auth.HashToken(secret)); err == nil {
+	if _, err := store.GetAPIKeyByHash(context.Background(), st.Pool, auth.HashToken(secret)); err == nil {
 		t.Error("revoked key still valid")
 	}
 	// Sign out, then in again — wrong password first.
@@ -538,7 +538,7 @@ func TestAccountUsers(t *testing.T) {
 	if rec := do("POST", "/account/users", "email=Ops%40Example.com&name=Ops&password=correct+horse+battery", sessionCookie, true); rec.Code != 303 || rec.Header().Get("Location") != "/account" {
 		t.Fatalf("add user: %d %v", rec.Code, rec.Header())
 	}
-	users, err := w.Store.ListUsers(ctx)
+	users, err := store.ListUsers(ctx, w.Store.Pool)
 	if err != nil || len(users) != 2 {
 		t.Fatalf("users = %d %v", len(users), err)
 	}
@@ -573,7 +573,7 @@ func TestAccountUsers(t *testing.T) {
 	if rec := do("DELETE", "/account/users/"+strconv.FormatInt(ops, 10), "", sessionCookie, true); rec.Code != 303 {
 		t.Errorf("remove user: %d", rec.Code)
 	}
-	if users, _ := w.Store.ListUsers(ctx); len(users) != 1 || users[0].ID != self {
+	if users, _ := store.ListUsers(ctx, w.Store.Pool); len(users) != 1 || users[0].ID != self {
 		t.Errorf("after removal: %+v", users)
 	}
 	if rec := do("POST", "/login", "email=ops%40example.com&password=correct+horse+battery", nil, false); rec.Code != 401 {
@@ -598,8 +598,8 @@ func TestIgnoreConditionsAndAttachments(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		return rec
 	}
-	issue := func() sqlc.Issue {
-		is, err := w.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	issue := func() store.Issue {
+		is, err := store.GetIssue(ctx, w.Store.Pool, p.ID, fp)
 		if err != nil {
 			t.Fatal(err)
 		}

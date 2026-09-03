@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
@@ -27,15 +26,15 @@ import (
 func TestEnsureRulesDefaults(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "r", Name: "R", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "r", "R", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := EnsureRules(ctx, st, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	rules, _ := st.ListAlertRules(ctx, p.ID)
-	got := map[string]sqlc.AlertRule{}
+	rules, _ := store.ListAlertRules(ctx, st.Pool, p.ID)
+	got := map[string]store.AlertRule{}
 	for _, r := range rules {
 		got[string(r.Type)] = r
 	}
@@ -48,13 +47,13 @@ func TestEnsureRulesDefaults(t *testing.T) {
 	if len(rules) != 6 {
 		t.Errorf("rules = %d", len(rules))
 	}
-	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue, Enabled: false, CooldownMinutes: 5}); err != nil {
+	if _, err := store.UpsertAlertRule(ctx, st.Pool, p.ID, TypeNewIssue, false, 5); err != nil {
 		t.Fatal(err)
 	}
 	if err := EnsureRules(ctx, st, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	r, _ := st.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue})
+	r, _ := store.GetAlertRule(ctx, st.Pool, p.ID, TypeNewIssue)
 	if r.Enabled || r.CooldownMinutes != 5 {
 		t.Errorf("EnsureRules overwrote an existing rule: %+v", r)
 	}
@@ -71,7 +70,7 @@ func insertUnhandled(t *testing.T, st *store.Store, projectID int64, n int, ago 
 			EventID: sentry.DerivedID([]byte(fmt.Sprint(seed, projectID, ago, i))), Level: "fatal", Message: "boom", Handled: &h, Fingerprint: &fp, Tags: []byte("{}"),
 		})
 	}
-	if err := st.Tx(context.Background(), func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return st.InsertEvents(ctx, tx, rows) }); err != nil {
+	if err := st.Tx(context.Background(), func(ctx context.Context, tx pgx.Tx) error { return st.InsertEvents(ctx, tx, rows) }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -82,7 +81,7 @@ func insertUnhandled(t *testing.T, st *store.Store, projectID int64, n int, ago 
 func TestCheckSpikesScope(t *testing.T) {
 	st, p, s, n := setup(t)
 	ctx := context.Background()
-	other, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "other", Name: "Other", PublicKey: "k2"})
+	other, err := store.CreateProject(ctx, st.Pool, "other", "Other", nil, "k2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +110,7 @@ func TestCheckSpikesScope(t *testing.T) {
 	}
 	// Give it a channel and reset its claim: the payload names the other project with its own numbers.
 	cfg, _ := json.Marshal(map[string]string{"url": s.serverURL})
-	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: other.ID, Kind: "webhook", Config: cfg}); err != nil {
+	if _, err := store.CreateAlertChannel(ctx, st.Pool, other.ID, "webhook", cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.CheckSpikes(ctx); err != nil || s.count() != 1 {
@@ -141,27 +140,27 @@ func TestCheckIgnoredCountNotReached(t *testing.T) {
 	fp := sentry.DerivedID([]byte("cnt"))
 	more := func(k int64) {
 		t.Helper()
-		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "cnt", Level: "error", EventCount: k, StoredCount: 0, FirstSeen: at, LastSeen: at}); err != nil {
+		if _, err := store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "cnt", Level: "error", EventCount: k, StoredCount: 0, FirstSeen: at, LastSeen: at}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	more(10)
 	five := int64(5)
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "ignored", IgnoreEvents: &five}); err != nil {
+	if _, err := store.SetIssueStatus(ctx, st.Pool, store.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "ignored", IgnoreEvents: &five}); err != nil {
 		t.Fatal(err)
 	}
 	more(4)
 	if err := n.CheckIgnored(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if is, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp}); is.Status != "ignored" || is.IgnoreUntilCount == nil || *is.IgnoreUntilCount != 15 {
+	if is, _ := store.GetIssue(ctx, st.Pool, p.ID, fp); is.Status != "ignored" || is.IgnoreUntilCount == nil || *is.IgnoreUntilCount != 15 {
 		t.Fatalf("one short: %+v", is)
 	}
 	more(1)
 	if err := n.CheckIgnored(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if is, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp}); is.Status != "unresolved" || is.IgnoreUntilCount != nil {
+	if is, _ := store.GetIssue(ctx, st.Pool, p.ID, fp); is.Status != "unresolved" || is.IgnoreUntilCount != nil {
 		t.Fatalf("on the Nth: %+v", is)
 	}
 }
@@ -175,7 +174,7 @@ func TestWebhookClientChecksAfterDNS(t *testing.T) {
 	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
 	n := &Notifier{Cfg: config.Config{WebhookAllowPrivate: true}}
 	cfg, _ := json.Marshal(map[string]string{"url": "http://localhost:" + port + "/hook"})
-	err := n.send(context.Background(), sqlc.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"})
+	err := n.send(context.Background(), store.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"})
 	if !errors.Is(err, ErrBlockedURL) {
 		t.Fatalf("localhost by name: %v (want ErrBlockedURL)", err)
 	}
@@ -230,14 +229,14 @@ func TestWebhookClientPrivateAndRedirects(t *testing.T) {
 	cfg, _ := json.Marshal(map[string]string{"url": srv.URL + "/hook"})
 
 	n := &Notifier{Cfg: config.Config{}}
-	if err := n.send(context.Background(), sqlc.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"}); !errors.Is(err, ErrBlockedURL) {
+	if err := n.send(context.Background(), store.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"}); !errors.Is(err, ErrBlockedURL) {
 		t.Fatalf("private target without WEBHOOK_ALLOW_PRIVATE: %v", err)
 	}
 	if hits.Load() != 0 {
 		t.Fatal("the refused target was connected")
 	}
 	n = &Notifier{Cfg: config.Config{WebhookAllowPrivate: true}}
-	err = n.send(context.Background(), sqlc.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"})
+	err = n.send(context.Background(), store.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"})
 	if !errors.Is(err, ErrBlockedURL) {
 		t.Fatalf("redirect: %v (want ErrBlockedURL)", err)
 	}

@@ -1,4 +1,4 @@
-.PHONY: build run generate sqlc templ gendocs test test-db mutate css docker
+.PHONY: build run generate templ gendocs test test-db mutate css docker
 
 BIN     := bin/crashcart
 PKG     := ./cmd/crashcart
@@ -10,10 +10,7 @@ build: generate
 run: generate
 	go run $(PKG) serve
 
-generate: sqlc templ gendocs
-
-sqlc:
-	sqlc generate
+generate: templ gendocs
 
 templ:
 	templ generate

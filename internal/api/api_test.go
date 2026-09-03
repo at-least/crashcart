@@ -19,7 +19,6 @@ import (
 
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/ingest"
 	"github.com/at-least/crashcart/internal/retention"
 	"github.com/at-least/crashcart/internal/sentry"
@@ -97,7 +96,7 @@ func (e *env) upload(path, filename string, data []byte, fields map[string]strin
 	return rec, rec.Body.Bytes()
 }
 
-func (e *env) createProject(slug string) sqlc.Project {
+func (e *env) createProject(slug string) store.Project {
 	e.t.Helper()
 	rec, _ := e.do("POST", "/api/projects", map[string]any{"slug": slug, "name": "Demo", "platform": "android"})
 	if rec.Code != http.StatusCreated {
@@ -107,7 +106,7 @@ func (e *env) createProject(slug string) sqlc.Project {
 	if _, err := e.st.Pool.Exec(context.Background(), "UPDATE projects SET sample_rate = 1 WHERE slug = $1", slug); err != nil {
 		e.t.Fatal(err)
 	}
-	p, err := e.st.GetProject(context.Background(), slug)
+	p, err := store.GetProject(context.Background(), e.st.Pool, slug)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -121,7 +120,7 @@ func event(id, ts, level, release, user, typ string, handled bool, lineno int, e
 
 // seed ingests: two fatal unhandled of one issue (2.4.1, two users), one
 // handled error of another issue (2.4.0), one info message, and sessions.
-func (e *env) seed(p sqlc.Project) {
+func (e *env) seed(p store.Project) {
 	e.t.Helper()
 	now := time.Now().UTC()
 	ts := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
@@ -246,7 +245,7 @@ func TestProjectsAndAuth(t *testing.T) {
 	e.get("/api/projects/nope", 404)
 	e.get("/api/projects/nope/issues", 404)
 	e.do("PATCH", "/api/projects/demo", map[string]any{"sample_rate": 1, "sample_keep_first": 100})
-	p, err := e.st.GetProject(context.Background(), "demo")
+	p, err := store.GetProject(context.Background(), e.st.Pool, "demo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,14 +535,14 @@ func TestSymbols(t *testing.T) {
 	e := newEnv(t)
 	p := e.createProject("demo")
 	ctx := context.Background()
-	jobsBefore, _ := e.st.CountJobs(ctx)
+	jobsBefore, _ := store.CountJobs(ctx, e.st.Pool)
 
 	mapping := "# compiler: R8\ncom.example.Foo -> a.b:\n    void bar() -> c\n"
 	rec, body := e.upload("/api/projects/demo/symbols", "mapping.txt", []byte(mapping), map[string]string{"release": "2.4.1"})
 	if rec.Code != 201 || !strings.Contains(string(body), `"kind":"proguard"`) {
 		t.Fatalf("upload: %d %s", rec.Code, body)
 	}
-	if n, _ := e.st.CountJobs(ctx); n != jobsBefore+1 {
+	if n, _ := store.CountJobs(ctx, e.st.Pool); n != jobsBefore+1 {
 		t.Errorf("resymbolicate job not enqueued: %d -> %d", jobsBefore, n)
 	}
 	rec, body = e.upload("/api/projects/demo/symbols", "app.js.map", []byte(`{"version":3,"mappings":"AAAA"}`), map[string]string{"release": "web-1"})
@@ -562,7 +561,7 @@ func TestSymbols(t *testing.T) {
 	if rec.Code != 201 {
 		t.Fatalf("zip upload: %d %s", rec.Code, body)
 	}
-	var zr struct{ Symbols []sqlc.UpsertSymbolFileRow }
+	var zr struct{ Symbols []store.SymbolFileMeta }
 	json.Unmarshal(body, &zr)
 	kinds := map[string]string{}
 	for _, s := range zr.Symbols {

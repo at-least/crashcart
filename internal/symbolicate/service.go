@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/blob"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 )
@@ -259,7 +258,7 @@ func (s *Service) version(ctx context.Context, k cacheKey) (string, error) {
 	if strings.HasPrefix(k.key, debugPrefix) {
 		debugID, release = strings.TrimPrefix(k.key, debugPrefix), ""
 	}
-	row, err := s.Store.SymbolFilesVersion(ctx, sqlc.SymbolFilesVersionParams{ProjectID: k.projectID, Kind: sqlc.SymbolKind(k.kind), Release: release, DebugID: debugID})
+	row, err := store.SymbolFilesVersion(ctx, s.Store.Pool, k.projectID, store.SymbolKind(k.kind), debugID, release)
 	if err != nil {
 		return "", err
 	}
@@ -302,10 +301,10 @@ func (s *Service) fetch(ctx context.Context, k cacheKey) (mapping any, version s
 }
 
 func (s *Service) fetchOnce(ctx context.Context, k cacheKey) (mapping any, version string, err error) {
-	var files []sqlc.SymbolFile
+	var files []store.SymbolFile
 	if strings.HasPrefix(k.key, debugPrefix) {
 		id := strings.TrimPrefix(k.key, debugPrefix)
-		f, err := s.Store.SymbolFileByDebugID(ctx, sqlc.SymbolFileByDebugIDParams{ProjectID: k.projectID, DebugID: &id})
+		f, err := store.SymbolFileByDebugID(ctx, s.Store.Pool, k.projectID, &id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, versionOf(0, time.Time{}), nil
 		}
@@ -315,9 +314,9 @@ func (s *Service) fetchOnce(ctx context.Context, k cacheKey) (mapping any, versi
 		if string(f.Kind) != k.kind {
 			return nil, versionOf(0, time.Time{}), nil // SymbolFilesVersion filters by kind too
 		}
-		files = []sqlc.SymbolFile{f}
+		files = []store.SymbolFile{f}
 	} else {
-		files, err = s.Store.SymbolFilesForRelease(ctx, sqlc.SymbolFilesForReleaseParams{ProjectID: k.projectID, Release: k.key, Kind: sqlc.SymbolKind(k.kind)})
+		files, err = store.SymbolFilesForRelease(ctx, s.Store.Pool, k.projectID, store.SymbolKind(k.kind), k.key)
 		if err != nil {
 			return nil, "", err
 		}
@@ -345,7 +344,7 @@ func (s *Service) fetchOnce(ctx context.Context, k cacheKey) (mapping any, versi
 // the row once when its object was replaced under us (fetch's rule).
 func (s *Service) symbolFileBytes(ctx context.Context, id int64) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
-		row, err := s.Store.SymbolFileData(ctx, id)
+		row, err := store.SymbolFileData(ctx, s.Store.Pool, id)
 		if err != nil {
 			return nil, err
 		}
@@ -358,7 +357,7 @@ func (s *Service) symbolFileBytes(ctx context.Context, id int64) ([]byte, error)
 }
 
 // parseFiles builds the in-memory mapping of one cache key from its rows.
-func parseFiles(kind string, files []sqlc.SymbolFile) (any, error) {
+func parseFiles(kind string, files []store.SymbolFile) (any, error) {
 	switch kind {
 	case KindProGuard:
 		// Several mapping files for one release are concatenated: classes
@@ -406,7 +405,7 @@ func (s *Service) Invalidate(projectID int64, release string) {
 // upload re-queues it); only sidecar / database failures are errors, so
 // the job retries.
 func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID, at time.Time) error {
-	row, err := s.Store.GetEventAt(ctx, sqlc.GetEventAtParams{ProjectID: projectID, EventID: eventID, OccurredAt: at})
+	row, err := store.GetEventAt(ctx, s.Store.Pool, projectID, eventID, at)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // dropped by retention, or never stored
 	}
@@ -449,11 +448,8 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 	if row.Fingerprint != nil {
 		oldFP = *row.Fingerprint
 	}
-	return s.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error {
-		if err := q.SetEventSymbols(ctx, sqlc.SetEventSymbolsParams{
-			ProjectID: projectID, EventID: eventID, OccurredAt: row.OccurredAt, Symbols: symbols,
-			Fingerprint: newFP.Ptr(), Culprit: nilIfEmpty(location),
-		}); err != nil {
+	return s.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := store.SetEventSymbols(ctx, tx, projectID, eventID, symbols, newFP.Ptr(), nilIfEmpty(location), row.OccurredAt); err != nil {
 			return err
 		}
 		if newFP == oldFP || newFP == "" {
@@ -461,10 +457,10 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 		}
 		// The event moved between issues: its hour's per-issue counts
 		// are recomputed.
-		if err := q.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: projectID, Buckets: []time.Time{row.OccurredAt.UTC().Truncate(time.Hour)}}); err != nil {
+		if err := store.MarkEventStatsDirty(ctx, tx, projectID, []time.Time{row.OccurredAt.UTC().Truncate(time.Hour)}); err != nil {
 			return err
 		}
-		if _, err := q.UpsertIssue(ctx, sqlc.UpsertIssueParams{
+		if _, err := store.UpsertIssue(ctx, tx, store.UpsertIssueParams{
 			ProjectID: projectID, Fingerprint: newFP, Title: ev.IssueTitle(), Level: row.Level,
 			ErrorType: nilIfEmpty(ev.ErrorType), Transaction: nilIfEmpty(ev.Transaction), Platform: nilIfEmpty(ev.Platform),
 			EventCount: 1, StoredCount: 1, FirstSeen: row.OccurredAt, LastSeen: row.OccurredAt, FirstRelease: row.Release,
@@ -475,10 +471,10 @@ func (s *Service) Event(ctx context.Context, projectID int64, eventID sentry.ID,
 		if oldFP == "" {
 			return nil
 		}
-		if err := q.AdjustIssueStoredCount(ctx, sqlc.AdjustIssueStoredCountParams{ProjectID: projectID, Fingerprint: oldFP, StoredCount: -1}); err != nil {
+		if err := store.AdjustIssueStoredCount(ctx, tx, projectID, oldFP, -1); err != nil {
 			return err
 		}
-		return q.DeleteEmptyIssue(ctx, sqlc.DeleteEmptyIssueParams{ProjectID: projectID, Fingerprint: oldFP})
+		return store.DeleteEmptyIssue(ctx, tx, projectID, oldFP)
 	})
 }
 
@@ -584,16 +580,16 @@ func SymbolKey(id int64, uploadedAt time.Time) string {
 }
 
 // symbolFileMeta is a symbol_files row without its data.
-type symbolFileMeta = sqlc.SymbolFileMetasForReleaseRow
+type symbolFileMeta = store.SymbolFileMeta
 
 // dsymFile finds the symbol file for image: by debug_id, else among the
 // release's dSYMs by the image's file name (the only one, if just one).
 func (s *Service) dsymFile(ctx context.Context, projectID int64, release string, image sentry.DebugImage, releaseFiles *[]symbolFileMeta, loaded *bool) (*symbolFileMeta, error) {
 	if image.DebugID != "" {
 		id := normalizeDebugID(image.DebugID)
-		f, err := s.Store.SymbolFileMetaByDebugID(ctx, sqlc.SymbolFileMetaByDebugIDParams{ProjectID: projectID, DebugID: &id})
+		f, err := store.SymbolFileMetaByDebugID(ctx, s.Store.Pool, projectID, &id)
 		if err == nil && f.Kind == KindDSYM {
-			return &symbolFileMeta{ID: f.ID, ProjectID: f.ProjectID, Kind: f.Kind, Release: f.Release, DebugID: f.DebugID, Filename: f.Filename, Size: f.Size, UploadedAt: f.UploadedAt}, nil
+			return &f, nil
 		}
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
@@ -603,7 +599,7 @@ func (s *Service) dsymFile(ctx context.Context, projectID int64, release string,
 		return nil, nil
 	}
 	if !*loaded {
-		files, err := s.Store.SymbolFileMetasForRelease(ctx, sqlc.SymbolFileMetasForReleaseParams{ProjectID: projectID, Release: release, Kind: KindDSYM})
+		files, err := store.SymbolFileMetasForRelease(ctx, s.Store.Pool, projectID, store.SymbolKind(KindDSYM), release)
 		if err != nil {
 			return nil, err
 		}
@@ -649,9 +645,7 @@ func normalizeDebugID(id string) string {
 // work is spread over the workers and each event retries on its own.
 func (s *Service) Release(ctx context.Context, projectID int64, release string) error {
 	s.Invalidate(projectID, release)
-	n, err := s.Store.EnqueueSymbolicateRelease(ctx, sqlc.EnqueueSymbolicateReleaseParams{
-		ProjectID: projectID, Release: &release, Limit: ReleaseMax,
-	})
+	n, err := store.EnqueueSymbolicateRelease(ctx, s.Store.Pool, projectID, &release, ReleaseMax)
 	if err != nil {
 		return err
 	}

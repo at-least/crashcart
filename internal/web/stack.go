@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // Stack is one exception rendered innermost-first.
@@ -65,7 +65,7 @@ func frameLocation(f sentry.Frame) string {
 // (the one thrown last, which titles the issue) first, its causes under
 // it; the symbolicated frames (events.symbols) replace the main
 // exception's frames when present.
-func stacksOf(e sqlc.Event, ev *sentry.Event) []Stack {
+func stacksOf(e store.Event, ev *sentry.Event) []Stack {
 	if ev == nil {
 		return nil
 	}
@@ -105,7 +105,7 @@ func stacksOf(e sqlc.Event, ev *sentry.Event) []Stack {
 
 // parsePayload re-parses the stored Sentry event (never rewritten); nil
 // when the row has no payload.
-func parsePayload(e sqlc.Event, payload []byte) *sentry.Event {
+func parsePayload(e store.Event, payload []byte) *sentry.Event {
 	if len(payload) == 0 {
 		return nil
 	}

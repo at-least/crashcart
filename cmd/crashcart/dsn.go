@@ -3,10 +3,10 @@ package main
 import (
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
-func dsn(cfg config.Config, p sqlc.Project) string {
+func dsn(cfg config.Config, p store.Project) string {
 	return dsnFor(cfg, p.ID, p.PublicKey)
 }
 

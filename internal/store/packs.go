@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/blob"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 )
 
 // Event payloads in the blob store (BLOB_STORE=s3). Ingest writes the
@@ -41,21 +40,20 @@ const (
 // spool row, else its place in a pack — one statement for the last two, so
 // an event packed between two lookups cannot read as one without a
 // payload. nil, nil when the event has none (imported without one, or its
-// pack expired with its week under us). q is the queries to read the
-// location with (an export passes its snapshot transaction); nil = the
-// pool.
-func (s *Store) Payload(ctx context.Context, q *sqlc.Queries, e sqlc.Event) ([]byte, error) {
-	return s.payload(ctx, q, e, nil)
+// pack expired with its week under us). db is what to read the location
+// with (an export passes its snapshot transaction); nil = the pool.
+func (s *Store) Payload(ctx context.Context, db DB, e Event) ([]byte, error) {
+	return s.payload(ctx, db, e, nil)
 }
 
-func (s *Store) payload(ctx context.Context, q *sqlc.Queries, e sqlc.Event, cache *PackReader) ([]byte, error) {
+func (s *Store) payload(ctx context.Context, db DB, e Event, cache *PackReader) ([]byte, error) {
 	if len(e.Payload) > 0 {
 		return Gunzip(e.Payload)
 	}
-	if q == nil {
-		q = s.Queries
+	if db == nil {
+		db = s.Pool
 	}
-	loc, err := q.PayloadLocation(ctx, sqlc.PayloadLocationParams{ProjectID: e.ProjectID, EventID: e.EventID, OccurredAt: e.OccurredAt})
+	loc, err := PayloadLocation(ctx, db, e.ProjectID, e.EventID, e.OccurredAt)
 	if err != nil {
 		return nil, err
 	}
@@ -103,8 +101,8 @@ func (s *Store) NewPackReader() *PackReader {
 }
 
 // Payload is Store.Payload through the cache.
-func (r *PackReader) Payload(ctx context.Context, q *sqlc.Queries, e sqlc.Event) ([]byte, error) {
-	return r.s.payload(ctx, q, e, r)
+func (r *PackReader) Payload(ctx context.Context, db DB, e Event) ([]byte, error) {
+	return r.s.payload(ctx, db, e, r)
 }
 
 func (r *PackReader) slice(ctx context.Context, store blob.Store, id int64, key string, off, n int64) ([]byte, error) {
@@ -146,7 +144,7 @@ func (s *Store) pack(ctx context.Context, now time.Time, force bool) (int, error
 	}
 	packed := 0
 	for {
-		groups, err := s.SpoolGroups(ctx)
+		groups, err := SpoolGroups(ctx, s.Pool)
 		if err != nil {
 			return packed, err
 		}
@@ -175,27 +173,27 @@ func (s *Store) pack(ctx context.Context, now time.Time, force bool) (int, error
 // next run repacks them) or a complete pack, never a row pointing at
 // bytes that were not written. An orphaned object is deleted best-effort
 // here and by the week sweep otherwise.
-func (s *Store) packOne(ctx context.Context, g sqlc.SpoolGroupsRow) (int, error) {
+func (s *Store) packOne(ctx context.Context, g SpoolGroupsRow) (int, error) {
 	week := g.Week.UTC()
-	rows, err := s.SpoolRows(ctx, sqlc.SpoolRowsParams{ProjectID: g.ProjectID, FromAt: week, ToAt: week.Add(7 * 24 * time.Hour), Limit: packRows})
+	rows, err := SpoolRows(ctx, s.Pool, g.ProjectID, week, week.Add(7*24*time.Hour), packRows)
 	if err != nil || len(rows) == 0 {
 		return 0, err
 	}
 	var buf []byte
-	var places []sqlc.InsertEventPackParams
-	var keys []sqlc.DeleteSpoolRowParams
+	var places []InsertEventPackParams
+	var keys []SpoolKey
 	for _, r := range rows {
 		if len(buf) > 0 && len(buf)+len(r.Data) > PackBytes {
 			break // the pack is full; a lone oversized payload still goes in
 		}
-		places = append(places, sqlc.InsertEventPackParams{
+		places = append(places, InsertEventPackParams{
 			ProjectID: r.ProjectID, EventID: r.EventID, OccurredAt: r.OccurredAt,
 			PackOffset: int32(len(buf)), PackLen: int32(len(r.Data)),
 		})
-		keys = append(keys, sqlc.DeleteSpoolRowParams{ProjectID: r.ProjectID, EventID: r.EventID, OccurredAt: r.OccurredAt})
+		keys = append(keys, SpoolKey{ProjectID: r.ProjectID, EventID: r.EventID, OccurredAt: r.OccurredAt})
 		buf = append(buf, r.Data...)
 	}
-	id, err := s.InsertPack(ctx, sqlc.InsertPackParams{ProjectID: g.ProjectID, Week: week})
+	id, err := InsertPack(ctx, s.Pool, g.ProjectID, week)
 	if err != nil {
 		return 0, err
 	}
@@ -204,41 +202,22 @@ func (s *Store) packOne(ctx context.Context, g sqlc.SpoolGroupsRow) (int, error)
 	}
 	key := blob.PackKey(g.ProjectID, week, id)
 	if err := s.Blobs.Put(ctx, key, buf); err != nil {
-		s.DeletePack(context.WithoutCancel(ctx), id)
+		DeletePack(context.WithoutCancel(ctx), s.Pool, id)
 		return 0, fmt.Errorf("blob store: %w", err)
 	}
-	err = s.Tx(ctx, func(ctx context.Context, _ pgx.Tx, q *sqlc.Queries) error {
-		var first error
-		ins := q.InsertEventPack(ctx, places)
-		ins.Exec(func(_ int, err error) {
-			if err != nil && first == nil {
-				first = err
-			}
-		})
-		if err := ins.Close(); err != nil && first == nil {
-			first = err
+	err = s.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := InsertEventPacks(ctx, tx, places); err != nil {
+			return err
 		}
-		if first != nil {
-			return first
+		if err := DeleteSpoolRows(ctx, tx, keys); err != nil {
+			return err
 		}
-		del := q.DeleteSpoolRow(ctx, keys)
-		del.Exec(func(_ int, err error) {
-			if err != nil && first == nil {
-				first = err
-			}
-		})
-		if err := del.Close(); err != nil && first == nil {
-			first = err
-		}
-		if first != nil {
-			return first
-		}
-		return q.SetPackBytes(ctx, sqlc.SetPackBytesParams{ID: id, Bytes: int64(len(buf))})
+		return SetPackBytes(ctx, tx, id, int64(len(buf)))
 	})
 	if err != nil {
 		bg := context.WithoutCancel(ctx)
 		s.Blobs.Delete(bg, key)
-		s.DeletePack(bg, id)
+		DeletePack(bg, s.Pool, id)
 		return 0, err
 	}
 	return len(places), nil
@@ -249,7 +228,7 @@ func (s *Store) packOne(ctx context.Context, g sqlc.SpoolGroupsRow) (int, error)
 // the objects: a failure is returned after the rest, and the next sweep
 // tries again, since the rows are only deleted once the object is.
 func (s *Store) ExpirePacks(ctx context.Context, cutoff time.Time) (packs int, err error) {
-	expired, err := s.ExpiredPacks(ctx, cutoff)
+	expired, err := ExpiredPacks(ctx, s.Pool, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -267,12 +246,12 @@ func (s *Store) ExpirePacks(ctx context.Context, cutoff time.Time) (packs int, e
 			}
 			continue
 		}
-		if err := s.DeletePack(ctx, p.ID); err != nil {
+		if err := DeletePack(ctx, s.Pool, p.ID); err != nil {
 			return packs, err
 		}
 		packs++
 	}
-	if _, err := s.ExpireSpool(ctx, cutoff); err != nil {
+	if _, err := ExpireSpool(ctx, s.Pool, cutoff); err != nil {
 		return packs, err
 	}
 	return packs, first
@@ -280,7 +259,7 @@ func (s *Store) ExpirePacks(ctx context.Context, cutoff time.Time) (packs int, e
 
 // DeleteProjectPacks deletes the objects of a project's packs; call with
 // the keys read before the project (and, by cascade, the rows) is deleted.
-func (s *Store) DeleteProjectPacks(ctx context.Context, projectID int64, packs []sqlc.ProjectPacksRow) error {
+func (s *Store) DeleteProjectPacks(ctx context.Context, projectID int64, packs []ProjectPacksRow) error {
 	var first error
 	for _, p := range packs {
 		if s.Blobs == nil {

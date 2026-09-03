@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
@@ -55,18 +54,18 @@ func (s *sink) count() int {
 	return len(s.payloads)
 }
 
-func setup(t *testing.T) (*store.Store, sqlc.Project, *sink, *Notifier) {
+func setup(t *testing.T) (*store.Store, store.Project, *sink, *Notifier) {
 	t.Helper()
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "shop", Name: "Shop", PublicKey: fmt.Sprint(time.Now().UnixNano())})
+	p, err := store.CreateProject(ctx, st.Pool, "shop", "Shop", nil, fmt.Sprint(time.Now().UnixNano()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := EnsureRules(ctx, st, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	rules, _ := st.ListAlertRules(ctx, p.ID)
+	rules, _ := store.ListAlertRules(ctx, st.Pool, p.ID)
 	if len(rules) != 6 {
 		t.Fatalf("rules = %+v", rules)
 	}
@@ -77,7 +76,7 @@ func setup(t *testing.T) (*store.Store, sqlc.Project, *sink, *Notifier) {
 	srv := s.server()
 	t.Cleanup(srv.Close)
 	cfg, _ := json.Marshal(map[string]string{"url": srv.URL + "/hook"})
-	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "webhook", Config: cfg}); err != nil {
+	if _, err := store.CreateAlertChannel(ctx, st.Pool, p.ID, "webhook", cfg); err != nil {
 		t.Fatal(err)
 	}
 	n := &Notifier{Store: st, Cfg: config.Config{PublicURL: "https://crash.example.com"}, HTTP: srv.Client()}
@@ -89,7 +88,7 @@ func TestIssueWebhookAndCooldown(t *testing.T) {
 	ctx := context.Background()
 	rel := "1.2.3"
 	id := time.Now().UTC()
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{
+	if _, err := store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{
 		ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("abc123")), Title: "NullPointerException in CartFragment", Level: "error",
 		EventCount: 3, StoredCount: 3, FirstSeen: id, LastSeen: id, FirstRelease: &rel,
 	}); err != nil {
@@ -117,14 +116,14 @@ func TestIssueWebhookAndCooldown(t *testing.T) {
 		t.Fatalf("regression: err=%v count=%d", err, s.count())
 	}
 	// Disabled rule: nothing.
-	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: TypeRegression, Enabled: false, CooldownMinutes: 0}); err != nil {
+	if _, err := store.UpsertAlertRule(ctx, st.Pool, p.ID, TypeRegression, false, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.Issue(ctx, p.ID, TypeRegression, string(sentry.DerivedID([]byte("abc123")))); err != nil || s.count() != 2 {
 		t.Fatalf("disabled: err=%v count=%d", err, s.count())
 	}
 	// Unknown issue after the cooldown was claimed: nil, nothing sent.
-	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue, Enabled: true, CooldownMinutes: 0}); err != nil {
+	if _, err := store.UpsertAlertRule(ctx, st.Pool, p.ID, TypeNewIssue, true, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("missing")))); err != nil || s.count() != 2 {
@@ -142,11 +141,11 @@ func TestTelegram(t *testing.T) {
 	t.Cleanup(func() { TelegramAPI = old })
 	n.Cfg.TelegramBotToken = "123:ABC"
 	cfg, _ := json.Marshal(map[string]string{"chat_id": "-100"})
-	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "telegram", Config: cfg}); err != nil {
+	if _, err := store.CreateAlertChannel(ctx, st.Pool, p.ID, "telegram", cfg); err != nil {
 		t.Fatal(err)
 	}
 	id := time.Now().UTC()
-	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("tg")), Title: "NSRangeException: index 3 beyond bounds", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
+	store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte("tg")), Title: "NSRangeException: index 3 beyond bounds", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(sentry.DerivedID([]byte("tg")))); err != nil {
 		t.Fatal(err)
 	}
@@ -176,12 +175,12 @@ func TestSlack(t *testing.T) {
 	sl := s.server()
 	defer sl.Close()
 	cfg, _ := json.Marshal(map[string]string{"url": sl.URL + "/slack"})
-	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "slack", Config: cfg}); err != nil {
+	if _, err := store.CreateAlertChannel(ctx, st.Pool, p.ID, "slack", cfg); err != nil {
 		t.Fatal(err)
 	}
 	id := time.Now().UTC()
 	fp := sentry.DerivedID([]byte("slack"))
-	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "NullPointerException: <init> failed & died", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
+	store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "NullPointerException: <init> failed & died", Level: "fatal", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(fp)); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +263,7 @@ func TestCheckSpikes(t *testing.T) {
 			Message: "boom", Handled: &f, Fingerprint: &fp, Tags: []byte("{}"),
 		})
 	}
-	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return st.InsertEvents(ctx, tx, rows) })
+	err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error { return st.InsertEvents(ctx, tx, rows) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +291,7 @@ func TestTelegramErrorHidesToken(t *testing.T) {
 	TelegramAPI = "http://127.0.0.1:1" // nothing listens
 	t.Cleanup(func() { TelegramAPI = old })
 	cfg, _ := json.Marshal(map[string]string{"chat_id": "-100"})
-	err := n.send(context.Background(), sqlc.AlertChannel{Kind: "telegram", Config: cfg}, Payload{Title: "x"})
+	err := n.send(context.Background(), store.AlertChannel{Kind: "telegram", Config: cfg}, Payload{Title: "x"})
 	if err == nil {
 		t.Fatal("expected a transport error")
 	}
@@ -306,36 +305,36 @@ func TestTelegramErrorHidesToken(t *testing.T) {
 func TestCooldownGivenBackWhenNothingDelivered(t *testing.T) {
 	st, p, s, n := setup(t)
 	ctx := context.Background()
-	good, _ := st.ListAlertChannels(ctx, p.ID)
+	good, _ := store.ListAlertChannels(ctx, st.Pool, p.ID)
 	for _, ch := range good {
-		st.DeleteAlertChannel(ctx, sqlc.DeleteAlertChannelParams{ProjectID: p.ID, ID: ch.ID})
+		store.DeleteAlertChannel(ctx, st.Pool, p.ID, ch.ID)
 	}
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "nope", 500) }))
 	defer bad.Close()
 	cfg, _ := json.Marshal(map[string]string{"url": bad.URL})
-	badCh, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "webhook", Config: cfg})
+	badCh, err := store.CreateAlertChannel(ctx, st.Pool, p.ID, "webhook", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := time.Now().UTC()
 	fp := sentry.DerivedID([]byte("gb"))
-	st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
+	store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: id, LastSeen: id})
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(fp)); err != nil {
 		t.Fatal(err)
 	}
-	rule, _ := st.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue})
+	rule, _ := store.GetAlertRule(ctx, st.Pool, p.ID, TypeNewIssue)
 	if rule.LastTriggered != nil {
 		t.Fatalf("cooldown kept although nothing was delivered: %v", rule.LastTriggered)
 	}
 	// The endpoint comes back: the next alert goes out at once.
-	st.DeleteAlertChannel(ctx, sqlc.DeleteAlertChannelParams{ProjectID: p.ID, ID: badCh.ID})
+	store.DeleteAlertChannel(ctx, st.Pool, p.ID, badCh.ID)
 	for _, ch := range good {
-		st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: ch.Kind, Config: ch.Config})
+		store.CreateAlertChannel(ctx, st.Pool, p.ID, ch.Kind, ch.Config)
 	}
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(fp)); err != nil || s.count() != 1 {
 		t.Fatalf("after recovery: err=%v sent=%d", err, s.count())
 	}
-	rule, _ = st.GetAlertRule(ctx, sqlc.GetAlertRuleParams{ProjectID: p.ID, Type: TypeNewIssue})
+	rule, _ = store.GetAlertRule(ctx, st.Pool, p.ID, TypeNewIssue)
 	if rule.LastTriggered == nil {
 		t.Fatal("cooldown not claimed after a delivery")
 	}
@@ -354,7 +353,7 @@ func TestNewIssueAlertCountsSuppressed(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		fp = sentry.DerivedID([]byte{byte(i)})
 		at := time.Now().UTC().Add(-time.Duration(4-i) * time.Minute)
-		st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: at, LastSeen: at})
+		store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: at, LastSeen: at})
 	}
 	if err := n.Issue(ctx, p.ID, TypeNewIssue, string(fp)); err != nil || s.count() != 1 {
 		t.Fatalf("err=%v sent=%d", err, s.count())
@@ -406,13 +405,13 @@ func TestWebhookClientBlocksLoopback(t *testing.T) {
 	defer srv.Close()
 	n := &Notifier{Cfg: config.Config{}} // HTTP nil: the real client
 	cfg, _ := json.Marshal(map[string]string{"url": srv.URL + "/hook"})
-	err := n.send(context.Background(), sqlc.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"})
+	err := n.send(context.Background(), store.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"})
 	if !errors.Is(err, ErrBlockedURL) {
 		t.Fatalf("loopback webhook: %v (want ErrBlockedURL)", err)
 	}
 	// With private targets allowed, loopback is still refused.
 	n = &Notifier{Cfg: config.Config{WebhookAllowPrivate: true}}
-	if err := n.send(context.Background(), sqlc.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"}); !errors.Is(err, ErrBlockedURL) {
+	if err := n.send(context.Background(), store.AlertChannel{Kind: "webhook", Config: cfg}, Payload{Title: "x"}); !errors.Is(err, ErrBlockedURL) {
 		t.Fatalf("loopback with allowPrivate: %v", err)
 	}
 }
@@ -425,7 +424,7 @@ func TestCheckIgnored(t *testing.T) {
 	at := time.Now().UTC()
 	mk := func(name string, count int64) sentry.ID {
 		fp := sentry.DerivedID([]byte(name))
-		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: name, Level: "error", EventCount: count, StoredCount: count, FirstSeen: at, LastSeen: at}); err != nil {
+		if _, err := store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: p.ID, Fingerprint: fp, Title: name, Level: "error", EventCount: count, StoredCount: count, FirstSeen: at, LastSeen: at}); err != nil {
 			t.Fatal(err)
 		}
 		return fp
@@ -438,20 +437,20 @@ func TestCheckIgnored(t *testing.T) {
 				Level: "error", Message: "boom", Fingerprint: &fp, Tags: []byte("{}"),
 			})
 		}
-		if err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, q *sqlc.Queries) error { return st.InsertEvents(ctx, tx, rows) }); err != nil {
+		if err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error { return st.InsertEvents(ctx, tx, rows) }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	set := func(fp sentry.ID, pr sqlc.SetIssueStatusParams) sqlc.Issue {
+	set := func(fp sentry.ID, pr store.SetIssueStatusParams) store.Issue {
 		pr.ProjectID, pr.Fingerprint, pr.Status = p.ID, fp, "ignored"
-		is, err := st.SetIssueStatus(ctx, pr)
+		is, err := store.SetIssueStatus(ctx, st.Pool, pr)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return is
 	}
-	status := func(fp sentry.ID) sqlc.Issue {
-		is, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	status := func(fp sentry.ID) store.Issue {
+		is, err := store.GetIssue(ctx, st.Pool, p.ID, fp)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -460,20 +459,20 @@ func TestCheckIgnored(t *testing.T) {
 	past, future, five := at.Add(-time.Minute), at.Add(time.Hour), int64(5)
 	timed, later, counted, esc, busy, forever := mk("timed", 1), mk("later", 1), mk("counted", 10), mk("esc", 10), mk("busy", 24), mk("forever", 1)
 	insert(busy, 24, 2*time.Hour) // its baseline: 24 stored events in the 24 h before now
-	set(timed, sqlc.SetIssueStatusParams{IgnoreUntil: &past})
-	set(later, sqlc.SetIssueStatusParams{IgnoreUntil: &future})
-	if is := set(counted, sqlc.SetIssueStatusParams{IgnoreEvents: &five}); is.IgnoreUntilCount == nil || *is.IgnoreUntilCount != 15 {
+	set(timed, store.SetIssueStatusParams{IgnoreUntil: &past})
+	set(later, store.SetIssueStatusParams{IgnoreUntil: &future})
+	if is := set(counted, store.SetIssueStatusParams{IgnoreEvents: &five}); is.IgnoreUntilCount == nil || *is.IgnoreUntilCount != 15 {
 		t.Fatalf("counted: %+v", is)
 	}
-	if is := set(esc, sqlc.SetIssueStatusParams{IgnoreEscalating: true}); !is.IgnoreUntilEscalating || is.IgnoreBaseline == nil || *is.IgnoreBaseline != 0 {
+	if is := set(esc, store.SetIssueStatusParams{IgnoreEscalating: true}); !is.IgnoreUntilEscalating || is.IgnoreBaseline == nil || *is.IgnoreBaseline != 0 {
 		t.Fatalf("esc: %+v", is)
 	}
-	if is := set(busy, sqlc.SetIssueStatusParams{IgnoreEscalating: true}); is.IgnoreBaseline == nil || *is.IgnoreBaseline != 24 {
+	if is := set(busy, store.SetIssueStatusParams{IgnoreEscalating: true}); is.IgnoreBaseline == nil || *is.IgnoreBaseline != 24 {
 		t.Fatalf("busy baseline: %+v", is)
 	}
-	set(forever, sqlc.SetIssueStatusParams{})
+	set(forever, store.SetIssueStatusParams{})
 	// Five more events reach counted's threshold.
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: p.ID, Fingerprint: counted, Title: "counted", Level: "error", EventCount: 5, StoredCount: 0, FirstSeen: at, LastSeen: at}); err != nil {
+	if _, err := store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: p.ID, Fingerprint: counted, Title: "counted", Level: "error", EventCount: 5, StoredCount: 0, FirstSeen: at, LastSeen: at}); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.CheckIgnored(ctx); err != nil {

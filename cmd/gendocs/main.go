@@ -1,7 +1,7 @@
 // Command gendocs keeps the reference docs that mirror Go data in sync
 // with it.
 //
-// Two pages are fully generated, like sqlc/templ generate code:
+// Two pages are fully generated, like templ generate code:
 // docs/deploy/configuration.md from config.Vars/Groups, and
 // docs/reference/cli.md from cli.Commands.
 //

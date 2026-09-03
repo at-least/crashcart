@@ -14,12 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 )
 
 // Handler processes one job; returning an error schedules a retry.
-type Handler func(ctx context.Context, job sqlc.Job, args json.RawMessage) error
+type Handler func(ctx context.Context, job store.Job, args json.RawMessage) error
 
 // Worker claims jobs when woken (Wake) and on a timer.
 type Worker struct {
@@ -103,7 +102,7 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	if lease <= 0 {
 		lease = defaultLease
 	}
-	jobs, err := w.Store.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: batch, LockedUntil: time.Now().Add(lease)})
+	jobs, err := store.ClaimJobs(ctx, w.Store.Pool, time.Now().Add(lease), batch)
 	if err != nil {
 		return 0, err
 	}
@@ -111,7 +110,7 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			// Shutting down: hand the rest of the batch back untouched.
-			if err := w.Store.ReleaseJob(context.WithoutCancel(ctx), j.ID); err != nil && firstErr == nil {
+			if err := store.ReleaseJob(context.WithoutCancel(ctx), w.Store.Pool, j.ID); err != nil && firstErr == nil {
 				firstErr = err
 			}
 			continue
@@ -134,12 +133,12 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 // dispatch runs one job and records the outcome (auto-commit; nothing is
 // held open while the handler runs). The returned error is a failure to
 // record the outcome, not the handler's.
-func (w *Worker) dispatch(ctx context.Context, j sqlc.Job) error {
+func (w *Worker) dispatch(ctx context.Context, j store.Job) error {
 	bg := context.WithoutCancel(ctx)
 	h, ok := w.Handlers[string(j.Kind)]
 	if !ok {
 		w.log().Warn("jobs: unknown kind, dropping", "id", j.ID, "kind", j.Kind, "project", j.ProjectID)
-		return w.Store.DeleteJob(bg, j.ID)
+		return store.DeleteJob(bg, w.Store.Pool, j.ID)
 	}
 	// The handler's deadline is the lease itself (claimed for the whole
 	// batch): past it the job is claimable by another worker, so running
@@ -152,10 +151,10 @@ func (w *Worker) dispatch(ctx context.Context, j sqlc.Job) error {
 	err := w.run(hctx, h, j)
 	cancel()
 	if err == nil {
-		return w.Store.DeleteJob(bg, j.ID)
+		return store.DeleteJob(bg, w.Store.Pool, j.ID)
 	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-		return w.Store.ReleaseJob(bg, j.ID) // shutting down: not an attempt
+		return store.ReleaseJob(bg, w.Store.Pool, j.ID) // shutting down: not an attempt
 	}
 	msg := truncate(err.Error(), maxErrorChars)
 	delay := Backoff(j.Attempts - 1)
@@ -163,12 +162,12 @@ func (w *Worker) dispatch(ctx context.Context, j sqlc.Job) error {
 	} else {
 	}
 	w.log().Warn("jobs: failed", "id", j.ID, "kind", j.Kind, "project", j.ProjectID, "attempt", j.Attempts, "retry_in", delay, "err", msg)
-	return w.Store.RetryJob(bg, sqlc.RetryJobParams{ID: j.ID, LastError: &msg, RunAfter: time.Now().Add(delay)})
+	return store.RetryJob(bg, w.Store.Pool, j.ID, &msg, time.Now().Add(delay))
 }
 
 // run calls the handler, turning a panic into an error so one bad job
 // cannot take the worker down.
-func (w *Worker) run(ctx context.Context, h Handler, j sqlc.Job) (err error) {
+func (w *Worker) run(ctx context.Context, h Handler, j store.Job) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)

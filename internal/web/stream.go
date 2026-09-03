@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 )
 
@@ -75,11 +74,11 @@ func (w *Web) stream(rw http.ResponseWriter, r *http.Request) {
 		case <-wake:
 		case <-poll.C:
 		}
-		n, err := w.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: p.ID, FirstSeen: since})
+		n, err := store.CountNewIssues(ctx, w.Store.Pool, p.ID, since)
 		if err != nil {
 			return
 		}
-		m, err := w.Store.CountRegressions(ctx, sqlc.CountRegressionsParams{ProjectID: p.ID, LastSeen: win.From})
+		m, err := store.CountRegressions(ctx, w.Store.Pool, p.ID, win.From)
 		if err != nil {
 			return
 		}

@@ -1,5 +1,5 @@
-# Build: generated code (sqlc, templ) and the CSS artifact are committed,
-# so the image needs only the Go toolchain.
+# Build: generated code (templ) and the CSS artifact are committed, so
+# the image needs only the Go toolchain.
 FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./

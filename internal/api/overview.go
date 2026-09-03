@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // topReleases is how many releases the overview timeline keeps apart;
@@ -60,14 +60,14 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	hlo := lo.Truncate(time.Hour) // include the bucket containing `from`
 	out := overviewOut{From: from, To: to, Levels: map[string]int64{}, Timeline: []timelinePoint{}}
 
-	tot, err := h.Store.Totals(ctx, sqlc.TotalsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi})
+	tot, err := store.Totals(ctx, h.Store.Pool, p.ID, hlo, hi)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	out.Totals = totalsOut{Events: tot.Events, Unhandled: tot.Unhandled, Errors: tot.Errors}
 
-	levels, err := h.Store.LevelTotals(ctx, sqlc.LevelTotalsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi})
+	levels, err := store.LevelTotals(ctx, h.Store.Pool, p.ID, hlo, hi)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -75,16 +75,16 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	for _, l := range levels {
 		out.Levels[string(l.Level)] = l.Events
 	}
-	if out.NewIssues, err = h.Store.CountNewIssuesIn(ctx, sqlc.CountNewIssuesInParams{ProjectID: p.ID, FromAt: lo, ToAt: hi}); err != nil {
+	if out.NewIssues, err = store.CountNewIssuesIn(ctx, h.Store.Pool, p.ID, lo, hi); err != nil {
 		h.fail(w, err)
 		return
 	}
-	if out.Regressions, err = h.Store.CountRegressionsIn(ctx, sqlc.CountRegressionsInParams{ProjectID: p.ID, FromAt: lo, ToAt: hi}); err != nil {
+	if out.Regressions, err = store.CountRegressionsIn(ctx, h.Store.Pool, p.ID, lo, hi); err != nil {
 		h.fail(w, err)
 		return
 	}
 
-	tl, err := h.Store.Timeline(ctx, sqlc.TimelineParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi, Width: hourly, Top: topReleases})
+	tl, err := store.Timeline(ctx, h.Store.Pool, p.ID, hlo, hi, hourly, topReleases)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -107,7 +107,7 @@ const hourly = int64(time.Hour / time.Second)
 // crashFree reports the most recently active release's crash-free rate;
 // nil when it has no sessions in the window.
 func (h *Handler) crashFree(ctx context.Context, projectID int64, hlo, hi time.Time) (*crashFreeOut, error) {
-	lr, err := h.Store.LatestReleaseHealth(ctx, sqlc.LatestReleaseHealthParams{ProjectID: projectID, HourFrom: hlo, DayFrom: hlo.Truncate(24 * time.Hour), ToAt: hi})
+	lr, err := store.LatestReleaseHealth(ctx, h.Store.Pool, projectID, hlo, hlo.Truncate(24*time.Hour), hi)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && lr.Total == 0) {
 		return nil, nil
 	}

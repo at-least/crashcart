@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // ignore is the condition an issue is ignored under (Sentry's archive
@@ -65,7 +65,7 @@ func parseStatus(v string, at time.Time) (status string, ig ignore, ok bool) {
 
 // statusValue is the select option that stands for the issue's current
 // state (the ignore condition mapped back onto ignoreOptions).
-func statusValue(is sqlc.Issue) string {
+func statusValue(is store.Issue) string {
 	if is.Status != "ignored" {
 		return string(is.Status)
 	}
@@ -88,7 +88,7 @@ func statusValue(is sqlc.Issue) string {
 
 // ignoreLabel says under what condition an ignored issue comes back;
 // "" for any other status or an unconditional ignore.
-func ignoreLabel(is sqlc.Issue) string {
+func ignoreLabel(is store.Issue) string {
 	if is.Status != "ignored" {
 		return ""
 	}

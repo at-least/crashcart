@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
@@ -206,7 +205,7 @@ func TestRollupKeepsKeyMarkedMeanwhile(t *testing.T) {
 	hour := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Hour)
 	mark := func() {
 		t.Helper()
-		if err := st.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{hour}}); err != nil {
+		if err := store.MarkEventStatsDirty(ctx, st.Pool, 1, []time.Time{hour}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -261,14 +260,14 @@ func TestRollupFingerprintMove(t *testing.T) {
 	}
 	mark := func() {
 		t.Helper()
-		if err := st.MarkEventStatsDirty(ctx, sqlc.MarkEventStatsDirtyParams{ProjectID: 1, Buckets: []time.Time{hour}}); err != nil {
+		if err := store.MarkEventStatsDirty(ctx, st.Pool, 1, []time.Time{hour}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	mark()
 	timeline := func(fp sentry.ID) int64 {
 		t.Helper()
-		rows, err := st.IssueTimeline(ctx, sqlc.IssueTimelineParams{ProjectID: 1, Fingerprint: fp, FromAt: hour.Add(-time.Hour), ToAt: hour.Add(2 * time.Hour), Width: 3600})
+		rows, err := store.IssueTimeline(ctx, st.Pool, 1, fp, hour.Add(-time.Hour), hour.Add(2*time.Hour), 3600)
 		if err != nil {
 			t.Fatal(err)
 		}

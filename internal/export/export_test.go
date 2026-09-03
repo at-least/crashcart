@@ -18,7 +18,6 @@ import (
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/ingest"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
@@ -55,11 +54,11 @@ const checkInEnvelope = `{}
 
 // fill writes a project with events, sessions, an issue, a symbol file,
 // alert rules and a channel into st.
-func fill(t *testing.T, st *store.Store) sqlc.Project {
+func fill(t *testing.T, st *store.Store) store.Project {
 	t.Helper()
 	ctx := context.Background()
 	plat := "android"
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "shop", Name: "Shop", Platform: &plat, PublicKey: "0123456789abcdef0123456789abcdef"})
+	p, err := store.CreateProject(ctx, st.Pool, "shop", "Shop", &plat, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,21 +91,21 @@ func fill(t *testing.T, st *store.Store) sqlc.Project {
 	if _, err := st.RotateProjectKey(ctx, p.ID, "fedcba9876543210fedcba9876543210"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0], Status: "resolved"}); err != nil {
+	if _, err := store.SetIssueStatus(ctx, st.Pool, store.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0], Status: "resolved"}); err != nil {
 		t.Fatal(err)
 	}
 	dbg := "abc-123"
-	if _, err := st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", Release: strPtr("2.4.0"), DebugID: &dbg, Filename: "mapping.txt", Size: 5, Data: []byte("a -> b")}); err != nil {
+	if _, err := store.UpsertSymbolFile(ctx, st.Pool, store.UpsertSymbolFileParams{ProjectID: p.ID, Kind: "proguard", Release: strPtr("2.4.0"), DebugID: &dbg, Filename: "mapping.txt", Size: 5, Data: []byte("a -> b")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: "new_issue", Enabled: true, CooldownMinutes: 30}); err != nil {
+	if _, err := store.UpsertAlertRule(ctx, st.Pool, p.ID, "new_issue", true, 30); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: "webhook", Config: json.RawMessage(`{"url":"https://hooks.example.com/x"}`)}); err != nil {
+	if _, err := store.CreateAlertChannel(ctx, st.Pool, p.ID, "webhook", json.RawMessage(`{"url":"https://hooks.example.com/x"}`)); err != nil {
 		t.Fatal(err)
 	}
 	// Accounts: a user and an API key it created (full exports carry them).
-	u, err := st.CreateUser(ctx, sqlc.CreateUserParams{Email: "ops@example.com", Name: "Ops", PasswordHash: "$2a$10$hash"})
+	u, err := store.CreateUser(ctx, st.Pool, "ops@example.com", "Ops", "$2a$10$hash")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +203,7 @@ func TestRoundTrip(t *testing.T) {
 		}
 	}
 	// The account and the key work in the new database.
-	if u, err := dst.GetUserByEmail(ctx, "ops@example.com"); err != nil || u.PasswordHash != "$2a$10$hash" {
+	if u, err := store.GetUserByEmail(ctx, dst.Pool, "ops@example.com"); err != nil || u.PasswordHash != "$2a$10$hash" {
 		t.Fatalf("imported user: %+v %v", u, err)
 	}
 	var keyOwner string
@@ -303,7 +302,7 @@ func TestImportCreatesProjectAndSkipsUnknown(t *testing.T) {
 	if rep.Rows["events"] != 1 || rep.Rows["skipped"] != 1 {
 		t.Fatalf("report %+v", rep.Rows)
 	}
-	p, err := st.GetProject(ctx, "fresh")
+	p, err := store.GetProject(ctx, st.Pool, "fresh")
 	if err != nil || p.Name != "fresh" || len(p.PublicKey) != 32 {
 		t.Fatalf("project: %+v %v", p, err)
 	}
@@ -317,7 +316,7 @@ func TestExportProjectFilter(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
 	fill(t, st)
-	if _, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "other", Name: "Other", PublicKey: "ffffffffffffffffffffffffffffffff"}); err != nil {
+	if _, err := store.CreateProject(ctx, st.Pool, "other", "Other", nil, "ffffffffffffffffffffffffffffffff"); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
@@ -441,7 +440,7 @@ func TestExportShapeAndImportMarksDirty(t *testing.T) {
 func TestRoundTripBlobStore(t *testing.T) {
 	src, dst := testdb.New(t), testdb.New(t)
 	ctx := context.Background()
-	p, err := src.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "0123456789abcdef0123456789abcdef"})
+	p, err := store.CreateProject(ctx, src.Pool, "app", "App", nil, "0123456789abcdef0123456789abcdef")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,14 +542,14 @@ func TestRoundTripPacks(t *testing.T) {
 	if _, err := Import(ctx, dst, bytes.NewReader(buf.Bytes())); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := dst.SpoolCount(ctx); n != 0 {
+	if n, _ := store.SpoolCount(ctx, dst.Pool); n != 0 {
 		t.Fatalf("import left %d rows in the spool", n)
 	}
 	var packed int
 	if err := dst.Pool.QueryRow(ctx, "SELECT count(*) FROM event_packs").Scan(&packed); err != nil || packed != 3 {
 		t.Fatalf("event_packs after import = %d %v", packed, err)
 	}
-	ev, err := dst.GetEvent(ctx, sqlc.GetEventParams{ProjectID: mustProject(t, dst, p.Slug).ID, EventID: sentry.ID(strings.Repeat("e3", 16))})
+	ev, err := store.GetEvent(ctx, dst.Pool, mustProject(t, dst, p.Slug).ID, sentry.ID(strings.Repeat("e3", 16)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,9 +566,9 @@ func TestRoundTripPacks(t *testing.T) {
 	}
 }
 
-func mustProject(t *testing.T, st *store.Store, slug string) sqlc.Project {
+func mustProject(t *testing.T, st *store.Store, slug string) store.Project {
 	t.Helper()
-	p, err := st.GetProject(context.Background(), slug)
+	p, err := store.GetProject(context.Background(), st.Pool, slug)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -590,7 +589,7 @@ func TestExportReadsEachPackOnce(t *testing.T) {
 	insert := func(at time.Time, raw string) {
 		t.Helper()
 		row := store.EventInsert{OccurredAt: at, ProjectID: 1, EventID: sentry.DerivedID([]byte(raw)), Level: "error", Message: "m", Tags: []byte("{}"), Payload: store.Gzip([]byte(raw))}
-		if err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx, _ *sqlc.Queries) error {
+		if err := st.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 			return st.InsertEvents(ctx, tx, []store.EventInsert{row})
 		}); err != nil {
 			t.Fatal(err)

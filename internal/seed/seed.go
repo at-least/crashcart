@@ -24,9 +24,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/ingest"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // Days of history written, and the per-Ingest batch size.
@@ -171,15 +171,15 @@ var locales = []string{"en_US", "en_GB", "de_DE", "fr_FR", "ja_JP", "pt_BR"}
 // Run creates the demo project (if missing) and a week of events/sessions.
 func Run(ctx context.Context, in *ingest.Ingester, slug string) error {
 	st := in.Store
-	p, err := st.GetProject(ctx, slug)
+	p, err := store.GetProject(ctx, st.Pool, slug)
 	if errors.Is(err, pgx.ErrNoRows) {
-		p, err = st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: slug, Name: displayName(slug), PublicKey: auth.NewProjectKey()})
+		p, err = store.CreateProject(ctx, st.Pool, slug, displayName(slug), nil, auth.NewProjectKey())
 	}
 	if err != nil {
 		return fmt.Errorf("seed: project: %w", err)
 	}
 	for _, typ := range []string{"new_issue", "regression", "unhandled_spike", "escalating"} {
-		if _, err := st.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ), Enabled: true, CooldownMinutes: 60}); err != nil {
+		if _, err := store.UpsertAlertRule(ctx, st.Pool, p.ID, store.AlertType(typ), true, 60); err != nil {
 			return fmt.Errorf("seed: alert rule %s: %w", typ, err)
 		}
 	}

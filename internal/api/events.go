@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 )
@@ -113,7 +112,7 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	ev, err := h.Store.GetEvent(r.Context(), sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
+	ev, err := store.GetEvent(r.Context(), h.Store.Pool, p.ID, id)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -142,7 +141,7 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 // last, at most 20) read from it, its attachments (metadata; the bytes
 // are at each one's url), and its user report, if any.
 type eventDetail struct {
-	sqlc.Event
+	store.Event
 	Payload     json.RawMessage     `json:"payload"`
 	Breadcrumbs []sentry.Breadcrumb `json:"breadcrumbs"`
 	Attachments []attachmentOut     `json:"attachments"`
@@ -159,7 +158,7 @@ type userReportOut struct {
 	ReceivedAt time.Time `json:"received_at"`
 }
 
-func toUserReportOut(ur sqlc.UserReport) userReportOut {
+func toUserReportOut(ur store.UserReport) userReportOut {
 	out := userReportOut{EventID: string(ur.EventID), Comments: ur.Comments, ReceivedAt: ur.ReceivedAt.UTC()}
 	if ur.Name != nil {
 		out.Name = *ur.Name
@@ -172,7 +171,7 @@ func toUserReportOut(ur sqlc.UserReport) userReportOut {
 
 // userReportOf is an event's user report, or nil when it has none.
 func (h *Handler) userReportOf(r *http.Request, projectID int64, eventID sentry.ID) (*userReportOut, error) {
-	ur, err := h.Store.GetUserReport(r.Context(), sqlc.GetUserReportParams{ProjectID: projectID, EventID: eventID})
+	ur, err := store.GetUserReport(r.Context(), h.Store.Pool, projectID, eventID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -206,12 +205,12 @@ func (h *Handler) listUserReports(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, badRequest(fmt.Sprintf("offset must be at most %d (narrow the window instead)", store.MaxOffset)))
 		return
 	}
-	rows, err := h.Store.ListUserReports(r.Context(), sqlc.ListUserReportsParams{ProjectID: p.ID, Limit: int32(limit), Offset: int32(offset)})
+	rows, err := store.ListUserReports(r.Context(), h.Store.Pool, p.ID, int32(limit), int32(offset))
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	total, err := h.Store.CountUserReports(r.Context(), p.ID)
+	total, err := store.CountUserReports(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -232,8 +231,8 @@ type attachmentOut struct {
 	URL            string `json:"url"`
 }
 
-func (h *Handler) attachmentsOf(r *http.Request, slug string, ev sqlc.Event) ([]attachmentOut, error) {
-	rows, err := h.Store.ListAttachments(r.Context(), sqlc.ListAttachmentsParams{ProjectID: ev.ProjectID, EventID: ev.EventID, OccurredAt: ev.OccurredAt})
+func (h *Handler) attachmentsOf(r *http.Request, slug string, ev store.Event) ([]attachmentOut, error) {
+	rows, err := store.ListAttachments(r.Context(), h.Store.Pool, ev.ProjectID, ev.EventID, ev.OccurredAt)
 	if err != nil {
 		return nil, err
 	}
@@ -257,12 +256,12 @@ func (h *Handler) getAttachment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	ev, err := h.Store.GetEvent(r.Context(), sqlc.GetEventParams{ProjectID: p.ID, EventID: id})
+	ev, err := store.GetEvent(r.Context(), h.Store.Pool, p.ID, id)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	a, err := h.Store.GetAttachment(r.Context(), sqlc.GetAttachmentParams{ProjectID: p.ID, EventID: id, OccurredAt: ev.OccurredAt, N: int32(n)})
+	a, err := store.GetAttachment(r.Context(), h.Store.Pool, p.ID, id, ev.OccurredAt, int32(n))
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -283,7 +282,7 @@ func InlineImage(contentType string) bool { return inlineImages[strings.ToLower(
 
 // ServeAttachment writes an attachment's bytes: images inline under their
 // own type, anything else as an octet-stream download; never sniffed.
-func ServeAttachment(w http.ResponseWriter, a sqlc.Attachment) {
+func ServeAttachment(w http.ResponseWriter, a store.Attachment) {
 	disposition, ctype := "attachment", "application/octet-stream"
 	if InlineImage(a.ContentType) {
 		disposition, ctype = "inline", strings.ToLower(a.ContentType)
@@ -297,7 +296,7 @@ func ServeAttachment(w http.ResponseWriter, a sqlc.Attachment) {
 	w.Write(a.Data)
 }
 
-func breadcrumbsOf(ev sqlc.Event, payload []byte) []sentry.Breadcrumb {
+func breadcrumbsOf(ev store.Event, payload []byte) []sentry.Breadcrumb {
 	if len(payload) == 0 {
 		return []sentry.Breadcrumb{}
 	}

@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/blob"
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // Where a symbol file's bytes live is a property of its row, not of the
@@ -39,33 +39,33 @@ func LockKey(projectID int64, kind string, release *string, filename string) str
 // exactly the one the upsert replaces whatever a concurrent upload of the
 // same file does — and is deleted only after the commit. A row failure
 // deletes the new object; nothing points at it.
-func (s *Service) putSymbolFile(ctx context.Context, p sqlc.UpsertSymbolFileParams, data []byte) (sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) putSymbolFile(ctx context.Context, p store.UpsertSymbolFileParams, data []byte) (store.SymbolFileMeta, error) {
 	if s.Store.Blobs == nil {
 		p.Data, p.BlobKey = data, nil
-		return s.Store.UpsertSymbolFile(ctx, p)
+		return store.UpsertSymbolFile(ctx, s.Store.Pool, p)
 	}
 	key := blob.SymbolKey(p.ProjectID)
 	if err := s.Store.Blobs.Put(ctx, key, data); err != nil {
-		return sqlc.UpsertSymbolFileRow{}, fmt.Errorf("blob store: %w", err)
+		return store.SymbolFileMeta{}, fmt.Errorf("blob store: %w", err)
 	}
 	p.Data, p.BlobKey = nil, &key
-	var row sqlc.UpsertSymbolFileRow
+	var row store.SymbolFileMeta
 	var old *string
-	err := s.Store.Tx(ctx, func(ctx context.Context, _ pgx.Tx, q *sqlc.Queries) error {
-		if err := q.LockSymbolFile(ctx, LockKey(p.ProjectID, string(p.Kind), p.Release, p.Filename)); err != nil {
+	err := s.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := store.LockSymbolFile(ctx, tx, LockKey(p.ProjectID, string(p.Kind), p.Release, p.Filename)); err != nil {
 			return err
 		}
-		prev, err := q.SymbolFileBlobKey(ctx, sqlc.SymbolFileBlobKeyParams{ProjectID: p.ProjectID, Kind: p.Kind, Release: p.Release, Filename: p.Filename})
+		prev, err := store.SymbolFileBlobKey(ctx, tx, p.ProjectID, p.Kind, p.Release, p.Filename)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		old = prev
-		row, err = q.UpsertSymbolFile(ctx, p)
+		row, err = store.UpsertSymbolFile(ctx, tx, p)
 		return err
 	})
 	if err != nil {
 		s.Store.Blobs.Delete(context.WithoutCancel(ctx), key) // best effort; nothing references it
-		return sqlc.UpsertSymbolFileRow{}, err
+		return store.SymbolFileMeta{}, err
 	}
 	s.deleteBlobs(context.WithoutCancel(ctx), old)
 	return row, nil
@@ -120,7 +120,7 @@ func (s *Service) DeleteBlobs(ctx context.Context, keys []string) error {
 // DeleteSymbolFile removes one symbol file: the row, then its object.
 // found is false when the project has no such file.
 func (s *Service) DeleteSymbolFile(ctx context.Context, projectID, id int64) (found bool, err error) {
-	key, err := s.Store.DeleteSymbolFile(ctx, sqlc.DeleteSymbolFileParams{ProjectID: projectID, ID: id})
+	key, err := store.DeleteSymbolFile(ctx, s.Store.Pool, projectID, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

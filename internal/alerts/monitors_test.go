@@ -5,13 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 )
 
-func upsertTestMonitor(t *testing.T, ctx context.Context, st *store.Store, projectID int64, slug string, failureThreshold, recoveryThreshold int32) sqlc.Monitor {
+func upsertTestMonitor(t *testing.T, ctx context.Context, st *store.Store, projectID int64, slug string, failureThreshold, recoveryThreshold int32) store.Monitor {
 	t.Helper()
-	m, err := st.UpsertMonitor(ctx, sqlc.UpsertMonitorParams{
+	m, err := store.UpsertMonitor(ctx, st.Pool, store.UpsertMonitorParams{
 		ProjectID: projectID, Slug: slug, ScheduleType: "interval", ScheduleValue: "1", ScheduleUnit: ptr("hour"),
 		Timezone: "UTC", CheckinMarginMin: 1, MaxRuntimeMin: 10, FailureThreshold: failureThreshold, RecoveryThreshold: recoveryThreshold,
 	})
@@ -55,11 +54,11 @@ func TestCheckMonitorsMissed(t *testing.T) {
 	if s.payloads[0].Type != TypeMonitorFailed {
 		t.Errorf("payload type = %q", s.payloads[0].Type)
 	}
-	got, err := st.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: m.Slug})
+	got, err := store.GetMonitor(ctx, st.Pool, p.ID, m.Slug)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ConsecutiveFailures != 1 || !got.Alerting || !got.LastStatus.Valid || got.LastStatus.CheckinStatus != "missed" {
+	if got.ConsecutiveFailures != 1 || !got.Alerting || got.LastStatus == nil || *got.LastStatus != "missed" {
 		t.Fatalf("monitor state = %+v", got)
 	}
 	if got.NextExpectedAt == nil || !got.NextExpectedAt.After(time.Now().UTC()) {
@@ -121,7 +120,7 @@ func TestCheckMonitorsTimeout(t *testing.T) {
 	if n := countRows(t, st, "SELECT count(*) FROM monitor_checkins WHERE project_id = $1 AND monitor_slug = $2 AND status = 'timeout'", p.ID, m.Slug); n != 1 {
 		t.Fatalf("timeout rows = %d, want 1", n)
 	}
-	got, err := st.GetMonitor(ctx, sqlc.GetMonitorParams{ProjectID: p.ID, Slug: m.Slug})
+	got, err := store.GetMonitor(ctx, st.Pool, p.ID, m.Slug)
 	if err != nil {
 		t.Fatal(err)
 	}

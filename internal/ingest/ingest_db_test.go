@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -45,7 +45,7 @@ func envelope(items ...string) []byte {
 func TestIngestLifecycle(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestIngestLifecycle(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 	fp := res.NewIssues[0]
-	iss, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	iss, err := store.GetIssue(ctx, st.Pool, p.ID, fp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestIngestLifecycle(t *testing.T) {
 	if n != keep {
 		t.Fatalf("stored events = %d", n)
 	}
-	if n, _ := st.CountJobs(ctx); n != 1 { // one new_issue alert job
+	if n, _ := store.CountJobs(ctx, st.Pool); n != 1 { // one new_issue alert job
 		t.Fatalf("jobs = %d", n)
 	}
 
@@ -90,20 +90,20 @@ func TestIngestLifecycle(t *testing.T) {
 	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("0.9", ts, 6)), now), now); err != nil {
 		t.Fatal(err)
 	}
-	iss, _ = st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	iss, _ = store.GetIssue(ctx, st.Pool, p.ID, fp)
 	if len(iss.Releases) != 2 || iss.Releases[0] != "0.9" || iss.Releases[1] != "1.0" {
 		t.Fatalf("releases = %v", iss.Releases)
 	}
 	// Resolve, then see it again on releases it was already known on
 	// (old builds in the field): stays resolved.
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "resolved"}); err != nil {
+	if _, err := store.SetIssueStatus(ctx, st.Pool, store.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "resolved"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{"1.0", "0.9"} {
 		if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash(rel, ts, 4)), now), now); err != nil {
 			t.Fatal(err)
 		}
-		iss, _ = st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+		iss, _ = store.GetIssue(ctx, st.Pool, p.ID, fp)
 		if iss.Status != "resolved" {
 			t.Fatalf("event on known release %s should not regress: %s", rel, iss.Status)
 		}
@@ -116,7 +116,7 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	iss, _ = st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	iss, _ = store.GetIssue(ctx, st.Pool, p.ID, fp)
 	if iss.Status != "regression" || len(res.Regressions) != 1 || *iss.LastRelease != "1.1" {
 		t.Fatalf("expected regression: status=%s res=%+v", iss.Status, res)
 	}
@@ -152,12 +152,12 @@ func TestIngestLifecycle(t *testing.T) {
 	// A resent envelope (SDK timeout / crash cache) is idempotent for stored
 	// events: same ids, nothing re-counted. (Sampled-out events left no row
 	// to match, so a resend of those is counted again — accepted.)
-	before, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	before, _ := store.GetIssue(ctx, st.Pool, p.ID, fp)
 	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.0", ts, 1)), now), now)
 	if err != nil || res.Duplicates != 1 || res.Stored != 0 {
 		t.Fatalf("resend: %+v %v", res, err)
 	}
-	after, _ := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	after, _ := store.GetIssue(ctx, st.Pool, p.ID, fp)
 	if after.EventCount != before.EventCount {
 		t.Fatalf("resend counted: %d → %d", before.EventCount, after.EventCount)
 	}
@@ -175,7 +175,7 @@ func TestIngestLifecycle(t *testing.T) {
 	// from the moment a quota is set, and the envelope that would cross
 	// it is rejected whole.
 	day := now.Truncate(24 * time.Hour)
-	if used, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); used != 0 {
+	if used, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day); used != 0 {
 		t.Fatalf("usage counted while unlimited: %d", used)
 	}
 	p.DailyQuota = 4
@@ -183,7 +183,7 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil || res.Received != 1 {
 		t.Fatalf("first event against a fresh quota: res=%+v err=%v", res, err)
 	}
-	usedBefore, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day})
+	usedBefore, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day)
 	if usedBefore != 1 {
 		t.Fatalf("usage = %d, want 1 (counting starts when the quota is set, not the day's true total)", usedBefore)
 	}
@@ -195,14 +195,14 @@ func TestIngestLifecycle(t *testing.T) {
 	}
 	// The rollback left the day's count where it was, and the next
 	// envelope is refused before any work (the count does not move).
-	usedAfter, _ := st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day})
+	usedAfter, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day)
 	if usedAfter != usedBefore {
 		t.Fatalf("usage after rejected envelope = %d, want %d", usedAfter, usedBefore)
 	}
 	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 25)), now), now); !errors.Is(err, ErrQuota) {
 		t.Fatalf("exhausted quota: %v", err)
 	}
-	if usedAfter, _ = st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); usedAfter != usedBefore {
+	if usedAfter, _ = store.ProjectUsage(ctx, st.Pool, p.ID, day); usedAfter != usedBefore {
 		t.Fatalf("usage after short-circuit = %d, want %d", usedAfter, usedBefore)
 	}
 	// Lifting the quota stops counting again: accepted, usage untouched.
@@ -210,18 +210,18 @@ func TestIngestLifecycle(t *testing.T) {
 	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 26)), now), now); err != nil {
 		t.Fatalf("unlimited quota: %v", err)
 	}
-	if usedAfter, _ = st.ProjectUsage(ctx, sqlc.ProjectUsageParams{ProjectID: p.ID, Day: day}); usedAfter != usedBefore {
+	if usedAfter, _ = store.ProjectUsage(ctx, st.Pool, p.ID, day); usedAfter != usedBefore {
 		t.Fatalf("usage after unlimited accept = %d, want %d (writes skipped again)", usedAfter, usedBefore)
 	}
 
 	// Every release the envelopes mentioned is on record — those seen only
 	// through sessions (1.2) too — with the platforms of its events (a
 	// session names none) and the earliest time it was seen.
-	rels, err := st.ListReleases(ctx, sqlc.ListReleasesParams{ProjectID: p.ID, Limit: 10})
+	rels, err := store.ListReleases(ctx, st.Pool, p.ID, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]sqlc.Release{}
+	got := map[string]store.Release{}
 	for _, r := range rels {
 		got[r.Release] = r
 	}
@@ -243,7 +243,7 @@ func TestIngestLifecycle(t *testing.T) {
 func TestIngestHTTP(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "secretkey"})
+	p, _ := store.CreateProject(ctx, st.Pool, "app", "App", nil, "secretkey")
 	in := &Ingester{Store: st, Cfg: config.Config{RateLimit: 0}, Log: slog.Default()}
 	h := in.Handler()
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -322,7 +322,7 @@ func TestIngestHTTP(t *testing.T) {
 func TestIngestUngroupedSampledWithRedaction(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestIngestUngroupedSampledWithRedaction(t *testing.T) {
 func TestIngestClampsFarPastClock(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestIngestClampsFarPastClock(t *testing.T) {
 	if err != nil || res.Stored != 2 || res.Sessions != 1 {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
-	iss, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: res.NewIssues[0]})
+	iss, err := store.GetIssue(ctx, st.Pool, p.ID, res.NewIssues[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestIngestClampsFarPastClock(t *testing.T) {
 func TestIngestRegressionAlertsOnce(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestIngestRegressionAlertsOnce(t *testing.T) {
 		t.Fatalf("first: %+v %v", res, err)
 	}
 	fp := res.NewIssues[0]
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "resolved"}); err != nil {
+	if _, err := store.SetIssueStatus(ctx, st.Pool, store.SetIssueStatusParams{ProjectID: p.ID, Fingerprint: fp, Status: "resolved"}); err != nil {
 		t.Fatal(err)
 	}
 	st.Pool.Exec(ctx, "DELETE FROM jobs")
@@ -422,7 +422,7 @@ func TestIngestRegressionAlertsOnce(t *testing.T) {
 func TestIngestHostileStrings(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +463,7 @@ func TestIngestHostileStrings(t *testing.T) {
 func TestIngestSessionBounds(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ func TestIngestSessionBounds(t *testing.T) {
 func TestIngestClampedResendDedupes(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestIngestClampedResendDedupes(t *testing.T) {
 func TestIngestSentrySemantics(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestIngestSentrySemantics(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	issue, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: fp})
+	issue, err := store.GetIssue(ctx, st.Pool, p.ID, fp)
 	if err != nil || issue.Level != "warning" {
 		t.Fatalf("issue level = %q (want the latest event's), err %v", issue.Level, err)
 	}
@@ -578,7 +578,7 @@ func TestIngestSentrySemantics(t *testing.T) {
 func TestIngestAttachments(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k2"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,18 +604,18 @@ func TestIngestAttachments(t *testing.T) {
 	if err != nil || res.Stored != 1 || res.Attachments != 2 {
 		t.Fatalf("ingest: %+v %v", res, err)
 	}
-	e, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: sentry.ID(id)})
+	e, err := store.GetEvent(ctx, st.Pool, p.ID, sentry.ID(id))
 	if err != nil {
 		t.Fatal(err)
 	}
-	atts, err := st.ListAttachments(ctx, sqlc.ListAttachmentsParams{ProjectID: p.ID, EventID: e.EventID, OccurredAt: e.OccurredAt})
+	atts, err := store.ListAttachments(ctx, st.Pool, p.ID, e.EventID, e.OccurredAt)
 	if err != nil || len(atts) != 2 {
 		t.Fatalf("attachments = %+v %v", atts, err)
 	}
 	if atts[0].N != 0 || atts[0].Filename != "screenshot.png" || atts[0].ContentType != "image/png" || atts[0].Size != 4 || atts[1].AttachmentType != "event.view_hierarchy" {
 		t.Errorf("attachment rows = %+v", atts)
 	}
-	a, err := st.GetAttachment(ctx, sqlc.GetAttachmentParams{ProjectID: p.ID, EventID: e.EventID, OccurredAt: e.OccurredAt, N: 0})
+	a, err := store.GetAttachment(ctx, st.Pool, p.ID, e.EventID, e.OccurredAt, 0)
 	if err != nil || string(a.Data) != "PNG!" {
 		t.Errorf("bytes = %q %v", a.Data, err)
 	}

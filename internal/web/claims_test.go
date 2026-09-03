@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/ingest"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
@@ -68,7 +67,7 @@ func TestIssuePageHeader(t *testing.T) {
 	if strings.Contains(body, "com.example.Cart in pay:3") || strings.Contains(body, "Cart.kt:3 in pay") {
 		t.Error("culprit carries a line number")
 	}
-	if ev, err := w.Store.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: sentry.ID(strings.Repeat("2", 32))}); err != nil || ev.Culprit == nil || *ev.Culprit != "com.example.Cart in pay" {
+	if ev, err := store.GetEvent(ctx, w.Store.Pool, p.ID, sentry.ID(strings.Repeat("2", 32))); err != nil || ev.Culprit == nil || *ev.Culprit != "com.example.Cart in pay" {
 		t.Errorf("event culprit = %v %v", ev.Culprit, err)
 	}
 }
@@ -84,7 +83,7 @@ func TestStreamWakesOnOwnProjectOnly(t *testing.T) {
 	if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO projects (id, slug, name, public_key) OVERRIDING SYSTEM VALUE VALUES ($1, 'stream', 'Stream', $2)`, id, strings.Repeat("f", 32)); err != nil {
 		t.Fatal(err)
 	}
-	p, err := w.Store.GetProject(ctx, "stream")
+	p, err := store.GetProject(ctx, w.Store.Pool, "stream")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,13 +8,13 @@ package web
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-import "github.com/at-least/crashcart/internal/db/sqlc"
+import "github.com/at-least/crashcart/internal/store"
 
-func feedbackEventHref(pg Page, r sqlc.UserReport) string {
+func feedbackEventHref(pg Page, r store.UserReport) string {
 	return pg.S.Persist().Href("/events/" + string(r.EventID))
 }
 
-func feedbackName(r sqlc.UserReport) string {
+func feedbackName(r store.UserReport) string {
 	if r.Name != nil && *r.Name != "" {
 		return *r.Name
 	}
@@ -24,7 +24,7 @@ func feedbackName(r sqlc.UserReport) string {
 // Feedback: every user_report of the project, newest first — including
 // ones whose event was sampled out or never arrived (there is no join to
 // events), so the link may lead to a 404 for those.
-func Feedback(pg Page, rows []sqlc.UserReport) templ.Component {
+func Feedback(pg Page, rows []store.UserReport) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {

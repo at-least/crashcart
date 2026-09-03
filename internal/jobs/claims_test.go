@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -21,7 +21,7 @@ func TestClaimJobsSkipsLockedRows(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
 		args, _ := json.Marshal(map[string]any{"event": i})
-		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: time.Now()}); err != nil {
+		if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, args, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -45,7 +45,7 @@ func TestClaimJobsSkipsLockedRows(t *testing.T) {
 	claimCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	start := time.Now()
-	got, err := st.ClaimJobs(claimCtx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	got, err := store.ClaimJobs(claimCtx, st.Pool, time.Now().Add(time.Minute), 10)
 	if err != nil {
 		t.Fatalf("claim waited on locked rows (%v): %v", time.Since(start), err)
 	}
@@ -63,10 +63,10 @@ func TestClaimJobsSkipsLockedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The released rows are claimable now, and only once.
-	if got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)}); err != nil || len(got) != 3 {
+	if got, err := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10); err != nil || len(got) != 3 {
 		t.Fatalf("after the other transaction ended: %d %v", len(got), err)
 	}
-	if got, _ := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)}); len(got) != 0 {
+	if got, _ := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10); len(got) != 0 {
 		t.Fatalf("leased jobs claimed again: %d", len(got))
 	}
 }
@@ -80,7 +80,7 @@ func TestEnqueueOnlyPullsRunAfterForward(t *testing.T) {
 	args := []byte(`{"event": 7}`)
 	enqueue := func(at time.Time) {
 		t.Helper()
-		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: args, RunAfter: at}); err != nil {
+		if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, args, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -107,7 +107,7 @@ func TestEnqueueOnlyPullsRunAfterForward(t *testing.T) {
 	// The same holds for the multi-row form.
 	enqueue2 := func(at time.Time) {
 		t.Helper()
-		if err := st.EnqueueJobs(ctx, sqlc.EnqueueJobsParams{Kinds: []string{"symbolicate"}, ProjectIds: []int64{1}, Args: []json.RawMessage{args}, RunAfters: []time.Time{at}}); err != nil {
+		if err := store.EnqueueJobs(ctx, st.Pool, []string{"symbolicate"}, []int64{1}, []json.RawMessage{args}, []time.Time{at}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -143,7 +143,7 @@ func TestDeadJobs(t *testing.T) {
 	liveOld := insert(`{"e": 3}`, maxAttempts-1, 30*24*time.Hour)
 	// The live job is a month old: ExpireJobs leaves it, and the dead job
 	// that is younger than a week; only the week-old dead one goes.
-	n, err := st.ExpireJobs(ctx)
+	n, err := store.ExpireJobs(ctx, st.Pool)
 	if err != nil || n != 1 {
 		t.Fatalf("ExpireJobs = %d %v (want the one dead for a week)", n, err)
 	}
@@ -162,17 +162,17 @@ func TestDeadJobs(t *testing.T) {
 	// as dead already — a live job older than a week on its 8th attempt is
 	// the one case the sweep and the worker overlap), then exhausted:
 	// RetryJob leaves attempts at the cap, so it is dead now.
-	got, err := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)})
+	got, err := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10)
 	if err != nil || len(got) != 1 || got[0].ID != liveOld || got[0].Attempts != maxAttempts {
 		t.Fatalf("claim = %+v %v (want only the live job, on its last attempt)", got, err)
 	}
-	if err := st.RetryJob(ctx, sqlc.RetryJobParams{ID: liveOld, LastError: &msg, RunAfter: time.Now()}); err != nil {
+	if err := store.RetryJob(ctx, st.Pool, liveOld, &msg, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)}); len(got) != 0 {
+	if got, _ := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10); len(got) != 0 {
 		t.Fatalf("dead job claimed: %+v", got)
 	}
-	dead, err := st.DeadJobs(ctx, 1)
+	dead, err := store.DeadJobs(ctx, st.Pool, 1)
 	if err != nil || len(dead) != 2 {
 		t.Fatalf("DeadJobs = %d %v", len(dead), err)
 	}
@@ -182,10 +182,10 @@ func TestDeadJobs(t *testing.T) {
 		}
 	}
 	// A dead job's args are outside jobs_pending: a new enqueue is a fresh row.
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: []byte(`{"e": 2}`), RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, []byte(`{"e": 2}`), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.ClaimJobs(ctx, sqlc.ClaimJobsParams{Max: 10, LockedUntil: time.Now().Add(time.Minute)}); len(got) != 1 || got[0].Attempts != 1 {
+	if got, _ := store.ClaimJobs(ctx, st.Pool, time.Now().Add(time.Minute), 10); len(got) != 1 || got[0].Attempts != 1 {
 		t.Fatalf("re-enqueue after death: %+v", got)
 	}
 }
@@ -200,11 +200,11 @@ func TestWorkerPollsWithoutNotify(t *testing.T) {
 	done := make(chan struct{}, 1)
 	wake := make(chan string) // nobody sends
 	w := &Worker{Store: st, Poll: 50 * time.Millisecond, Wake: wake, Handlers: map[string]Handler{
-		"symbolicate": func(context.Context, sqlc.Job, json.RawMessage) error { done <- struct{}{}; return nil },
+		"symbolicate": func(context.Context, store.Job, json.RawMessage) error { done <- struct{}{}; return nil },
 	}}
 	go w.Run(ctx)
 	time.Sleep(20 * time.Millisecond) // past the first (empty) claim
-	if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "symbolicate", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+	if err := store.EnqueueJob(ctx, st.Pool, "symbolicate", 1, []byte("{}"), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	select {

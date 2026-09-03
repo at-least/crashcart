@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // ── sign in ──
@@ -22,7 +22,7 @@ import (
 var LoginRateLimit = 30
 
 func (w *Web) loginPage(rw http.ResponseWriter, r *http.Request) {
-	n, err := w.Store.CountUsers(r.Context())
+	n, err := store.CountUsers(r.Context(), w.Store.Pool)
 	if err != nil {
 		w.fail(rw, r, err)
 		return
@@ -45,7 +45,7 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 	}
 	email := strings.ToLower(strings.TrimSpace(r.PostForm.Get("email")))
 	next := safeNext(r.PostForm.Get("next"))
-	u, err := w.Store.GetUserByEmail(r.Context(), email)
+	u, err := store.GetUserByEmail(r.Context(), w.Store.Pool, email)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		w.fail(rw, r, err)
 		return
@@ -102,7 +102,7 @@ func safeNext(s string) string {
 // ── first user ──
 
 func (w *Web) setupPage(rw http.ResponseWriter, r *http.Request) {
-	n, err := w.Store.CountUsers(r.Context())
+	n, err := store.CountUsers(r.Context(), w.Store.Pool)
 	if err != nil { // fail closed: an error must not open the setup form
 		w.fail(rw, r, err)
 		return
@@ -148,27 +148,27 @@ func (w *Web) setup(rw http.ResponseWriter, r *http.Request) {
 // createUser validates and creates a user; msg is the user-facing problem.
 // With first set the user is created only while there is none (a zero
 // user and no msg means one already existed).
-func (w *Web) createUser(r *http.Request, email, name, password string, first bool) (sqlc.User, string, error) {
+func (w *Web) createUser(r *http.Request, email, name, password string, first bool) (store.User, string, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !strings.Contains(email, "@") || len(email) > 254 {
-		return sqlc.User{}, "A valid email is required.", nil
+		return store.User{}, "A valid email is required.", nil
 	}
 	if len(password) < 10 {
-		return sqlc.User{}, "The password needs at least 10 characters.", nil
+		return store.User{}, "The password needs at least 10 characters.", nil
 	}
 	hash, err := auth.HashPassword(password)
 	if err != nil {
-		return sqlc.User{}, "", err
+		return store.User{}, "", err
 	}
-	params := sqlc.CreateUserParams{Email: email, Name: strings.TrimSpace(name), PasswordHash: hash}
-	var u sqlc.User
+	trimmedName := strings.TrimSpace(name)
+	var u store.User
 	if first {
-		u, _, err = w.Store.CreateFirstUser(r.Context(), params)
+		u, _, err = w.Store.CreateFirstUser(r.Context(), email, trimmedName, hash)
 	} else {
-		u, err = w.Store.CreateUser(r.Context(), params)
+		u, err = store.CreateUser(r.Context(), w.Store.Pool, email, trimmedName, hash)
 	}
 	if err != nil && strings.Contains(err.Error(), "users_email_key") {
-		return sqlc.User{}, "That email already has an account.", nil
+		return store.User{}, "That email already has an account.", nil
 	}
 	return u, "", err
 }
@@ -177,8 +177,8 @@ func (w *Web) createUser(r *http.Request, email, name, password string, first bo
 
 // AccountData feeds the account page.
 type AccountData struct {
-	Users     []sqlc.User
-	Keys      []sqlc.ListAPIKeysRow
+	Users     []store.User
+	Keys      []store.APIKey
 	NewSecret string // an API key just created: shown once
 	Error     string
 }
@@ -189,11 +189,11 @@ func (w *Web) account(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Web) accountPage(rw http.ResponseWriter, r *http.Request, d AccountData) {
 	var err error
-	if d.Users, err = w.Store.ListUsers(r.Context()); err != nil {
+	if d.Users, err = store.ListUsers(r.Context(), w.Store.Pool); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
-	if d.Keys, err = w.Store.ListAPIKeys(r.Context()); err != nil {
+	if d.Keys, err = store.ListAPIKeys(r.Context(), w.Store.Pool); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -228,7 +228,7 @@ func (w *Web) accountUserDelete(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "you cannot remove your own account", http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.DeleteUser(r.Context(), id); err != nil {
+	if _, err := store.DeleteUser(r.Context(), w.Store.Pool, id); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -261,7 +261,7 @@ func (w *Web) accountKeyRevoke(rw http.ResponseWriter, r *http.Request) {
 		http.NotFound(rw, r)
 		return
 	}
-	if _, err := w.Store.RevokeAPIKey(r.Context(), id); err != nil {
+	if _, err := store.RevokeAPIKey(r.Context(), w.Store.Pool, id); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

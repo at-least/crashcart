@@ -11,7 +11,6 @@ import (
 
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 )
 
@@ -35,14 +34,14 @@ func userCmd(ctx context.Context, st *store.Store, args []string) error {
 		if len(args) > 2 {
 			name = args[2]
 		}
-		u, err := st.CreateUser(ctx, sqlc.CreateUserParams{Email: email, Name: name, PasswordHash: hash})
+		u, err := store.CreateUser(ctx, st.Pool, email, name, hash)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("user %d %s\n", u.ID, u.Email)
 		return nil
 	case "passwd":
-		u, err := st.GetUserByEmail(ctx, email)
+		u, err := store.GetUserByEmail(ctx, st.Pool, email)
 		if err != nil {
 			return fmt.Errorf("user %q: %w", email, err)
 		}
@@ -54,7 +53,7 @@ func userCmd(ctx context.Context, st *store.Store, args []string) error {
 		if err != nil {
 			return err
 		}
-		_, err = st.SetUserPassword(ctx, sqlc.SetUserPasswordParams{ID: u.ID, PasswordHash: hash})
+		_, err = store.SetUserPassword(ctx, st.Pool, u.ID, hash)
 		return err
 	}
 	return fmt.Errorf("unknown user command %q", args[0])
@@ -96,7 +95,7 @@ func apikeyCmd(ctx context.Context, st *store.Store, args []string) error {
 		fmt.Println(secret)
 		return nil
 	case "list":
-		keys, err := st.ListAPIKeys(ctx)
+		keys, err := store.ListAPIKeys(ctx, st.Pool)
 		if err != nil {
 			return err
 		}
@@ -120,7 +119,7 @@ func apikeyCmd(ctx context.Context, st *store.Store, args []string) error {
 		if err != nil {
 			return err
 		}
-		n, err := st.RevokeAPIKey(ctx, id)
+		n, err := store.RevokeAPIKey(ctx, st.Pool, id)
 		if err != nil {
 			return err
 		}
@@ -138,13 +137,13 @@ func projectKeysCmd(ctx context.Context, st *store.Store, cfg config.Config, arg
 	if len(args) < 2 {
 		return errors.New("usage: crashcart project-keys list <slug> | project-keys delete <slug> <id>")
 	}
-	p, err := st.GetProject(ctx, args[1])
+	p, err := store.GetProject(ctx, st.Pool, args[1])
 	if err != nil {
 		return fmt.Errorf("project %q: %w", args[1], err)
 	}
 	switch args[0] {
 	case "list":
-		keys, err := st.ListProjectKeys(ctx, p.ID)
+		keys, err := store.ListProjectKeys(ctx, st.Pool, p.ID)
 		if err != nil {
 			return err
 		}
@@ -164,7 +163,7 @@ func projectKeysCmd(ctx context.Context, st *store.Store, cfg config.Config, arg
 		if err != nil {
 			return err
 		}
-		n, err := st.DeleteProjectKey(ctx, sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: id})
+		n, err := store.DeleteProjectKey(ctx, st.Pool, p.ID, id)
 		if err != nil {
 			return err
 		}

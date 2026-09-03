@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/ingest"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -30,13 +30,13 @@ func TestEventWrongTimeIsNoop(t *testing.T) {
 	if err := svc.Event(ctx, p.ID, id, at.Add(time.Second)); err != nil {
 		t.Fatalf("wrong at: %v", err)
 	}
-	if row, _ := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id}); row.Symbolicated {
+	if row, _ := store.GetEvent(ctx, st.Pool, p.ID, id); row.Symbolicated {
 		t.Fatal("symbolicated through a job with the wrong time")
 	}
 	if err := svc.Event(ctx, p.ID, id, at); err != nil {
 		t.Fatal(err)
 	}
-	if row, _ := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id}); !row.Symbolicated {
+	if row, _ := store.GetEvent(ctx, st.Pool, p.ID, id); !row.Symbolicated {
 		t.Fatal("not symbolicated with the right time")
 	}
 }
@@ -79,12 +79,12 @@ func TestSymbolicationWritesOnlySmallColumns(t *testing.T) {
 	if err := st.Pool.QueryRow(ctx, "SELECT count(*) FROM event_stats_dirty WHERE project_id = $1 AND bucket = $2", p.ID, at1.UTC().Truncate(time.Hour)).Scan(&dirty); err != nil || dirty != 1 {
 		t.Fatalf("hour not re-marked dirty: %d %v", dirty, err)
 	}
-	old, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: oldFP})
+	old, err := store.GetIssue(ctx, st.Pool, p.ID, oldFP)
 	if err != nil || old.EventCount != 1 || old.StoredCount != 1 {
 		t.Fatalf("old issue after the move: %+v %v (want 1/1, it still has %s)", old, err, id2)
 	}
-	row, _ := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: id1})
-	nw, err := st.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: p.ID, Fingerprint: *row.Fingerprint})
+	row, _ := store.GetEvent(ctx, st.Pool, p.ID, id1)
+	nw, err := store.GetIssue(ctx, st.Pool, p.ID, *row.Fingerprint)
 	if err != nil || nw.EventCount != 1 || nw.StoredCount != 1 {
 		t.Fatalf("new issue: %+v %v", nw, err)
 	}
@@ -111,7 +111,7 @@ func TestReleaseQueuesUnsymbolicatedNewestFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	rel := "web-1"
-	n, err := st.EnqueueSymbolicateRelease(ctx, sqlc.EnqueueSymbolicateReleaseParams{ProjectID: p.ID, Release: &rel, Limit: 1})
+	n, err := store.EnqueueSymbolicateRelease(ctx, st.Pool, p.ID, &rel, 1)
 	if err != nil || n != 1 {
 		t.Fatalf("limit 1: %d %v", n, err)
 	}
@@ -129,7 +129,7 @@ func TestReleaseQueuesUnsymbolicatedNewestFirst(t *testing.T) {
 	if got := queued(); len(got) != 1 || got[0] != string(ids[1]) {
 		t.Fatalf("limit 1 queued %v, want the newest unsymbolicated %s", got, ids[1])
 	}
-	n, err = st.EnqueueSymbolicateRelease(ctx, sqlc.EnqueueSymbolicateReleaseParams{ProjectID: p.ID, Release: &rel, Limit: ReleaseMax})
+	n, err = store.EnqueueSymbolicateRelease(ctx, st.Pool, p.ID, &rel, ReleaseMax)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestReleaseQueuesUnsymbolicatedNewestFirst(t *testing.T) {
 	if err := st.Pool.QueryRow(ctx, "SELECT (args->>'at')::timestamptz FROM jobs WHERE project_id = $1 AND args->>'event' = $2", p.ID, string(ids[0])).Scan(&at); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.GetEventAt(ctx, sqlc.GetEventAtParams{ProjectID: p.ID, EventID: ids[0], OccurredAt: at}); err != nil {
+	if _, err := store.GetEventAt(ctx, st.Pool, p.ID, ids[0], at); err != nil {
 		t.Fatalf("job 'at' does not address the event: %v", err)
 	}
 }
@@ -173,7 +173,7 @@ func TestResolveAtIngestBudget(t *testing.T) {
 	if took := time.Since(start); took > ingest.SymbolicateBudget+time.Second {
 		t.Fatalf("ingest waited %v for the sidecar (budget %v)", took, ingest.SymbolicateBudget)
 	}
-	row, err := st.GetEvent(ctx, sqlc.GetEventParams{ProjectID: p.ID, EventID: "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"})
+	row, err := store.GetEvent(ctx, st.Pool, p.ID, "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1")
 	if err != nil || row.Symbolicated {
 		t.Fatalf("stored as-is: %+v %v", row, err)
 	}
@@ -198,7 +198,7 @@ func TestSymbolFileReuploadIsOneRowNewKey(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
 	p := newProject(t, st)
-	first, err := st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: KindDSYM, Release: nil, DebugID: nil, Filename: "App.dSYM", Size: 1, Data: []byte("a")})
+	first, err := store.UpsertSymbolFile(ctx, st.Pool, store.UpsertSymbolFileParams{ProjectID: p.ID, Kind: KindDSYM, Release: nil, DebugID: nil, Filename: "App.dSYM", Size: 1, Data: []byte("a")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestSymbolFileReuploadIsOneRowNewKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	did := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
-	second, err := st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: KindDSYM, Release: nil, DebugID: &did, Filename: "App.dSYM", Size: 2, Data: []byte("bb")})
+	second, err := store.UpsertSymbolFile(ctx, st.Pool, store.UpsertSymbolFileParams{ProjectID: p.ID, Kind: KindDSYM, Release: nil, DebugID: &did, Filename: "App.dSYM", Size: 2, Data: []byte("bb")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,17 +220,17 @@ func TestSymbolFileReuploadIsOneRowNewKey(t *testing.T) {
 	if SymbolKey(first.ID, firstAt) == SymbolKey(second.ID, second.UploadedAt) {
 		t.Fatal("re-upload kept the sidecar key")
 	}
-	row, _ := st.SymbolFileData(ctx, second.ID)
+	row, _ := store.SymbolFileData(ctx, st.Pool, second.ID)
 	data := row.Data
 	if string(data) != "bb" {
 		t.Fatalf("data = %q", data)
 	}
 	rel := "2.0"
-	third, err := st.UpsertSymbolFile(ctx, sqlc.UpsertSymbolFileParams{ProjectID: p.ID, Kind: KindDSYM, Release: &rel, Filename: "App.dSYM", Size: 1, Data: []byte("c")})
+	third, err := store.UpsertSymbolFile(ctx, st.Pool, store.UpsertSymbolFileParams{ProjectID: p.ID, Kind: KindDSYM, Release: &rel, Filename: "App.dSYM", Size: 1, Data: []byte("c")})
 	if err != nil || third.ID == second.ID {
 		t.Fatalf("release-scoped upload: %+v %v", third, err)
 	}
-	all, _ := st.ListSymbolFiles(ctx, p.ID)
+	all, _ := store.ListSymbolFiles(ctx, st.Pool, p.ID)
 	if len(all) != 2 {
 		t.Fatalf("symbol_files = %d, want 2", len(all))
 	}

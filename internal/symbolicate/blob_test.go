@@ -11,8 +11,8 @@ import (
 
 	"github.com/at-least/crashcart/internal/blob"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/retention"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -35,7 +35,7 @@ func location(t *testing.T, s *Service, id int64) (data []byte, key *string) {
 func TestBlobStoreRows(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,8 +102,8 @@ func TestBlobStoreRows(t *testing.T) {
 func TestBlobStoreExpireAndProjectDelete(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
-	p2, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "other", Name: "Other", PublicKey: "k2"})
+	p, _ := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
+	p2, _ := store.CreateProject(ctx, st.Pool, "other", "Other", nil, "k2")
 	mem := &blob.Memory{}
 	st.Blobs = mem
 	s := &Service{Store: st, DSYM: NewDSYMClient("")}
@@ -127,11 +127,11 @@ func TestBlobStoreExpireAndProjectDelete(t *testing.T) {
 	}
 	// Project delete: the rows cascade, the objects are deleted by the
 	// caller from the keys it read first (internal/api does this).
-	keys, err := st.SymbolFileBlobKeys(ctx, p.ID)
+	keys, err := store.SymbolFileBlobKeys(ctx, st.Pool, p.ID)
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("project keys: %v %v", keys, err)
 	}
-	if err := st.DeleteProject(ctx, p.ID); err != nil {
+	if err := store.DeleteProject(ctx, st.Pool, p.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteBlobs(ctx, keys); err != nil {
@@ -163,14 +163,14 @@ func (f *failing) Put(ctx context.Context, key string, data []byte) error {
 func TestBlobStoreFailures(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, _ := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "app", Name: "App", PublicKey: "k"})
+	p, _ := store.CreateProject(ctx, st.Pool, "app", "App", nil, "k")
 	f := &failing{err: errors.New("bucket down")}
 	st.Blobs = f
 	s := &Service{Store: st, DSYM: NewDSYMClient("")}
 	if _, err := s.Upload(ctx, p.ID, "1.0", KindProGuard, "mapping.txt", []byte(mappingA)); err == nil || !strings.Contains(err.Error(), "bucket down") {
 		t.Fatalf("put failure: %v", err)
 	}
-	if ok, _ := st.SymbolFileExists(ctx, sqlc.SymbolFileExistsParams{ProjectID: p.ID, Kind: KindProGuard, Release: "1.0"}); ok {
+	if ok, _ := store.SymbolFileExists(ctx, st.Pool, p.ID, KindProGuard, "1.0", nil); ok {
 		t.Fatal("a row was written although the object was not")
 	}
 	// Row failure: a project that does not exist (FK). The object written
@@ -193,7 +193,7 @@ func TestBlobStoreFailures(t *testing.T) {
 	}
 	st.Blobs = f
 	// And the transient case: the object vanishes under a reader once.
-	rows, _ := st.SymbolFilesForRelease(ctx, sqlc.SymbolFilesForReleaseParams{ProjectID: p.ID, Release: "1.0", Kind: KindProGuard})
+	rows, _ := store.SymbolFilesForRelease(ctx, st.Pool, p.ID, KindProGuard, "1.0")
 	f.Delete(ctx, *rows[0].BlobKey)
 	if _, _, err := s.fetch(ctx, cacheKey{projectID: p.ID, kind: KindProGuard, key: "1.0"}); !errors.Is(err, blob.ErrNotFound) {
 		t.Fatalf("gone object must be a transient error, got %v", err)

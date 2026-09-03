@@ -34,7 +34,6 @@ import (
 
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
 )
@@ -154,8 +153,8 @@ func isHx(r *http.Request) bool {
 }
 
 // project resolves {slug}; writes 404 and returns false when unknown.
-func (w *Web) project(rw http.ResponseWriter, r *http.Request) (sqlc.Project, bool) {
-	p, err := w.Store.GetProject(r.Context(), r.PathValue("slug"))
+func (w *Web) project(rw http.ResponseWriter, r *http.Request) (store.Project, bool) {
+	p, err := store.GetProject(r.Context(), w.Store.Pool, r.PathValue("slug"))
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.NotFound(rw, r)
 		return p, false
@@ -187,13 +186,13 @@ func (w *Web) render(rw http.ResponseWriter, r *http.Request, c templ.Component)
 // Page is what the shell needs on every project page.
 type Page struct {
 	S           ViewState
-	Project     *sqlc.Project // nil on the portal
-	Section     string        // overview | issues | events | releases | feedback | monitors | settings
-	Stream      string        // SSE URL when the page shows the "new issues" banner
-	Regressions int64         // current regression count (baseline for the banner)
-	Tags        []string      // custom tag keys shown as filters
-	Path        string        // current path below the project base (window links)
-	User        string        // signed-in user's email
+	Project     *store.Project // nil on the portal
+	Section     string         // overview | issues | events | releases | feedback | monitors | settings
+	Stream      string         // SSE URL when the page shows the "new issues" banner
+	Regressions int64          // current regression count (baseline for the banner)
+	Tags        []string       // custom tag keys shown as filters
+	Path        string         // current path below the project base (window links)
+	User        string         // signed-in user's email
 }
 
 // page completes pg (custom tags, current path) and renders body(pg)

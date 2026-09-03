@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
@@ -15,7 +15,7 @@ import (
 func TestProjectKeysCmd(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "cli-keys", Name: "App", PublicKey: "k0"})
+	p, err := store.CreateProject(ctx, st.Pool, "cli-keys", "App", nil, "k0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestProjectKeysCmd(t *testing.T) {
 	if _, err := st.RotateProjectKey(ctx, p.ID, "k1"); err != nil {
 		t.Fatal(err)
 	}
-	keys, err := st.ListProjectKeys(ctx, p.ID)
+	keys, err := store.ListProjectKeys(ctx, st.Pool, p.ID)
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("retired keys = %+v, err %v", keys, err)
 	}
@@ -47,7 +47,7 @@ func TestProjectKeysCmd(t *testing.T) {
 	if err := projectKeysCmd(ctx, st, cfg, []string{"delete", "cli-keys", strconv.FormatInt(keys[0].ID, 10)}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if keys, err = st.ListProjectKeys(ctx, p.ID); err != nil || len(keys) != 0 {
+	if keys, err = store.ListProjectKeys(ctx, st.Pool, p.ID); err != nil || len(keys) != 0 {
 		t.Fatalf("retired keys after delete = %+v, err %v", keys, err)
 	}
 }

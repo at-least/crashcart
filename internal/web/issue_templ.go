@@ -540,7 +540,7 @@ func IssuePage(pg Page, d IssueData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var30 string
-			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(deref(d.Latest.OsVersion))
+			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(deref(d.Latest.OSVersion))
 			if templ_7745c5c3_Err != nil {
 				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/issue.templ`, Line: 104, Col: 106}
 			}

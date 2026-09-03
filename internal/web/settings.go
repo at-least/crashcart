@@ -12,8 +12,8 @@ import (
 
 	"github.com/a-h/templ"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
 )
 
@@ -24,11 +24,11 @@ var AlertTypes = []string{"new_issue", "regression", "unhandled_spike", "escalat
 type SettingsData struct {
 	DSN           string
 	EnvelopeURL   string
-	Rules         []sqlc.AlertRule
-	Channels      []sqlc.AlertChannel
-	Symbols       []sqlc.ListSymbolFilesRow
-	ClientReports []sqlc.ListClientReportCountsRow // events the project's SDKs discarded client-side, last 7 days
-	RetiredKeys   []sqlc.ProjectKey                // DSN keys Rotate has retired but nobody has deleted yet
+	Rules         []store.AlertRule
+	Channels      []store.AlertChannel
+	Symbols       []store.SymbolFileMeta
+	ClientReports []store.ClientReportCount // events the project's SDKs discarded client-side, last 7 days
+	RetiredKeys   []store.ProjectKey        // DSN keys Rotate has retired but nobody has deleted yet
 }
 
 func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {
@@ -39,39 +39,37 @@ func (w *Web) settings(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	base := w.baseURL(r)
 	d := SettingsData{EnvelopeURL: base + "/api/" + strconv.FormatInt(p.ID, 10) + "/envelope/", DSN: auth.DSN(base, p.PublicKey, p.ID)}
-	rules, err := w.Store.ListAlertRules(ctx, p.ID)
+	rules, err := store.ListAlertRules(ctx, w.Store.Pool, p.ID)
 	if err != nil {
 		w.fail(rw, r, err)
 		return
 	}
 	// Show every type even before its row exists (defaults: on, 60 min).
-	have := map[string]sqlc.AlertRule{}
+	have := map[string]store.AlertRule{}
 	for _, ru := range rules {
 		have[string(ru.Type)] = ru
 	}
 	for _, t := range AlertTypes {
 		ru, ok := have[t]
 		if !ok {
-			ru = sqlc.AlertRule{ProjectID: p.ID, Type: sqlc.AlertType(t), Enabled: true, CooldownMinutes: 60}
+			ru = store.AlertRule{ProjectID: p.ID, Type: store.AlertType(t), Enabled: true, CooldownMinutes: 60}
 		}
 		d.Rules = append(d.Rules, ru)
 	}
-	if d.Channels, err = w.Store.ListAlertChannels(ctx, p.ID); err != nil {
+	if d.Channels, err = store.ListAlertChannels(ctx, w.Store.Pool, p.ID); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
-	if d.Symbols, err = w.Store.ListSymbolFiles(ctx, p.ID); err != nil {
+	if d.Symbols, err = store.ListSymbolFiles(ctx, w.Store.Pool, p.ID); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
 	now := time.Now().UTC()
-	if d.ClientReports, err = w.Store.ListClientReportCounts(ctx, sqlc.ListClientReportCountsParams{
-		ProjectID: p.ID, Bucket: now.Add(-7 * day).Truncate(time.Hour), Bucket_2: now,
-	}); err != nil {
+	if d.ClientReports, err = store.ListClientReportCounts(ctx, w.Store.Pool, p.ID, now.Add(-7*day).Truncate(time.Hour), now); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
-	if d.RetiredKeys, err = w.Store.ListProjectKeys(ctx, p.ID); err != nil {
+	if d.RetiredKeys, err = store.ListProjectKeys(ctx, w.Store.Pool, p.ID); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -104,7 +102,7 @@ func (w *Web) createProject(rw http.ResponseWriter, r *http.Request) {
 		plat = &platform
 	}
 	ctx := r.Context()
-	p, err := w.Store.CreateProject(ctx, sqlc.CreateProjectParams{Slug: slug, Name: name, Platform: plat, PublicKey: auth.NewProjectKey()})
+	p, err := store.CreateProject(ctx, w.Store.Pool, slug, name, plat, auth.NewProjectKey())
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
 			http.Error(rw, "slug already exists", http.StatusConflict)
@@ -114,7 +112,7 @@ func (w *Web) createProject(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, t := range AlertTypes {
-		if _, err := w.Store.UpsertAlertRule(ctx, sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(t), Enabled: true, CooldownMinutes: 60}); err != nil {
+		if _, err := store.UpsertAlertRule(ctx, w.Store.Pool, p.ID, store.AlertType(t), true, 60); err != nil {
 			w.fail(rw, r, err)
 			return
 		}
@@ -143,7 +141,7 @@ func (w *Web) settingsSampling(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "keep_first >= 0, 0 <= rate <= 1 and daily_quota >= 0 required", http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: int32(keep), SampleRate: rate, DailyQuota: int32(quota)}); err != nil {
+	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: int32(keep), SampleRate: rate, DailyQuota: int32(quota)}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -164,7 +162,7 @@ func (w *Web) settingsName(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "name must not be empty", http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}); err != nil {
+	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -189,7 +187,7 @@ func (w *Web) settingsPlatform(rw http.ResponseWriter, r *http.Request) {
 	if platform != "" {
 		plat = &platform
 	}
-	if _, err := w.Store.UpdateProject(r.Context(), sqlc.UpdateProjectParams{ID: p.ID, Name: p.Name, Platform: plat, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}); err != nil {
+	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: plat, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -218,7 +216,7 @@ func (w *Web) settingsKeyDelete(rw http.ResponseWriter, r *http.Request) {
 		http.NotFound(rw, r)
 		return
 	}
-	if _, err := w.Store.DeleteProjectKey(r.Context(), sqlc.DeleteProjectKeyParams{ProjectID: p.ID, ID: id}); err != nil {
+	if _, err := store.DeleteProjectKey(r.Context(), w.Store.Pool, p.ID, id); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -254,7 +252,7 @@ func (w *Web) settingsAlert(rw http.ResponseWriter, r *http.Request) {
 		}
 		cooldown = n
 	}
-	if _, err := w.Store.UpsertAlertRule(r.Context(), sqlc.UpsertAlertRuleParams{ProjectID: p.ID, Type: sqlc.AlertType(typ), Enabled: enabled, CooldownMinutes: int32(cooldown)}); err != nil {
+	if _, err := store.UpsertAlertRule(r.Context(), w.Store.Pool, p.ID, store.AlertType(typ), enabled, int32(cooldown)); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -275,7 +273,7 @@ func (w *Web) settingsChannelAdd(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if _, err := w.Store.CreateAlertChannel(r.Context(), sqlc.CreateAlertChannelParams{ProjectID: p.ID, Kind: sqlc.ChannelKind(r.PostForm.Get("kind")), Config: cfg}); err != nil {
+	if _, err := store.CreateAlertChannel(r.Context(), w.Store.Pool, p.ID, store.ChannelKind(r.PostForm.Get("kind")), cfg); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -292,7 +290,7 @@ func (w *Web) settingsChannelDelete(rw http.ResponseWriter, r *http.Request) {
 		http.NotFound(rw, r)
 		return
 	}
-	if _, err := w.Store.DeleteAlertChannel(r.Context(), sqlc.DeleteAlertChannelParams{ProjectID: p.ID, ID: id}); err != nil {
+	if _, err := store.DeleteAlertChannel(r.Context(), w.Store.Pool, p.ID, id); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

@@ -24,7 +24,6 @@ import (
 	"github.com/at-least/crashcart/internal/cli"
 	"github.com/at-least/crashcart/internal/config"
 	"github.com/at-least/crashcart/internal/db"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/export"
 	"github.com/at-least/crashcart/internal/ingest"
 	"github.com/at-least/crashcart/internal/jobs"
@@ -165,7 +164,7 @@ func main() {
 			}
 			platform = &p
 		}
-		p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: fs.Arg(0), Name: fs.Arg(1), Platform: platform, PublicKey: auth.NewProjectKey()})
+		p, err := store.CreateProject(ctx, st.Pool, fs.Arg(0), fs.Arg(1), platform, auth.NewProjectKey())
 		if err != nil {
 			fatal(log, err)
 		}
@@ -182,7 +181,7 @@ func main() {
 		if len(args) < 1 {
 			fatal(log, errors.New("usage: crashcart rotate-key <slug>"))
 		}
-		p, err := st.GetProject(ctx, args[0])
+		p, err := store.GetProject(ctx, st.Pool, args[0])
 		if err != nil {
 			fatal(log, err)
 		}
@@ -218,7 +217,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 	listener := &store.Listener{Pool: st.Pool, Log: log}
 	go listener.Run(workCtx)
 	handlers := map[string]jobs.Handler{
-		"symbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
+		"symbolicate": func(ctx context.Context, j store.Job, args json.RawMessage) error {
 			var a struct {
 				Event sentry.ID `json:"event"`
 				At    time.Time `json:"at"`
@@ -228,7 +227,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 			}
 			return syms.Event(ctx, j.ProjectID, a.Event, a.At)
 		},
-		"resymbolicate": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
+		"resymbolicate": func(ctx context.Context, j store.Job, args json.RawMessage) error {
 			var a struct {
 				Release string `json:"release"`
 			}
@@ -237,7 +236,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, in *ingest.I
 			}
 			return syms.Release(ctx, j.ProjectID, a.Release)
 		},
-		"alert": func(ctx context.Context, j sqlc.Job, args json.RawMessage) error {
+		"alert": func(ctx context.Context, j store.Job, args json.RawMessage) error {
 			var a struct {
 				Type        string `json:"type"`
 				Fingerprint string `json:"fingerprint"`

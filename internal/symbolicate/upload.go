@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 // MaxUpload caps one symbol upload (and one zip entry) — large enough for
@@ -45,7 +45,7 @@ var uuidRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 // release's unsymbolicated events and drops cached mappings. This is the
 // single write path used by the JSON API, the sentry-cli endpoint and the
 // viewer.
-func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte) ([]sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte) ([]store.SymbolFileMeta, error) {
 	return s.upload(ctx, projectID, release, kind, filename, data, nil)
 }
 
@@ -53,7 +53,7 @@ func (s *Service) Upload(ctx context.Context, projectID int64, release, kind, fi
 // computes one for ProGuard mappings and sends it in the assemble request;
 // the Android SDK reports the same uuid in debug_meta). Zips fall back to
 // per-file detection.
-func (s *Service) UploadWithDebugID(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID string) ([]sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) UploadWithDebugID(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID string) ([]store.SymbolFileMeta, error) {
 	var id *string
 	if debugID = strings.ToLower(strings.TrimSpace(debugID)); debugID != "" {
 		id = &debugID
@@ -61,7 +61,7 @@ func (s *Service) UploadWithDebugID(ctx context.Context, projectID int64, releas
 	return s.upload(ctx, projectID, release, kind, filename, data, id)
 }
 
-func (s *Service) upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID *string) ([]sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) upload(ctx context.Context, projectID int64, release, kind, filename string, data []byte, debugID *string) ([]store.SymbolFileMeta, error) {
 	if len(data) == 0 {
 		return nil, UploadError("empty file")
 	}
@@ -71,7 +71,7 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 	if kind != "" && !kinds[kind] {
 		return nil, UploadError("kind must be proguard, sourcemap or dsym")
 	}
-	var rows []sqlc.UpsertSymbolFileRow
+	var rows []store.SymbolFileMeta
 	if isZip(filename, data) {
 		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
@@ -146,7 +146,7 @@ func (s *Service) upload(ctx context.Context, projectID int64, release, kind, fi
 	}
 	if release != "" {
 		args, _ := json.Marshal(map[string]string{"release": release})
-		if err := s.Store.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "resymbolicate", ProjectID: projectID, Args: args, RunAfter: time.Now()}); err != nil {
+		if err := store.EnqueueJob(ctx, s.Store.Pool, "resymbolicate", projectID, args, time.Now()); err != nil {
 			return nil, err
 		}
 	}
@@ -168,7 +168,7 @@ func classify(name string, data []byte) string {
 	return k
 }
 
-func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte, debugID *string) (sqlc.UpsertSymbolFileRow, error) {
+func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, name string, data []byte, debugID *string) (store.SymbolFileMeta, error) {
 	if debugID == nil {
 		debugID = DebugIDFor(kind, name, data)
 	}
@@ -181,8 +181,8 @@ func (s *Service) upsert(ctx context.Context, projectID int64, release, kind, na
 	if release == "" && kind == KindDSYM && debugID != nil && !strings.Contains(name, *debugID) {
 		name = name + "." + *debugID
 	}
-	return s.putSymbolFile(ctx, sqlc.UpsertSymbolFileParams{
-		ProjectID: projectID, Kind: sqlc.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: debugID,
+	return s.putSymbolFile(ctx, store.UpsertSymbolFileParams{
+		ProjectID: projectID, Kind: store.SymbolKind(kind), Release: nilIfEmpty(release), DebugID: debugID,
 		Filename: name, Size: int64(len(data)),
 	}, data)
 }
@@ -223,9 +223,7 @@ func (s *Service) Associate(ctx context.Context, projectID int64, release, debug
 	if debugID = strings.ToLower(strings.TrimSpace(debugID)); debugID != "" {
 		id = &debugID
 	}
-	if _, err := s.Store.SetSymbolFileRelease(ctx, sqlc.SetSymbolFileReleaseParams{
-		ProjectID: projectID, Release: &release, DebugID: id, Since: time.Now().Add(-time.Hour),
-	}); err != nil {
+	if _, err := store.SetSymbolFileRelease(ctx, s.Store.Pool, release, projectID, id, time.Now().Add(-time.Hour)); err != nil {
 		return err
 	}
 	s.Invalidate(projectID, release)

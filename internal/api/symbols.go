@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
 )
 
@@ -15,7 +15,7 @@ func (h *Handler) listSymbols(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	files, err := h.Store.ListSymbolFiles(r.Context(), p.ID)
+	files, err := store.ListSymbolFiles(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -87,7 +87,7 @@ type sentryDebugFile struct {
 	Release     string         `json:"release,omitempty"`
 }
 
-func sentryDebugFileFrom(f sqlc.ListSymbolFilesRow, sha string) sentryDebugFile {
+func sentryDebugFileFrom(f store.SymbolFileMeta, sha string) sentryDebugFile {
 	// symbolType is the file format; data.features what the file provides.
 	// data.type (symbolic's object class) is optional for sentry-cli and its
 	// accepted spellings vary between versions, so it is left out.
@@ -119,7 +119,7 @@ func (h *Handler) sentryUploadDSYMs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]sentryDebugFile, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, sentryDebugFileFrom(sqlc.ListSymbolFilesRow(row), ""))
+		out = append(out, sentryDebugFileFrom(row, ""))
 	}
 	writeJSON(w, http.StatusCreated, out)
 }
@@ -129,7 +129,7 @@ func (h *Handler) sentryListDSYMs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	files, err := h.Store.ListSymbolFiles(r.Context(), p.ID)
+	files, err := store.ListSymbolFiles(r.Context(), h.Store.Pool, p.ID)
 	if err != nil {
 		h.fail(w, err)
 		return

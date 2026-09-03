@@ -18,7 +18,6 @@ import (
 
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
 )
@@ -121,29 +120,29 @@ func (h *Handler) preflight(w http.ResponseWriter, _ *http.Request) {
 }
 
 // project resolves the {slug} path value; a 404 has been written when ok is false.
-func (h *Handler) project(w http.ResponseWriter, r *http.Request) (sqlc.Project, bool) {
+func (h *Handler) project(w http.ResponseWriter, r *http.Request) (store.Project, bool) {
 	return h.projectBySlugOrID(w, r, r.PathValue("slug"))
 }
 
 // projectBySlugOrID resolves a project by slug, falling back to numeric id
 // (sentry-cli sends whichever it was configured with).
-func (h *Handler) projectBySlugOrID(w http.ResponseWriter, r *http.Request, ref string) (sqlc.Project, bool) {
+func (h *Handler) projectBySlugOrID(w http.ResponseWriter, r *http.Request, ref string) (store.Project, bool) {
 	p, err := h.lookupProject(r.Context(), ref)
 	if err != nil {
 		h.fail(w, err)
-		return sqlc.Project{}, false
+		return store.Project{}, false
 	}
 	return p, true
 }
 
-func (h *Handler) lookupProject(ctx context.Context, ref string) (sqlc.Project, error) {
+func (h *Handler) lookupProject(ctx context.Context, ref string) (store.Project, error) {
 	if ref == "" {
-		return sqlc.Project{}, errNotFound
+		return store.Project{}, errNotFound
 	}
-	p, err := h.Store.GetProject(ctx, ref)
+	p, err := store.GetProject(ctx, h.Store.Pool, ref)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if id, perr := strconv.ParseInt(ref, 10, 64); perr == nil {
-			return h.Store.GetProjectByID(ctx, id)
+			return store.GetProjectByID(ctx, h.Store.Pool, id)
 		}
 	}
 	return p, err

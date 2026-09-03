@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
 )
 
@@ -82,7 +82,7 @@ func (h *Handler) sentryChunkUploadPost(w http.ResponseWriter, r *http.Request) 
 			h.fail(w, badRequest("chunk checksum mismatch: "+part.FileName()))
 			return
 		}
-		if err := h.Store.PutUploadChunk(r.Context(), sqlc.PutUploadChunkParams{Sha1: strings.ToLower(part.FileName()), Data: data}); err != nil {
+		if err := store.PutUploadChunk(r.Context(), h.Store.Pool, strings.ToLower(part.FileName()), data); err != nil {
 			h.fail(w, err)
 			return
 		}
@@ -131,7 +131,7 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 		for i, c := range f.Chunks {
 			chunks[i] = strings.ToLower(c)
 		}
-		present, err := h.Store.UploadChunksPresent(ctx, chunks)
+		present, err := store.UploadChunksPresent(ctx, h.Store.Pool, chunks)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -150,7 +150,7 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 			out[checksum] = assembleResponse{State: "not_found", MissingChunks: missing}
 			continue
 		}
-		parts, err := h.Store.GetUploadChunks(ctx, chunks)
+		parts, err := store.GetUploadChunks(ctx, h.Store.Pool, chunks)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -186,10 +186,10 @@ func (h *Handler) sentryAssemble(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
-		if err := h.Store.DeleteUploadChunks(ctx, chunks); err != nil {
+		if err := store.DeleteUploadChunks(ctx, h.Store.Pool, chunks); err != nil {
 			h.Log.Warn("chunk-upload: chunks not deleted (the retention sweep will)", "err", err)
 		}
-		dif := sentryDebugFileFrom(sqlc.ListSymbolFilesRow(rows[0]), checksum)
+		dif := sentryDebugFileFrom(rows[0], checksum)
 		out[checksum] = assembleResponse{State: "ok", MissingChunks: []string{}, Dif: &dif}
 	}
 	writeJSON(w, http.StatusOK, out)

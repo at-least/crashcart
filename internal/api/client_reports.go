@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 type clientReportCountOut struct {
@@ -34,9 +34,7 @@ func (h *Handler) listClientReports(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	rows, err := h.Store.ListClientReportCounts(r.Context(), sqlc.ListClientReportCountsParams{
-		ProjectID: p.ID, Bucket: from.Truncate(time.Hour), Bucket_2: to,
-	})
+	rows, err := store.ListClientReportCounts(r.Context(), h.Store.Pool, p.ID, from.Truncate(time.Hour), to)
 	if err != nil {
 		h.fail(w, err)
 		return

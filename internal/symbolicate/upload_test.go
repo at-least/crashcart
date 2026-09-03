@@ -8,14 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
 )
 
 func TestUpload(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "ios", Name: "iOS", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "ios", "iOS", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestUpload(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].Kind != KindDSYM || rows[0].DebugID == nil || *rows[0].DebugID != "12345678-9abc-def0-1122-334455667788" {
 		t.Fatalf("dsym upload: %+v %v", rows, err)
 	}
-	if f, err := st.SymbolFileByDebugID(ctx, sqlc.SymbolFileByDebugIDParams{ProjectID: p.ID, DebugID: rows[0].DebugID}); err != nil || f.Filename != "App" {
+	if f, err := store.SymbolFileByDebugID(ctx, st.Pool, p.ID, rows[0].DebugID); err != nil || f.Filename != "App" {
 		t.Fatalf("lookup by debug id: %+v %v", f, err)
 	}
 	// Without a release (sentry-cli debug-files upload) every build's dSYM
@@ -52,10 +52,10 @@ func TestUpload(t *testing.T) {
 	if _, err := s.Upload(ctx, p.ID, "9.9", "", "maps.zip", zb.Bytes()); err == nil || !strings.Contains(err.Error(), "unpacks") {
 		t.Fatalf("oversized zip: %v", err)
 	}
-	if n, _ := st.SymbolFileExists(ctx, sqlc.SymbolFileExistsParams{ProjectID: p.ID, Kind: "proguard", Release: "9.9"}); n {
+	if n, _ := store.SymbolFileExists(ctx, st.Pool, p.ID, "proguard", "9.9", nil); n {
 		t.Fatal("a refused zip must store nothing")
 	}
-	if n, _ := st.CountJobs(ctx); n != 1 {
+	if n, _ := store.CountJobs(ctx, st.Pool); n != 1 {
 		t.Fatalf("resymbolicate job expected, jobs = %d", n)
 	}
 

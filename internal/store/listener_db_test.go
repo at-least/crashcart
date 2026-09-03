@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
@@ -27,7 +26,7 @@ func TestListenerNotifications(t *testing.T) {
 	// LISTEN is asynchronous: retry the first enqueue until the wake-up arrives.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+		if err := store.EnqueueJob(ctx, st.Pool, "alert", 1, []byte("{}"), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		select {
@@ -41,7 +40,7 @@ func TestListenerNotifications(t *testing.T) {
 		break
 	}
 	now := time.Now()
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now}); err != nil {
+	if _, err := store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -58,7 +57,7 @@ func TestListenerNotifications(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	// A second event on the same issue is an update, not a new issue: no notification.
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now}); err != nil {
+	if _, err := store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -67,11 +66,11 @@ func TestListenerNotifications(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 	// Resolve, then see it again on another release: regression notifies.
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Status: "resolved"}); err != nil {
+	if _, err := store.SetIssueStatus(ctx, st.Pool, store.SetIssueStatusParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Status: "resolved"}); err != nil {
 		t.Fatal(err)
 	}
 	rel := "2.0"
-	if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now.Add(time.Second), FirstRelease: &rel, Releases: []string{rel}, Regress: true}); err != nil {
+	if _, err := store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{ProjectID: 7, Fingerprint: sentry.DerivedID([]byte("f")), Title: "T", Level: "error", EventCount: 1, FirstSeen: now, LastSeen: now.Add(time.Second), FirstRelease: &rel, Releases: []string{rel}, Regress: true}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -103,7 +102,7 @@ func TestListenerKeepalive(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // several keepalive rounds
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte(`{"k":1}`), RunAfter: time.Now()}); err != nil {
+		if err := store.EnqueueJob(ctx, st.Pool, "alert", 1, []byte(`{"k":1}`), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		select {
@@ -133,7 +132,7 @@ func TestListenerReconnects(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(10 * time.Second)
 		for {
-			if err := st.EnqueueJob(ctx, sqlc.EnqueueJobParams{Kind: "alert", ProjectID: 1, Args: []byte("{}"), RunAfter: time.Now()}); err != nil {
+			if err := store.EnqueueJob(ctx, st.Pool, "alert", 1, []byte("{}"), time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			select {

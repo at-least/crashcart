@@ -10,7 +10,7 @@ import (
 
 	"github.com/at-least/crashcart/internal/auth"
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/symbolicate"
 	"github.com/at-least/crashcart/internal/testdb"
 )
@@ -20,7 +20,7 @@ import (
 func TestCORSScopes(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "shop", Name: "Shop", PublicKey: "dsnkey"})
+	p, err := store.CreateProject(ctx, st.Pool, "shop", "Shop", nil, "dsnkey")
 	if err != nil {
 		t.Fatal(err)
 	}

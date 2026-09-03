@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
+	"github.com/at-least/crashcart/internal/store"
 )
 
 type sessionsOut struct {
@@ -26,7 +26,7 @@ type releaseOut struct {
 	NewIssues     int64       `json:"new_issues"`
 }
 
-func toReleaseOut(r sqlc.ReleaseStatsRow) *releaseOut {
+func toReleaseOut(r store.ReleaseStatsRow) *releaseOut {
 	platforms := r.Platforms
 	if platforms == nil {
 		platforms = []string{}
@@ -46,17 +46,17 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: from.Truncate(time.Hour), ToAt: to})
+	stats, err := store.ReleaseStats(ctx, h.Store.Pool, p.ID, from.Truncate(time.Hour), to)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	health, err := h.Store.ReleaseHealth(ctx, sqlc.ReleaseHealthParams{ProjectID: p.ID, Bucket: from.Truncate(24 * time.Hour), Bucket_2: to})
+	health, err := store.ReleaseHealth(ctx, h.Store.Pool, p.ID, from.Truncate(24*time.Hour), to)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	fresh, err := h.Store.NewIssuesByRelease(ctx, sqlc.NewIssuesByReleaseParams{ProjectID: p.ID, FirstSeen: from, FirstSeen_2: to})
+	fresh, err := store.NewIssuesByRelease(ctx, h.Store.Pool, p.ID, from, to)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -116,7 +116,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	hi := to
 	hlo, dlo := from.Truncate(time.Hour), from.Truncate(24*time.Hour)
 
-	stats, err := h.Store.ReleaseStats(ctx, sqlc.ReleaseStatsParams{ProjectID: p.ID, FromAt: hlo, ToAt: hi})
+	stats, err := store.ReleaseStats(ctx, h.Store.Pool, p.ID, hlo, hi)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -127,12 +127,12 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 			rel = toReleaseOut(st)
 		}
 	}
-	health, err := h.Store.ReleaseHealthDaily(ctx, sqlc.ReleaseHealthDailyParams{ProjectID: p.ID, Release: version, Bucket: dlo, Bucket_2: hi})
+	health, err := store.ReleaseHealthDaily(ctx, h.Store.Pool, p.ID, version, dlo, hi)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	issues, err := h.Store.ListIssuesByRelease(ctx, sqlc.ListIssuesByReleaseParams{ProjectID: p.ID, FirstRelease: &version, Limit: 200})
+	issues, err := store.ListIssuesByRelease(ctx, h.Store.Pool, p.ID, &version, 200)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -153,7 +153,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	rel.CrashFreeRate = crashFreeRate(rel.Sessions.Total, rel.Sessions.Crashed)
 
-	tl, err := h.Store.ReleaseTimeline(ctx, sqlc.ReleaseTimelineParams{ProjectID: p.ID, Release: version, FromAt: hlo, ToAt: hi, Width: hourly})
+	tl, err := store.ReleaseTimeline(ctx, h.Store.Pool, p.ID, version, hlo, hi, hourly)
 	if err != nil {
 		h.fail(w, err)
 		return

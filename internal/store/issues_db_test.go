@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 	"github.com/at-least/crashcart/internal/testdb"
@@ -14,13 +13,13 @@ import (
 func TestListIssuesDB(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
-	p, err := st.CreateProject(ctx, sqlc.CreateProjectParams{Slug: "s", Name: "S", PublicKey: "k"})
+	p, err := store.CreateProject(ctx, st.Pool, "s", "S", nil, "k")
 	if err != nil {
 		t.Fatal(err)
 	}
 	rel := "1.0"
 	for i, fp := range []string{"a", "b", "c"} {
-		if _, err := st.UpsertIssue(ctx, sqlc.UpsertIssueParams{
+		if _, err := store.UpsertIssue(ctx, st.Pool, store.UpsertIssueParams{
 			ProjectID: p.ID, Fingerprint: sentry.DerivedID([]byte(fp)), Title: "Issue " + fp, Level: "error", EventCount: int64(3 - i),
 			FirstSeen: time.Unix(int64(100+i), 0), LastSeen: time.Unix(int64(200+i), 0), FirstRelease: &rel,
 		}); err != nil {
@@ -53,22 +52,22 @@ func TestUpsertIssueRegressFlag(t *testing.T) {
 	ctx := context.Background()
 	fp := sentry.DerivedID([]byte("rf"))
 	now := time.Now().UTC()
-	base := sqlc.UpsertIssueParams{ProjectID: 1, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: now, LastSeen: now, Releases: []string{"1.0"}, Regress: true}
-	if _, err := st.UpsertIssue(ctx, base); err != nil {
+	base := store.UpsertIssueParams{ProjectID: 1, Fingerprint: fp, Title: "T", Level: "error", EventCount: 1, StoredCount: 1, FirstSeen: now, LastSeen: now, Releases: []string{"1.0"}, Regress: true}
+	if _, err := store.UpsertIssue(ctx, st.Pool, base); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SetIssueStatus(ctx, sqlc.SetIssueStatusParams{ProjectID: 1, Fingerprint: fp, Status: "resolved"}); err != nil {
+	if _, err := store.SetIssueStatus(ctx, st.Pool, store.SetIssueStatusParams{ProjectID: 1, Fingerprint: fp, Status: "resolved"}); err != nil {
 		t.Fatal(err)
 	}
 	moved := base
 	moved.Releases, moved.Regress = []string{"2.0"}, false
-	row, err := st.UpsertIssue(ctx, moved)
+	row, err := store.UpsertIssue(ctx, st.Pool, moved)
 	if err != nil || row.Status != "resolved" {
 		t.Fatalf("regress=false on a new release: status=%s err=%v (want resolved)", row.Status, err)
 	}
 	ingested := base
 	ingested.Releases = []string{"2.0"}
-	row, err = st.UpsertIssue(ctx, ingested)
+	row, err = store.UpsertIssue(ctx, st.Pool, ingested)
 	if err != nil || row.Status != "regression" {
 		t.Fatalf("regress=true on a new release: status=%s err=%v (want regression)", row.Status, err)
 	}

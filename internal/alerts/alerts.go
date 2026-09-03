@@ -23,7 +23,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db/sqlc"
 	"github.com/at-least/crashcart/internal/sentry"
 	"github.com/at-least/crashcart/internal/store"
 )
@@ -83,7 +82,7 @@ type Payload struct {
 // EnsureRules creates the project's four default rules (all enabled,
 // 60 min cooldown) when they do not exist yet. Existing rows are kept.
 func EnsureRules(ctx context.Context, st *store.Store, projectID int64) error {
-	return st.EnsureAlertRules(ctx, sqlc.EnsureAlertRulesParams{ProjectID: projectID, CooldownMinutes: defaultCooldown})
+	return store.EnsureAlertRules(ctx, st.Pool, projectID, defaultCooldown)
 }
 
 // Issue handles job kind "alert" ({type: new_issue|regression, fingerprint}).
@@ -102,25 +101,25 @@ func (n *Notifier) Issue(ctx context.Context, projectID int64, typ, fingerprint 
 	if !ok {
 		return nil
 	}
-	issue, err := n.Store.GetIssue(ctx, sqlc.GetIssueParams{ProjectID: projectID, Fingerprint: fp})
+	issue, err := store.GetIssue(ctx, n.Store.Pool, projectID, fp)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	p, err := n.Store.GetProjectByID(ctx, projectID)
+	p, err := store.GetProjectByID(ctx, n.Store.Pool, projectID)
 	if err != nil {
 		return err
 	}
-	return n.deliver(ctx, projectID, sqlc.AlertType(typ), func(previous *time.Time) Payload {
+	return n.deliver(ctx, projectID, store.AlertType(typ), func(previous *time.Time) Payload {
 		payload := Payload{
 			Type: typ, Project: p.Name, ProjectSlug: p.Slug, Title: issue.Title, Fingerprint: string(issue.Fingerprint),
 			Level: string(issue.Level), EventCount: issue.EventCount, FirstRelease: issue.FirstRelease, LastRelease: issue.LastRelease,
 			URL: n.link(p.Slug, "/issues/"+url.PathEscape(fingerprint)),
 		}
 		if typ == TypeNewIssue && previous != nil {
-			if more, err := n.Store.CountNewIssues(ctx, sqlc.CountNewIssuesParams{ProjectID: projectID, FirstSeen: *previous}); err == nil && more > 1 {
+			if more, err := store.CountNewIssues(ctx, n.Store.Pool, projectID, *previous); err == nil && more > 1 {
 				m := more - 1 // this one
 				payload.MoreSinceLast = &m
 			}
@@ -138,9 +137,7 @@ func (n *Notifier) CheckSpikes(ctx context.Context) error {
 	now := time.Now().UTC()
 	recentFrom := now.Add(-time.Hour)
 	baselineTo := recentFrom.Truncate(time.Hour)
-	rows, err := n.Store.UnhandledSpikeInputs(ctx, sqlc.UnhandledSpikeInputsParams{
-		RecentFrom: recentFrom, BaselineFrom: baselineTo.Add(-24 * time.Hour), BaselineTo: baselineTo,
-	})
+	rows, err := store.UnhandledSpikeInputs(ctx, n.Store.Pool, recentFrom, baselineTo.Add(-24*time.Hour), baselineTo)
 	if err != nil {
 		return err
 	}
@@ -161,7 +158,7 @@ func (n *Notifier) spike(ctx context.Context, projectID, recent, baseline int64)
 	if err := EnsureRules(ctx, n.Store, projectID); err != nil {
 		return err
 	}
-	p, err := n.Store.GetProjectByID(ctx, projectID)
+	p, err := store.GetProjectByID(ctx, n.Store.Pool, projectID)
 	if err != nil {
 		return err
 	}
@@ -192,14 +189,14 @@ func IsSpike(recent, baseline int64) bool {
 // project's cooldown for that type, like the other alerts, so a bad hour
 // yields one message.
 func (n *Notifier) CheckIgnored(ctx context.Context) error {
-	due, err := n.Store.UnignoreDue(ctx)
+	due, err := store.UnignoreDue(ctx, n.Store.Pool)
 	if err != nil {
 		return fmt.Errorf("unignore: %w", err)
 	}
 	for _, d := range due {
 		n.log().Info("issue unignored", "project", d.ProjectID, "fingerprint", d.Fingerprint, "reason", d.Reason)
 	}
-	rows, err := n.Store.EscalationInputs(ctx, time.Now().UTC().Add(-time.Hour))
+	rows, err := store.EscalationInputs(ctx, n.Store.Pool, time.Now().UTC().Add(-time.Hour))
 	if err != nil {
 		return fmt.Errorf("escalation inputs: %w", err)
 	}
@@ -208,7 +205,7 @@ func (n *Notifier) CheckIgnored(ctx context.Context) error {
 		if !IsSpike(in.Recent, in.Baseline) {
 			continue
 		}
-		issue, err := n.Store.EscalateIssue(ctx, sqlc.EscalateIssueParams{ProjectID: in.ProjectID, Fingerprint: in.Fingerprint})
+		issue, err := store.EscalateIssue(ctx, n.Store.Pool, in.ProjectID, in.Fingerprint)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue // its status changed meanwhile
 		}
@@ -225,11 +222,11 @@ func (n *Notifier) CheckIgnored(ctx context.Context) error {
 }
 
 // escalate claims the escalating cooldown for the project and notifies.
-func (n *Notifier) escalate(ctx context.Context, issue sqlc.Issue, recent, baseline int64) error {
+func (n *Notifier) escalate(ctx context.Context, issue store.Issue, recent, baseline int64) error {
 	if err := EnsureRules(ctx, n.Store, issue.ProjectID); err != nil {
 		return err
 	}
-	p, err := n.Store.GetProjectByID(ctx, issue.ProjectID)
+	p, err := store.GetProjectByID(ctx, n.Store.Pool, issue.ProjectID)
 	if err != nil {
 		return err
 	}
@@ -254,8 +251,8 @@ func (n *Notifier) link(slug, path string) string {
 // claim, for "N more since the last alert" — and sends it; when no
 // channel took it, the claim is given back so one outage does not also
 // eat the next alert of the hour.
-func (n *Notifier) deliver(ctx context.Context, projectID int64, typ sqlc.AlertType, build func(previous *time.Time) Payload) error {
-	previous, err := n.Store.ClaimAlertRule(ctx, sqlc.ClaimAlertRuleParams{ProjectID: projectID, Type: typ})
+func (n *Notifier) deliver(ctx context.Context, projectID int64, typ store.AlertType, build func(previous *time.Time) Payload) error {
+	previous, err := store.ClaimAlertRule(ctx, n.Store.Pool, projectID, typ)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // disabled, cooling down, or no rule row
 	}
@@ -263,7 +260,7 @@ func (n *Notifier) deliver(ctx context.Context, projectID int64, typ sqlc.AlertT
 		return err
 	}
 	if n.notify(ctx, projectID, build(previous)) == 0 {
-		return n.Store.UnclaimAlertRule(ctx, sqlc.UnclaimAlertRuleParams{ProjectID: projectID, Type: typ, Previous: previous})
+		return store.UnclaimAlertRule(ctx, n.Store.Pool, projectID, typ, previous)
 	}
 	return nil
 }
@@ -271,7 +268,7 @@ func (n *Notifier) deliver(ctx context.Context, projectID int64, typ sqlc.AlertT
 // notify sends payload to every channel of the project; failures are
 // logged. Returns how many channels took it.
 func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload) int {
-	channels, err := n.Store.ListAlertChannels(ctx, projectID)
+	channels, err := store.ListAlertChannels(ctx, n.Store.Pool, projectID)
 	if err != nil {
 		n.log().Error("alert: list channels", "project", projectID, "err", err)
 		return 0
@@ -288,7 +285,7 @@ func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload)
 	return sent
 }
 
-func (n *Notifier) send(ctx context.Context, ch sqlc.AlertChannel, payload Payload) error {
+func (n *Notifier) send(ctx context.Context, ch store.AlertChannel, payload Payload) error {
 	var cfg struct {
 		URL    string `json:"url"`
 		ChatID string `json:"chat_id"`
