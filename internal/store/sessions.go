@@ -4,6 +4,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Session is a raw session row (export only — writes are pipelined by
@@ -40,16 +42,7 @@ func ReleaseHealth(ctx context.Context, db DB, projectID int64, from, to time.Ti
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []ReleaseHealthRow{}
-	for rows.Next() {
-		var r ReleaseHealthRow
-		if err := rows.Scan(&r.Release, &r.Total, &r.Crashed, &r.Errored); err != nil {
-			return nil, err
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[ReleaseHealthRow])
 }
 
 // ReleaseHealthDailyRow is one UTC day's session totals for one release.
@@ -70,14 +63,5 @@ func ReleaseHealthDaily(ctx context.Context, db DB, projectID int64, release str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []ReleaseHealthDailyRow{}
-	for rows.Next() {
-		var r ReleaseHealthDailyRow
-		if err := rows.Scan(&r.Bucket, &r.Total, &r.Crashed, &r.Errored); err != nil {
-			return nil, err
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[ReleaseHealthDailyRow])
 }

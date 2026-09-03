@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // UpsertClientReportCounts adds one client_report item's discarded_events
@@ -38,14 +40,5 @@ func ListClientReportCounts(ctx context.Context, db DB, projectID int64, from, t
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []ClientReportCount{}
-	for rows.Next() {
-		var c ClientReportCount
-		if err := rows.Scan(&c.Reason, &c.Category, &c.Quantity); err != nil {
-			return nil, err
-		}
-		items = append(items, c)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[ClientReportCount])
 }

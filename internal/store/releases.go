@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type Release struct {
@@ -35,14 +37,5 @@ func ListReleases(ctx context.Context, db DB, projectID int64, limit int32) ([]R
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []Release{}
-	for rows.Next() {
-		var r Release
-		if err := rows.Scan(&r.ProjectID, &r.Release, &r.Platforms, &r.FirstSeen); err != nil {
-			return nil, err
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Release])
 }

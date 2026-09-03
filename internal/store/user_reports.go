@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/at-least/crashcart/internal/sentry"
 )
 
@@ -30,11 +32,15 @@ func UpsertUserReport(ctx context.Context, db DB, projectID int64, eventID sentr
 // GetUserReport: whether an event has a report, for the event page / API
 // — no join to events (the report outlives a sampled-out or
 // not-yet-arrived event).
+// GetUserReport scans by name: Name/Email are adjacent *string fields,
+// exactly what a positional Scan silently misbinds on reorder.
 func GetUserReport(ctx context.Context, db DB, projectID int64, eventID sentry.ID) (UserReport, error) {
-	var r UserReport
-	err := db.QueryRow(ctx, "SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 AND event_id = $2",
-		projectID, eventID).Scan(&r.ProjectID, &r.EventID, &r.ReceivedAt, &r.Name, &r.Email, &r.Comments)
-	return r, err
+	rows, err := db.Query(ctx, "SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 AND event_id = $2",
+		projectID, eventID)
+	if err != nil {
+		return UserReport{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[UserReport])
 }
 
 // ListUserReports: newest first, project-scoped: the Feedback page and
@@ -46,16 +52,7 @@ func ListUserReports(ctx context.Context, db DB, projectID int64, limit, offset 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []UserReport{}
-	for rows.Next() {
-		var r UserReport
-		if err := rows.Scan(&r.ProjectID, &r.EventID, &r.ReceivedAt, &r.Name, &r.Email, &r.Comments); err != nil {
-			return nil, err
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[UserReport])
 }
 
 func CountUserReports(ctx context.Context, db DB, projectID int64) (int64, error) {

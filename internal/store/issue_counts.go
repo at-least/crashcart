@@ -5,6 +5,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // CountRegressions: issues currently in 'regression' that were seen since lastSeen.
@@ -37,14 +39,5 @@ func NewIssuesByRelease(ctx context.Context, db DB, projectID int64, from, to ti
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []NewIssuesByReleaseRow{}
-	for rows.Next() {
-		var r NewIssuesByReleaseRow
-		if err := rows.Scan(&r.Release, &r.N); err != nil {
-			return nil, err
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[NewIssuesByReleaseRow])
 }
