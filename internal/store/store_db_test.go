@@ -49,7 +49,7 @@ func TestCountEventsAndSearch(t *testing.T) {
 	} {
 		rows = append(rows, store.EventInsert{
 			OccurredAt: now.Add(-time.Duration(i) * time.Minute), ProjectID: 1, EventID: sentry.DerivedID([]byte(m.msg)),
-			Level: m.level, Message: m.msg, Handled: m.handled, Tags: []byte("{}"),
+			Level: store.EventLevel(m.level), Message: m.msg, Handled: m.handled, Tags: []byte("{}"),
 		})
 	}
 	// Another project's row must never be counted.

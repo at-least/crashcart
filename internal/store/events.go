@@ -20,7 +20,7 @@ type EventInsert struct {
 	OccurredAt   time.Time
 	ProjectID    int64
 	EventID      sentry.ID
-	Level        string
+	Level        EventLevel
 	Message      string
 	Platform     *string
 	Environment  *string
@@ -129,7 +129,7 @@ type SessionInsert struct {
 	Sid         string
 	Release     string
 	Environment *string
-	Status      string
+	Status      SessionStatus
 	Count       int32
 }
 
@@ -259,7 +259,7 @@ type EventRow struct {
 	OccurredAt   time.Time       `json:"occurred_at"`
 	ProjectID    int64           `json:"project_id"`
 	EventID      sentry.ID       `json:"event_id"`
-	Level        string          `json:"level"`
+	Level        EventLevel      `json:"level"`
 	Message      string          `json:"message"`
 	Platform     *string         `json:"platform"`
 	Environment  *string         `json:"environment"`

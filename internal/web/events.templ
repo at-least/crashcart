@@ -110,7 +110,7 @@ templ Events(pg Page, d EventsData) {
 						<tr data-level={ e.Level } data-href={ pg.S.Persist().Href("/events/" + string(e.EventID)) } tabindex="0">
 							<td class="cell-time" title={ formatDateTime(e.OccurredAt) }><a href={ u(pg.S.Persist().Href("/events/" + string(e.EventID))) }>{ ago(e.OccurredAt) }</a></td>
 							<td>
-								<a class="level-badge" data-level={ levelKey(e.Level) } href={ u(filterHref(pg, "level", e.Level)) }>{ e.Level }</a>
+								<a class="level-badge" data-level={ levelKey(string(e.Level)) } href={ u(filterHref(pg, "level", string(e.Level))) }>{ e.Level }</a>
 								if rowUnhandled(e) {
 									<a class="unhandled-badge ml-1" href={ u(filterHref(pg, "handled", "false")) } title="Unhandled: the SDK caught this in a last-resort handler (exception.mechanism.handled = false)">Unhandled</a>
 								}

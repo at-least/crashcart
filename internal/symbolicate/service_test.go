@@ -100,7 +100,7 @@ func storeEvent(t *testing.T, st *store.Store, p store.Project, raw string) (id,
 			return err
 		}
 		return st.InsertEvents(ctx, tx, []store.EventInsert{{
-			OccurredAt: at, ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message, Platform: nilIfEmpty(ev.Platform),
+			OccurredAt: at, ProjectID: p.ID, EventID: ev.EventID, Level: store.EventLevel(ev.Level), Message: ev.Message, Platform: nilIfEmpty(ev.Platform),
 			Release: nilIfEmpty(ev.Release), ErrorType: nilIfEmpty(ev.ErrorType), Fingerprint: &fp,
 			Tags: []byte("{}"), Payload: store.Gzip(ev.Raw),
 		}})

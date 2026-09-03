@@ -632,7 +632,7 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 				symbols, _ = json.Marshal(pr.frames)
 			}
 			rows = append(rows, store.EventInsert{
-				OccurredAt: ev.Timestamp.UTC(), ProjectID: p.ID, EventID: ev.EventID, Level: ev.Level, Message: ev.Message,
+				OccurredAt: ev.Timestamp.UTC(), ProjectID: p.ID, EventID: ev.EventID, Level: store.EventLevel(ev.Level), Message: ev.Message,
 				Platform: nilIfEmpty(ev.Platform), Environment: nilIfEmpty(ev.Environment), Release: nilIfEmpty(ev.Release),
 				DeviceID: nilIfEmpty(ev.DeviceID()), DeviceModel: nilIfEmpty(ev.DeviceModel), OSVersion: nilIfEmpty(ev.OSVersion),
 				Transaction: nilIfEmpty(ev.Transaction), ErrorType: nilIfEmpty(ev.ErrorType), Culprit: nilIfEmpty(pr.location),
@@ -804,7 +804,7 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 		for _, s := range env.Sessions {
 			sessions = append(sessions, store.SessionInsert{
 				StartedAt: s.StartedAt.UTC(), ProjectID: p.ID, Sid: sessionID(s), Release: s.Release, Environment: nilIfEmpty(s.Environment),
-				Status: s.Status, Count: int32(max(s.Count, 1)),
+				Status: store.SessionStatus(s.Status), Count: int32(max(s.Count, 1)),
 			})
 		}
 		if err := store.InsertSessions(ctx, tx, sessions); err != nil {

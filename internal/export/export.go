@@ -985,7 +985,7 @@ func (im *importer) line(b []byte) error {
 			gz = store.Gzip([]byte(r.Payload))
 		}
 		im.events = append(im.events, store.EventInsert{
-			OccurredAt: r.OccurredAt.Time, ProjectID: pid, EventID: eid, Level: r.Level, Message: r.Message, Platform: r.Platform,
+			OccurredAt: r.OccurredAt.Time, ProjectID: pid, EventID: eid, Level: store.EventLevel(r.Level), Message: r.Message, Platform: r.Platform,
 			Environment: r.Environment, Release: r.Release, DeviceID: r.DeviceID, DeviceModel: r.DeviceModel,
 			OSVersion: r.OSVersion, Transaction: r.Transaction, ErrorType: r.ErrorType, Culprit: r.Culprit,
 			Handled: r.Handled, SDKName: r.SDKName, UserID: r.UserID, Fingerprint: fp,

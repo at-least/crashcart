@@ -275,7 +275,7 @@ func TestInsertEventsDedupesAndMarksDirty(t *testing.T) {
 	ins := func(status string) {
 		t.Helper()
 		tx, _ := st.Pool.Begin(ctx)
-		if err := store.InsertSessions(ctx, tx, []store.SessionInsert{{StartedAt: h.Add(time.Minute), ProjectID: 1, Sid: "s", Release: "1.0", Status: status, Count: 1}}); err != nil {
+		if err := store.InsertSessions(ctx, tx, []store.SessionInsert{{StartedAt: h.Add(time.Minute), ProjectID: 1, Sid: "s", Release: "1.0", Status: store.SessionStatus(status), Count: 1}}); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(ctx); err != nil {
