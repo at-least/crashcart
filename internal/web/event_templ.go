@@ -55,7 +55,7 @@ func crumbLevel(l string) string {
 	return ""
 }
 
-func isUnhandled(e sqlcEvent) bool { return e.Handled != nil && !*e.Handled }
+func isUnhandled(e storeEvent) bool { return e.Handled != nil && !*e.Handled }
 
 // EventBody: exception + stack, breadcrumbs, contexts, tags, user, raw JSON.
 func EventBody(pg Page, d EventData) templ.Component {
@@ -895,13 +895,13 @@ func Meta(label, value, title string) templ.Component {
 	})
 }
 
-func attachmentHref(pg Page, eventID string, a sqlcAttachmentRow) string {
+func attachmentHref(pg Page, eventID string, a storeAttachmentRow) string {
 	return "/p/" + pg.S.Slug + "/events/" + eventID + "/attachments/" + strconv.Itoa(int(a.N))
 }
 
 // AttachmentImages shows the image attachments (a crash screenshot)
 // inline; each opens full-size in a new tab.
-func AttachmentImages(pg Page, eventID string, atts []sqlcAttachmentRow) templ.Component {
+func AttachmentImages(pg Page, eventID string, atts []storeAttachmentRow) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {

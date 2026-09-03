@@ -25,7 +25,7 @@ func labelFor(t string) alertLabel {
 	return alertLabel{Title: t}
 }
 
-func channelTarget(c sqlcAlertChannel) string {
+func channelTarget(c storeAlertChannel) string {
 	var m map[string]string
 	_ = json.Unmarshal(c.Config, &m)
 	if c.Kind == "telegram" {

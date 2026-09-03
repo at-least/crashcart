@@ -395,7 +395,7 @@ func Issues(pg Page, d IssuesData) templ.Component {
 
 func sortHref(pg Page, key string) string { return pg.S.WithSort(key).Href("/issues") }
 
-func releaseSpan(is sqlcIssue) string {
+func releaseSpan(is storeIssue) string {
 	f, l := deref(is.FirstRelease), deref(is.LastRelease)
 	switch {
 	case f == "" && l == "":
@@ -408,7 +408,7 @@ func releaseSpan(is sqlcIssue) string {
 	return f + " → " + l
 }
 
-func issueSub(is sqlcIssue) string {
+func issueSub(is storeIssue) string {
 	var parts []string
 	if is.Platform != nil {
 		parts = append(parts, *is.Platform)

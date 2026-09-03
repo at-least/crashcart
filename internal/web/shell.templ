@@ -185,7 +185,7 @@ templ Empty(title, desc string) {
 }
 
 // IssueLink is the compact issue line used by the overview and release lists.
-templ IssueLink(pg Page, is sqlcIssue) {
+templ IssueLink(pg Page, is storeIssue) {
 	<li class="issue-item">
 		<a class="issue-item-link" href={ u(pg.S.Persist().Href("/issues/" + string(is.Fingerprint))) }>
 			@LevelBadge(string(is.Level))

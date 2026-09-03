@@ -7,10 +7,10 @@ import (
 
 // Short aliases so templates stay readable.
 type (
-	sqlcIssue         = store.Issue
-	sqlcEvent         = store.Event
-	sqlcAlertChannel  = store.AlertChannel
-	sqlcAttachmentRow = store.AttachmentMeta
+	storeIssue         = store.Issue
+	storeEvent         = store.Event
+	storeAlertChannel  = store.AlertChannel
+	storeAttachmentRow = store.AttachmentMeta
 )
 
 type sentryFrame = sentry.Frame
