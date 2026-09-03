@@ -90,10 +90,11 @@ type UpsertIssueRow struct {
 
 func UpsertIssue(ctx context.Context, db DB, p UpsertIssueParams) (UpsertIssueRow, error) {
 	var r UpsertIssueRow
-	err := db.QueryRow(ctx, `WITH prev AS (SELECT status FROM issues WHERE project_id = $1 AND fingerprint = $2)
+	err := db.QueryRow(ctx, `WITH prev AS (SELECT status FROM issues WHERE project_id = @ProjectID AND fingerprint = @Fingerprint)
 INSERT INTO issues (project_id, fingerprint, title, level, error_type, transaction, platform,
                     event_count, stored_count, first_seen, last_seen, first_release, last_release, releases)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, COALESCE($13::text[], '{}'))
+VALUES (@ProjectID, @Fingerprint, @Title, @Level, @ErrorType, @Transaction, @Platform, @EventCount, @StoredCount,
+        @FirstSeen, @LastSeen, @FirstRelease, @FirstRelease, COALESCE(@Releases::text[], '{}'))
 ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     event_count  = issues.event_count + EXCLUDED.event_count,
     stored_count = issues.stored_count + EXCLUDED.stored_count,
@@ -103,14 +104,13 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     level        = CASE WHEN EXCLUDED.last_seen >= issues.last_seen THEN EXCLUDED.level ELSE issues.level END,
     releases     = CASE WHEN issues.releases @> EXCLUDED.releases THEN issues.releases
                         ELSE (SELECT array_agg(DISTINCT r ORDER BY r) FROM unnest(issues.releases || EXCLUDED.releases) AS r) END,
-    status       = CASE WHEN $14::bool AND issues.status = 'resolved'
+    status       = CASE WHEN @Regress::bool AND issues.status = 'resolved'
                          AND NOT (COALESCE(issues.resolved_releases, '{}') @> EXCLUDED.releases)
                         THEN 'regression' ELSE issues.status END,
     updated_at   = now()
 RETURNING `+issueColumns+`, (xmax = 0) AS created,
           COALESCE(issues.status = 'regression' AND (SELECT status FROM prev) = 'resolved', false)::bool AS regressed`,
-		p.ProjectID, p.Fingerprint, p.Title, p.Level, p.ErrorType, p.Transaction, p.Platform, p.EventCount, p.StoredCount,
-		p.FirstSeen, p.LastSeen, p.FirstRelease, p.Releases, p.Regress).
+		pgx.StrictStructArgs(&p)).
 		Scan(&r.ProjectID, &r.Fingerprint, &r.Title, &r.Level, &r.ErrorType, &r.Transaction, &r.Platform, &r.Status, &r.StatusBy,
 			&r.EventCount, &r.StoredCount, &r.FirstSeen, &r.LastSeen, &r.FirstRelease, &r.LastRelease, &r.Releases, &r.ResolvedReleases,
 			&r.IgnoreUntil, &r.IgnoreUntilCount, &r.IgnoreUntilEscalating, &r.IgnoreBaseline, &r.CreatedAt, &r.UpdatedAt, &r.Created, &r.Regressed)
@@ -134,26 +134,38 @@ type SetIssueStatusParams struct {
 	IgnoreEscalating bool
 }
 
-const setIssueStatusSQL = `SET status = $3::issue_status, status_by = $4,
-    resolved_releases = CASE WHEN $3::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
-    ignore_until = CASE WHEN $3::issue_status = 'ignored' THEN $5::timestamptz END,
-    ignore_until_count = CASE WHEN $3::issue_status = 'ignored' THEN event_count + $6::bigint END,
-    ignore_until_escalating = $3::issue_status = 'ignored' AND $7::bool,
-    ignore_baseline = CASE WHEN $3::issue_status = 'ignored' AND $7::bool THEN
+const setIssueStatusSQL = `SET status = @Status::issue_status, status_by = @StatusBy,
+    resolved_releases = CASE WHEN @Status::issue_status = 'resolved' THEN releases ELSE resolved_releases END,
+    ignore_until = CASE WHEN @Status::issue_status = 'ignored' THEN @IgnoreUntil::timestamptz END,
+    ignore_until_count = CASE WHEN @Status::issue_status = 'ignored' THEN event_count + @IgnoreEvents::bigint END,
+    ignore_until_escalating = @Status::issue_status = 'ignored' AND @IgnoreEscalating::bool,
+    ignore_baseline = CASE WHEN @Status::issue_status = 'ignored' AND @IgnoreEscalating::bool THEN
         (SELECT COALESCE(sum(h.events), 0)::bigint FROM issue_stats_hourly h
          WHERE h.project_id = issues.project_id AND h.fingerprint = issues.fingerprint
            AND h.bucket >= date_trunc('hour', now()) - INTERVAL '24 hours' AND h.bucket < date_trunc('hour', now())) END,
     updated_at = now()`
 
 func SetIssueStatus(ctx context.Context, db DB, p SetIssueStatusParams) (Issue, error) {
-	return scanIssue(db.QueryRow(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = $1 AND issues.fingerprint = $2 RETURNING "+issueColumns,
-		p.ProjectID, p.Fingerprint, p.Status, p.StatusBy, p.IgnoreUntil, p.IgnoreEvents, p.IgnoreEscalating))
+	return scanIssue(db.QueryRow(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = @ProjectID AND issues.fingerprint = @Fingerprint RETURNING "+issueColumns,
+		pgx.StrictStructArgs(&p)))
 }
 
-// SetIssuesStatus is the bulk form of SetIssueStatus (same rules).
+// SetIssuesStatus is the bulk form of SetIssueStatus (same rules). p's
+// ProjectID and Fingerprint are ignored — the target set comes from
+// projectID and fingerprints instead — so its args are bound by a
+// StrictNamedArgs map (mixing p's fields with the two extra params) rather
+// than StrictStructArgs(&p), which would reject p's unreferenced fields.
 func SetIssuesStatus(ctx context.Context, db DB, projectID int64, fingerprints []sentry.ID, p SetIssueStatusParams) (int64, error) {
-	tag, err := db.Exec(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = $1 AND issues.fingerprint = ANY($2::uuid[])",
-		projectID, fingerprints, p.Status, p.StatusBy, p.IgnoreUntil, p.IgnoreEvents, p.IgnoreEscalating)
+	tag, err := db.Exec(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = @TargetProjectID AND issues.fingerprint = ANY(@Fingerprints::uuid[])",
+		pgx.StrictNamedArgs{
+			"TargetProjectID":  projectID,
+			"Fingerprints":     fingerprints,
+			"Status":           p.Status,
+			"StatusBy":         p.StatusBy,
+			"IgnoreUntil":      p.IgnoreUntil,
+			"IgnoreEvents":     p.IgnoreEvents,
+			"IgnoreEscalating": p.IgnoreEscalating,
+		})
 	if err != nil {
 		return 0, err
 	}
