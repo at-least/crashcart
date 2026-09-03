@@ -22,10 +22,13 @@ type Project struct {
 
 const projectColumns = "id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at"
 
-func scanProject(row pgx.Row) (Project, error) {
-	var p Project
-	err := row.Scan(&p.ID, &p.Slug, &p.Name, &p.Platform, &p.PublicKey, &p.SampleKeepFirst, &p.SampleRate, &p.DailyQuota, &p.CreatedAt)
-	return p, err
+// scanProject matches columns to Project fields by name — see scanIssue
+// (issues.go) for why.
+func scanProject(rows pgx.Rows, err error) (Project, error) {
+	if err != nil {
+		return Project{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Project])
 }
 
 // ProjectKey is a retired-but-still-valid DSN key (RotateProjectKey pushes
@@ -43,32 +46,23 @@ func ListProjects(ctx context.Context, db DB) ([]Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []Project{}
-	for rows.Next() {
-		p, err := scanProject(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, p)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Project])
 }
 
 func GetProject(ctx context.Context, db DB, slug string) (Project, error) {
-	return scanProject(db.QueryRow(ctx, "SELECT "+projectColumns+" FROM projects WHERE slug = $1", slug))
+	return scanProject(db.Query(ctx, "SELECT "+projectColumns+" FROM projects WHERE slug = $1", slug))
 }
 
 func GetProjectByID(ctx context.Context, db DB, id int64) (Project, error) {
-	return scanProject(db.QueryRow(ctx, "SELECT "+projectColumns+" FROM projects WHERE id = $1", id))
+	return scanProject(db.Query(ctx, "SELECT "+projectColumns+" FROM projects WHERE id = $1", id))
 }
 
 func GetProjectByKey(ctx context.Context, db DB, publicKey string) (Project, error) {
-	return scanProject(db.QueryRow(ctx, "SELECT "+projectColumns+" FROM projects WHERE public_key = $1", publicKey))
+	return scanProject(db.Query(ctx, "SELECT "+projectColumns+" FROM projects WHERE public_key = $1", publicKey))
 }
 
 func CreateProject(ctx context.Context, db DB, slug, name string, platform *string, publicKey string) (Project, error) {
-	return scanProject(db.QueryRow(ctx,
+	return scanProject(db.Query(ctx,
 		"INSERT INTO projects (slug, name, platform, public_key) VALUES ($1, $2, $3, $4) RETURNING "+projectColumns,
 		slug, name, platform, publicKey))
 }
@@ -86,10 +80,10 @@ type ProjectUpdate struct {
 }
 
 func UpdateProject(ctx context.Context, db DB, u ProjectUpdate) (Project, error) {
-	return scanProject(db.QueryRow(ctx,
-		`UPDATE projects SET name = $2, platform = $3, sample_keep_first = $4, sample_rate = $5, daily_quota = $6
-		WHERE id = $1 RETURNING `+projectColumns,
-		u.ID, u.Name, u.Platform, u.SampleKeepFirst, u.SampleRate, u.DailyQuota))
+	return scanProject(db.Query(ctx,
+		`UPDATE projects SET name = @Name, platform = @Platform, sample_keep_first = @SampleKeepFirst, sample_rate = @SampleRate, daily_quota = @DailyQuota
+		WHERE id = @ID RETURNING `+projectColumns,
+		pgx.StrictStructArgs(u)))
 }
 
 func DeleteProject(ctx context.Context, db DB, id int64) error {
@@ -112,16 +106,7 @@ func ListProjectKeys(ctx context.Context, db DB, projectID int64) ([]ProjectKey,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []ProjectKey{}
-	for rows.Next() {
-		var k ProjectKey
-		if err := rows.Scan(&k.ID, &k.ProjectID, &k.PublicKey, &k.RetiredAt, &k.LastUsedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, k)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[ProjectKey])
 }
 
 func DeleteProjectKey(ctx context.Context, db DB, projectID, id int64) (int64, error) {
@@ -134,20 +119,23 @@ func DeleteProjectKey(ctx context.Context, db DB, projectID, id int64) (int64, e
 
 // GetProjectByRetiredKeyRow: the ingest fallback when a key isn't the
 // current one: still valid until its project_keys row is deleted. KeyID
-// is what TouchProjectKey needs.
+// is what TouchProjectKey needs. Project is embedded (not a named field)
+// so RowToStructByName flattens and matches its columns directly —
+// callers still read retired.Project (promoted field access is unchanged
+// by embedding) or the individual retired.ID etc.
 type GetProjectByRetiredKeyRow struct {
-	KeyID   int64
-	Project Project
+	KeyID int64
+	Project
 }
 
 func GetProjectByRetiredKey(ctx context.Context, db DB, publicKey string) (GetProjectByRetiredKeyRow, error) {
-	row := db.QueryRow(ctx,
+	rows, err := db.Query(ctx,
 		"SELECT k.id AS key_id, p.id, p.slug, p.name, p.platform, p.public_key, p.sample_keep_first, p.sample_rate, p.daily_quota, p.created_at "+
 			"FROM project_keys k JOIN projects p ON p.id = k.project_id WHERE k.public_key = $1", publicKey)
-	var r GetProjectByRetiredKeyRow
-	err := row.Scan(&r.KeyID, &r.Project.ID, &r.Project.Slug, &r.Project.Name, &r.Project.Platform, &r.Project.PublicKey,
-		&r.Project.SampleKeepFirst, &r.Project.SampleRate, &r.Project.DailyQuota, &r.Project.CreatedAt)
-	return r, err
+	if err != nil {
+		return GetProjectByRetiredKeyRow{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[GetProjectByRetiredKeyRow])
 }
 
 // TouchProjectKey records use of a retired key at most once a minute (one
@@ -170,7 +158,7 @@ func (s *Store) RotateProjectKey(ctx context.Context, projectID int64, newKey st
 			return err
 		}
 		var err error
-		p, err = scanProject(tx.QueryRow(ctx, "UPDATE projects SET public_key = $2 WHERE id = $1 RETURNING "+projectColumns, projectID, newKey))
+		p, err = scanProject(tx.Query(ctx, "UPDATE projects SET public_key = $2 WHERE id = $1 RETURNING "+projectColumns, projectID, newKey))
 		return err
 	})
 	return p, err
