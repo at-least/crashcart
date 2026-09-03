@@ -26,12 +26,6 @@ type Job struct {
 
 const jobColumns = "id, kind, project_id, args, run_after, attempts, locked_until, last_error, created_at"
 
-func scanJob(row pgx.Row) (Job, error) {
-	var j Job
-	err := row.Scan(&j.ID, &j.Kind, &j.ProjectID, &j.Args, &j.RunAfter, &j.Attempts, &j.LockedUntil, &j.LastError, &j.CreatedAt)
-	return j, err
-}
-
 // EnqueueJobParams is one job to enqueue — an accumulator value for
 // callers (like ingest) that batch several jobs into one EnqueueJobs call.
 type EnqueueJobParams struct {
@@ -71,16 +65,7 @@ func ClaimJobs(ctx context.Context, db DB, lockedUntil time.Time, max int32) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []Job{}
-	for rows.Next() {
-		j, err := scanJob(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, j)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Job])
 }
 
 func DeleteJob(ctx context.Context, db DB, id int64) error {
@@ -134,16 +119,7 @@ func DeadJobs(ctx context.Context, db DB, projectID int64) ([]Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []Job{}
-	for rows.Next() {
-		j, err := scanJob(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, j)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Job])
 }
 
 // EnqueueSymbolicateRelease fans a release out into one symbolicate job

@@ -33,12 +33,15 @@ const monitorColumns = `project_id, slug, schedule_type, schedule_value, schedul
 	max_runtime_min, failure_threshold, recovery_threshold, last_status, consecutive_failures, consecutive_successes,
 	alerting, next_expected_at, last_checkin_at, created_at`
 
-func scanMonitor(row pgx.Row) (Monitor, error) {
-	var m Monitor
-	err := row.Scan(&m.ProjectID, &m.Slug, &m.ScheduleType, &m.ScheduleValue, &m.ScheduleUnit, &m.Timezone,
-		&m.CheckinMarginMin, &m.MaxRuntimeMin, &m.FailureThreshold, &m.RecoveryThreshold, &m.LastStatus,
-		&m.ConsecutiveFailures, &m.ConsecutiveSuccesses, &m.Alerting, &m.NextExpectedAt, &m.LastCheckinAt, &m.CreatedAt)
-	return m, err
+// scanMonitor matches columns to Monitor fields by name — see scanIssue
+// (issues.go) for why; Monitor has four consecutive int32 fields
+// (CheckinMarginMin, MaxRuntimeMin, FailureThreshold, RecoveryThreshold),
+// exactly the shape a positional Scan silently misbinds on reorder.
+func scanMonitor(rows pgx.Rows, err error) (Monitor, error) {
+	if err != nil {
+		return Monitor{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Monitor])
 }
 
 // UpsertMonitorParams is the SDK's monitor_config upsert: schedule/thresholds
@@ -59,20 +62,20 @@ type UpsertMonitorParams struct {
 }
 
 func UpsertMonitor(ctx context.Context, db DB, p UpsertMonitorParams) (Monitor, error) {
-	return scanMonitor(db.QueryRow(ctx, `INSERT INTO monitors (project_id, slug, schedule_type, schedule_value, schedule_unit, timezone,
+	return scanMonitor(db.Query(ctx, `INSERT INTO monitors (project_id, slug, schedule_type, schedule_value, schedule_unit, timezone,
 		                      checkin_margin_min, max_runtime_min, failure_threshold, recovery_threshold)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES (@ProjectID, @Slug, @ScheduleType, @ScheduleValue, @ScheduleUnit, @Timezone,
+		        @CheckinMarginMin, @MaxRuntimeMin, @FailureThreshold, @RecoveryThreshold)
 		ON CONFLICT (project_id, slug) DO UPDATE SET
 		    schedule_type = EXCLUDED.schedule_type, schedule_value = EXCLUDED.schedule_value, schedule_unit = EXCLUDED.schedule_unit,
 		    timezone = EXCLUDED.timezone, checkin_margin_min = EXCLUDED.checkin_margin_min, max_runtime_min = EXCLUDED.max_runtime_min,
 		    failure_threshold = EXCLUDED.failure_threshold, recovery_threshold = EXCLUDED.recovery_threshold
 		RETURNING `+monitorColumns,
-		p.ProjectID, p.Slug, p.ScheduleType, p.ScheduleValue, p.ScheduleUnit, p.Timezone,
-		p.CheckinMarginMin, p.MaxRuntimeMin, p.FailureThreshold, p.RecoveryThreshold))
+		pgx.StrictStructArgs(p)))
 }
 
 func GetMonitor(ctx context.Context, db DB, projectID int64, slug string) (Monitor, error) {
-	return scanMonitor(db.QueryRow(ctx, "SELECT "+monitorColumns+" FROM monitors WHERE project_id = $1 AND slug = $2", projectID, slug))
+	return scanMonitor(db.Query(ctx, "SELECT "+monitorColumns+" FROM monitors WHERE project_id = $1 AND slug = $2", projectID, slug))
 }
 
 // ListMonitors: project-scoped, alphabetical: the Monitors page and its API.
@@ -81,16 +84,7 @@ func ListMonitors(ctx context.Context, db DB, projectID int64) ([]Monitor, error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []Monitor{}
-	for rows.Next() {
-		m, err := scanMonitor(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, m)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Monitor])
 }
 
 func DeleteMonitor(ctx context.Context, db DB, projectID int64, slug string) (int64, error) {
@@ -117,16 +111,19 @@ type RecordMonitorResultParams struct {
 	LastCheckinAt        time.Time
 }
 
+// RecordMonitorResult binds by name: ConsecutiveFailures/ConsecutiveSuccesses
+// (adjacent int32) and NextExpectedAt/LastCheckinAt (adjacent time.Time)
+// are exactly the pairs a positional arg list silently swaps on reorder.
 func RecordMonitorResult(ctx context.Context, db DB, p RecordMonitorResultParams) error {
 	_, err := db.Exec(ctx, `UPDATE monitors SET
-		    last_status = $3::checkin_status,
-		    consecutive_failures = $4::int,
-		    consecutive_successes = $5::int,
-		    alerting = $6::bool,
-		    next_expected_at = $7::timestamptz,
-		    last_checkin_at = $8::timestamptz
-		WHERE project_id = $1 AND slug = $2`,
-		p.ProjectID, p.Slug, p.LastStatus, p.ConsecutiveFailures, p.ConsecutiveSuccesses, p.Alerting, p.NextExpectedAt, p.LastCheckinAt)
+		    last_status = @LastStatus::checkin_status,
+		    consecutive_failures = @ConsecutiveFailures::int,
+		    consecutive_successes = @ConsecutiveSuccesses::int,
+		    alerting = @Alerting::bool,
+		    next_expected_at = @NextExpectedAt::timestamptz,
+		    last_checkin_at = @LastCheckinAt::timestamptz
+		WHERE project_id = @ProjectID AND slug = @Slug`,
+		pgx.StrictStructArgs(p))
 	return err
 }
 
@@ -138,16 +135,7 @@ func DueMonitors(ctx context.Context, db DB, now time.Time) ([]Monitor, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []Monitor{}
-	for rows.Next() {
-		m, err := scanMonitor(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, m)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Monitor])
 }
 
 // TimedOutCheckInsRow is an in_progress check-in that outlived its
@@ -168,16 +156,7 @@ func TimedOutCheckIns(ctx context.Context, db DB, before time.Time) ([]TimedOutC
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []TimedOutCheckInsRow{}
-	for rows.Next() {
-		var r TimedOutCheckInsRow
-		if err := rows.Scan(&r.ProjectID, &r.MonitorSlug, &r.CheckInID, &r.StartedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[TimedOutCheckInsRow])
 }
 
 type MonitorCheckin struct {
@@ -193,10 +172,13 @@ type MonitorCheckin struct {
 
 const checkinColumns = "started_at, project_id, monitor_slug, check_in_id, status, duration_s, release, environment"
 
-func scanCheckin(row pgx.Row) (MonitorCheckin, error) {
-	var c MonitorCheckin
-	err := row.Scan(&c.StartedAt, &c.ProjectID, &c.MonitorSlug, &c.CheckInID, &c.Status, &c.DurationS, &c.Release, &c.Environment)
-	return c, err
+// scanCheckin matches columns to MonitorCheckin fields by name — see
+// scanIssue (issues.go) for why.
+func scanCheckin(rows pgx.Rows, err error) (MonitorCheckin, error) {
+	if err != nil {
+		return MonitorCheckin{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[MonitorCheckin])
 }
 
 // FindOpenCheckIn: the row a check-in item resolves to before writing: by
@@ -204,7 +186,7 @@ func scanCheckin(row pgx.Row) (MonitorCheckin, error) {
 // latest in_progress row. No match means a fresh row (a new check_in_id,
 // or a zero id with nothing open to update).
 func FindOpenCheckIn(ctx context.Context, db DB, projectID int64, monitorSlug string, zero bool, checkInID sentry.ID) (MonitorCheckin, error) {
-	return scanCheckin(db.QueryRow(ctx, `SELECT `+checkinColumns+` FROM monitor_checkins
+	return scanCheckin(db.Query(ctx, `SELECT `+checkinColumns+` FROM monitor_checkins
 		WHERE project_id = $1 AND monitor_slug = $2
 		  AND (($3::bool AND status = 'in_progress') OR (NOT $3::bool AND check_in_id = $4::uuid))
 		ORDER BY started_at DESC LIMIT 1`, projectID, monitorSlug, zero, checkInID))
@@ -222,8 +204,9 @@ type InsertCheckInParams struct {
 }
 
 func InsertCheckIn(ctx context.Context, db DB, p InsertCheckInParams) error {
-	_, err := db.Exec(ctx, "INSERT INTO monitor_checkins (started_at, project_id, monitor_slug, check_in_id, status, duration_s, release, environment) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-		p.StartedAt, p.ProjectID, p.MonitorSlug, p.CheckInID, p.Status, p.DurationS, p.Release, p.Environment)
+	_, err := db.Exec(ctx, "INSERT INTO monitor_checkins (started_at, project_id, monitor_slug, check_in_id, status, duration_s, release, environment) "+
+		"VALUES (@StartedAt, @ProjectID, @MonitorSlug, @CheckInID, @Status, @DurationS, @Release, @Environment)",
+		pgx.StrictStructArgs(p))
 	return err
 }
 
@@ -244,10 +227,10 @@ type UpdateCheckInParams struct {
 }
 
 func UpdateCheckIn(ctx context.Context, db DB, p UpdateCheckInParams) error {
-	_, err := db.Exec(ctx, `UPDATE monitor_checkins SET status = $5, duration_s = COALESCE($6::real, duration_s),
-		    release = COALESCE($7::text, release), environment = COALESCE($8::text, environment)
-		WHERE project_id = $1 AND monitor_slug = $2 AND check_in_id = $3 AND started_at = $4`,
-		p.ProjectID, p.MonitorSlug, p.CheckInID, p.StartedAt, p.Status, p.DurationS, p.Release, p.Environment)
+	_, err := db.Exec(ctx, `UPDATE monitor_checkins SET status = @Status, duration_s = COALESCE(@DurationS::real, duration_s),
+		    release = COALESCE(@Release::text, release), environment = COALESCE(@Environment::text, environment)
+		WHERE project_id = @ProjectID AND monitor_slug = @MonitorSlug AND check_in_id = @CheckInID AND started_at = @StartedAt`,
+		pgx.StrictStructArgs(p))
 	return err
 }
 
@@ -259,14 +242,5 @@ func ListCheckIns(ctx context.Context, db DB, projectID int64, monitorSlug strin
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []MonitorCheckin{}
-	for rows.Next() {
-		c, err := scanCheckin(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, c)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[MonitorCheckin])
 }
