@@ -186,7 +186,7 @@ RETURNING i.project_id, i.fingerprint, (CASE WHEN d.by_time THEN 'time' ELSE 'co
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[UnignoreDueRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[UnignoreDueRow])
 }
 
 // EscalationInputsRow is one ignored-until-escalating issue's stored
@@ -212,7 +212,7 @@ WHERE i.status = 'ignored' AND i.ignore_until_escalating`, recentFrom)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[EscalationInputsRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[EscalationInputsRow])
 }
 
 // EscalateIssue flips one escalating issue back to unresolved (only while
@@ -246,7 +246,7 @@ func CountIssuesByStatus(ctx context.Context, db DB, projectID int64) ([]CountIs
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[CountIssuesByStatusRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[CountIssuesByStatusRow])
 }
 
 func CountNewIssues(ctx context.Context, db DB, projectID int64, firstSeen time.Time) (int64, error) {
@@ -267,7 +267,7 @@ func ListRegressions(ctx context.Context, db DB, projectID int64, limit int32) (
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[Issue])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Issue])
 }
 
 func ListNewIssues(ctx context.Context, db DB, projectID int64, firstSeen time.Time, limit int32) ([]Issue, error) {
@@ -275,7 +275,7 @@ func ListNewIssues(ctx context.Context, db DB, projectID int64, firstSeen time.T
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[Issue])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Issue])
 }
 
 func ListIssuesByRelease(ctx context.Context, db DB, projectID int64, release *string, limit int32) ([]Issue, error) {
@@ -284,7 +284,7 @@ func ListIssuesByRelease(ctx context.Context, db DB, projectID int64, release *s
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[Issue])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Issue])
 }
 
 // IssueSparklinesRow is one fingerprint's event counts of every bucket in
@@ -310,7 +310,7 @@ GROUP BY f.fingerprint`, fingerprints, from, to, width, projectID)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[IssueSparklinesRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[IssueSparklinesRow])
 }
 
 // IssueTimelineRow is one bucket of an issue's event count timeline.
@@ -333,7 +333,7 @@ ORDER BY b`, from, to, width, projectID, fingerprint)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[IssueTimelineRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[IssueTimelineRow])
 }
 
 func AddIssueStored(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID, storedCount int64) error {

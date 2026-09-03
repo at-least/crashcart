@@ -12,12 +12,16 @@
 // InsertEvents). Row structs and enum types live in this package (no
 // separate models package: every consumer already needs the pool/Tx to
 // do anything with them). Scanning uses pgx.CollectRows with
-// pgx.RowToStructByPos[T] for multi-row queries, or a hand-written
-// scanX(row pgx.Row) helper for a single row — a plain `type X string`
-// needs no Scan/Value methods for pgx to decode/encode a Postgres enum
-// column, and CollectRows starts from []T{} (empty slice, not nil,
-// preserved on the JSON wire for :many-shaped API responses). A struct
-// that crosses the HTTP API boundary keeps its exact json:"snake_case"
+// pgx.RowToStructByName[T] for multi-row queries, or a hand-written
+// scanX(row pgx.Row) helper for a single row — a query's SELECT list
+// aliases every column to match its row struct's field names (no `db`
+// tags needed: pgx folds away case and underscores, and RowToStructByName
+// errors loudly on a mismatch instead of silently binding by position). A
+// plain `type X string` needs no Scan/Value methods for pgx to
+// decode/encode a Postgres enum column, and CollectRows starts from
+// []T{} (empty slice, not nil, preserved on the JSON wire for
+// :many-shaped API responses). A struct that crosses the HTTP API
+// boundary keeps its exact json:"snake_case"
 // tags.
 package store
 

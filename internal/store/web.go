@@ -25,7 +25,7 @@ GROUP BY first_release`, projectID)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[IssuesIntroducedPerReleaseRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[IssuesIntroducedPerReleaseRow])
 }
 
 func ListIssuesIntroducedIn(ctx context.Context, db DB, projectID int64, release *string, limit int32) ([]Issue, error) {
@@ -34,7 +34,7 @@ ORDER BY event_count DESC LIMIT $3`, projectID, release, limit)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[Issue])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Issue])
 }
 
 // ListIssuesPresentIn is issues still open whose latest event came from
@@ -45,7 +45,7 @@ ORDER BY event_count DESC LIMIT $3`, projectID, release, limit)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[Issue])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[Issue])
 }
 
 // PortalUnhandledRow is one project's unhandled count in a window.
@@ -64,7 +64,7 @@ GROUP BY 1`, from, to)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[PortalUnhandledRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[PortalUnhandledRow])
 }
 
 // PortalPlatformsRow is one project's platform event count in a window.
@@ -83,7 +83,7 @@ GROUP BY 1, 2 ORDER BY 1, 3 DESC, 2`, from, to)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[PortalPlatformsRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[PortalPlatformsRow])
 }
 
 // PortalLatestReleasesRow is one project's most recently active release.
@@ -103,7 +103,7 @@ ORDER BY project_id, last DESC, release DESC`, from, to)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[PortalLatestReleasesRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[PortalLatestReleasesRow])
 }
 
 // PortalOpenIssuesRow is one project's open-issue count.
@@ -118,7 +118,7 @@ WHERE status IN ('unresolved', 'regression') GROUP BY 1`)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[PortalOpenIssuesRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[PortalOpenIssuesRow])
 }
 
 // PortalReleaseHealthRow is one project's session totals for its latest
@@ -140,7 +140,7 @@ GROUP BY k.project_id`, projectIDs, releases, from, to)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[PortalReleaseHealthRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[PortalReleaseHealthRow])
 }
 
 // LatestIssueEvent is bounded to the issue's own [first_seen, last_seen]

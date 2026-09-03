@@ -294,7 +294,7 @@ func (s *Store) ListEvents(ctx context.Context, f EventFilter) (rows []EventRow,
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err = pgx.CollectRows(r, pgx.RowToStructByPos[EventRow])
+	rows, err = pgx.CollectRows(r, pgx.RowToStructByName[EventRow])
 	if err != nil {
 		return nil, false, err
 	}

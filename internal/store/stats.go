@@ -51,7 +51,7 @@ func Timeline(ctx context.Context, db DB, projectID int64, from, to time.Time, w
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[TimelineRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[TimelineRow])
 }
 
 // TotalsRow is a project's event totals in a window.
@@ -83,7 +83,7 @@ GROUP BY level`, projectID, from, to)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[LevelTotalsRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[LevelTotalsRow])
 }
 
 // ReleaseStatsRow is one release's activity in a window; platforms and
@@ -112,7 +112,7 @@ GROUP BY s.release, r.platforms, r.first_seen ORDER BY max(s.bucket) DESC, s.rel
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[ReleaseStatsRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[ReleaseStatsRow])
 }
 
 // ReleaseTimelineRow is one bucket of ReleaseTimeline.
@@ -135,7 +135,7 @@ ORDER BY b`, from, to, width, projectID, release)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[ReleaseTimelineRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[ReleaseTimelineRow])
 }
 
 // LatestReleaseHealthRow is the most recently active release in the
@@ -196,7 +196,7 @@ WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0`, recentFrom, bas
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[UnhandledSpikeInputsRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[UnhandledSpikeInputsRow])
 }
 
 // PlatformTotalsRow is one raw SDK platform's event count in a window.
@@ -214,7 +214,7 @@ GROUP BY platform ORDER BY events DESC`, projectID, from, to)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[PlatformTotalsRow])
+	return pgx.CollectRows(rows, pgx.RowToStructByName[PlatformTotalsRow])
 }
 
 // MarkEventStatsDirty is called in the transaction that writes or updates
