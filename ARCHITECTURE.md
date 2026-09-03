@@ -210,14 +210,17 @@ the standard header. `auth.RateLimit`, `ingest.Ingest` / `quotaExhausted`.
 adds keyboard triage, theme and the SSE banner. Issue-centric: overview →
 issues → issue → event; releases with crash-free rate; settings.
 
-**Versioned migrations (goose).** `internal/db/migrations/` is applied on
-every start; goose's session locker (`lock.NewPostgresSessionLocker`,
-`goose.WithSessionLocker`) serializes replicas starting together onto one
-connection — an earlier hand-rolled advisory lock held a *second*
-connection of its own around goose's run and could self-deadlock a pool
-with no headroom to spare (`MaxConns=1`; the same shape as the RunAsLeader
-fix below), where the session locker never needs more than one connection
-at a time (`db.Init`, `TestInitSingleConnection`).
+**Versioned migrations (tern).** `internal/db/migrations/` is applied on
+every start; `db.Init` hijacks a single pool connection (`pool.Acquire` +
+`Hijack`, the same pattern `store.Listener` uses for LISTEN) and hands it
+to tern's `migrate.Migrator`, which runs its own `pg_advisory_lock` and
+every migration statement on that one connection — serializing replicas
+starting together without ever needing a second connection of its own. An
+earlier hand-rolled advisory lock held a *second* connection around the
+migration run and could self-deadlock a pool with no headroom to spare
+(`MaxConns=1`; the same shape as the RunAsLeader fix below); pinning the
+lock and the migrations to one connection is what closes that (`db.Init`,
+`TestInitSingleConnection`).
 `00001_baseline.sql` is the whole schema, and a schema change from here on
 is a new migration file, not an edit to an existing one. Chosen over an
 earlier "one schema.sql + a version, moved with `crashcart export`/

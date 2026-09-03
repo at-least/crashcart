@@ -17,9 +17,9 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/tern/v2/migrate"
 	"github.com/peterldowns/pgtestdb"
-	"github.com/pressly/goose/v3"
 
 	"github.com/at-least/crashcart/internal/db"
 	"github.com/at-least/crashcart/internal/store"
@@ -92,11 +92,11 @@ func adminConfig(dsn string) (pgtestdb.Config, error) {
 	}, nil
 }
 
-// schemaMigrator provisions a pgtestdb template by running the same goose
+// schemaMigrator provisions a pgtestdb template by running the same tern
 // migrations db.Init applies in production, against a database nothing
 // else can see yet (pgtestdb already serializes template creation, so
-// there's no need for db.Init's own session-locking logic here — every
-// template starts empty).
+// there's no need for db.Init's own locking logic here — every template
+// starts empty).
 type schemaMigrator struct{}
 
 // Hash identifies the template by every migration file's content, so
@@ -126,13 +126,25 @@ func (schemaMigrator) Hash() (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// tern's Migrator needs a *pgx.Conn, but pgtestdb hands the migrator a
+// *sql.DB (its interface, not ours to change) — (*sql.Conn).Raw is the
+// documented pgx/v5/stdlib bridge back to the underlying *pgx.Conn.
 func (schemaMigrator) Migrate(ctx context.Context, sqlDB *sql.DB, _ pgtestdb.Config) error {
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, db.Migrations())
+	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = provider.Up(ctx)
-	return err
+	defer conn.Close()
+	return conn.Raw(func(driverConn any) error {
+		m, err := migrate.NewMigrator(ctx, driverConn.(*stdlib.Conn).Conn(), db.VersionTable)
+		if err != nil {
+			return err
+		}
+		if err := m.LoadMigrations(db.Migrations()); err != nil {
+			return err
+		}
+		return m.Migrate(ctx)
+	})
 }
 
 // Projects creates placeholder projects with the given ids so rows that

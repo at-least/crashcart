@@ -10,10 +10,8 @@
 -- bucket (BLOB_STORE=s3) optional for event payloads and symbol files —
 -- exactly one of a row's data / blob_key columns is set
 -- (internal/symbolicate/files.go, internal/store/packs.go).
---
--- +goose Up
 
--- Enumerations: one definition, sqlc generates the Go constants.
+-- Enumerations: one definition, internal/store/enums.go mirrors the Go constants.
 CREATE TYPE event_level    AS ENUM ('fatal', 'error', 'warning', 'info', 'debug');
 CREATE TYPE session_status AS ENUM ('ok', 'exited', 'crashed', 'errored', 'abnormal');
 CREATE TYPE issue_status   AS ENUM ('unresolved', 'resolved', 'ignored', 'regression');
@@ -460,17 +458,13 @@ CREATE INDEX alert_channels_project ON alert_channels (project_id);
 -- viewer's SSE stream re-counts when a project gains an issue or a
 -- regression. Polling stays as the fallback on both sides.
 
--- +goose StatementBegin
 CREATE FUNCTION crashcart_notify_job() RETURNS TRIGGER
     LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_notify('crashcart_jobs', ''); RETURN NULL; END $$;
--- +goose StatementEnd
 CREATE TRIGGER jobs_notify AFTER INSERT ON jobs
     FOR EACH STATEMENT EXECUTE FUNCTION crashcart_notify_job();
 
--- +goose StatementBegin
 CREATE FUNCTION crashcart_notify_issue() RETURNS TRIGGER
     LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_notify('crashcart_issues', NEW.project_id::text); RETURN NULL; END $$;
--- +goose StatementEnd
 CREATE TRIGGER issues_notify_insert AFTER INSERT ON issues
     FOR EACH ROW EXECUTE FUNCTION crashcart_notify_issue();
 CREATE TRIGGER issues_notify_regression AFTER UPDATE OF status ON issues
@@ -589,6 +583,7 @@ LANGUAGE SQL STABLE AS $$
     WHERE project_id = pid AND bucket >= from_at AND bucket < to_at
 $$;
 
--- +goose Down
--- No down: this project authors forward-only migrations. Restore an
--- earlier schema from a `crashcart export` taken before upgrading.
+-- No down: this project authors forward-only, irreversible migrations
+-- (no "---- create above / drop below ----" separator below this line).
+-- Restore an earlier schema from a `crashcart export` taken before
+-- upgrading.

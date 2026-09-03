@@ -1,6 +1,6 @@
-// Package db owns the schema: versioned goose migrations under
+// Package db owns the schema: versioned tern migrations under
 // migrations/, applied on every start. internal/db/migrations/00001_baseline.sql
-// is the whole schema as of the first goose release; every change after
+// is the whole schema as of the first tern release; every change after
 // that is a new migration file.
 package db
 
@@ -10,18 +10,17 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
-	"github.com/pressly/goose/v3/lock"
+	"github.com/jackc/tern/v2/migrate"
 )
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
 // migrationsDir is migrationsFS rooted at its migrations/ subdirectory, so
-// goose sees plain "00001_baseline.sql"-style paths.
+// tern sees plain "00001_baseline.sql"-style paths.
 var migrationsDir = mustSub(migrationsFS, "migrations")
 
 func mustSub(fsys embed.FS, dir string) fs.FS {
@@ -32,7 +31,7 @@ func mustSub(fsys embed.FS, dir string) fs.FS {
 	return sub
 }
 
-// Migrations exposes the embedded migration files, rooted so goose-style
+// Migrations exposes the embedded migration files, rooted so tern-style
 // names appear directly ("00001_baseline.sql", not "migrations/…") — for
 // callers that read their raw content: cmd/gendocs (enum checks against
 // every migration, not just the baseline) and internal/testdb (hashing
@@ -44,63 +43,87 @@ func Migrations() fs.FS { return migrationsDir }
 // newer database.
 var ErrDatabaseAhead = errors.New("database schema is ahead of this binary")
 
+// VersionTable must stay unqualified (not schema-qualified, despite
+// tern's own recommendation): it is created and read through whatever
+// connection a Migrator runs on, so it lands in that connection's
+// search_path — the same schema its migrations do. A schema-qualified
+// name would pin every caller (including every concurrently-schema'd
+// test database, and internal/testdb's own template databases) to the
+// same row instead of one per schema. See TestInitConcurrently.
+const VersionTable = "schema_version"
+
+// initLockTimeout bounds Init's wait for tern's pg_advisory_lock, which
+// otherwise blocks indefinitely (no built-in retry-then-give-up, unlike
+// goose's session locker before it). Without this, a caller's own ctx
+// (cmd/crashcart's is only canceled by SIGINT/SIGTERM) would let a
+// replica stuck mid-migration wedge every other replica's startup
+// forever with no error.
+const initLockTimeout = 5 * time.Minute
+
 // Init applies pending migrations and reports whether the database was
 // empty beforehand (the baseline migration was the one applied). Safe to
-// call from every replica at startup: goose's session locker (below)
-// serializes them onto one connection at a time, so this needs no
-// advisory lock of its own.
+// call from every replica at startup: tern's Migrator takes one
+// connection out of the pool for its own advisory lock and every
+// migration statement, so this needs no locking of its own, and never
+// contends the pool for a second connection while holding the lock — a
+// lock held on a connection pinned separately from the one migrations
+// run on can self-deadlock when the pool has no headroom to spare
+// (MaxConns=1: the lock holder and the migration runner would each need
+// their own connection from the same exhausted pool). See
+// https://github.com/at-least/crashcart/issues/1 (RunAsLeader hit the
+// same shape) and TestInitSingleConnection.
 func Init(ctx context.Context, pool *pgxpool.Pool) (created bool, err error) {
-	// OpenDBFromPool, not sql.Open(pool.Config().ConnString()): the pool's
-	// ConnString() is the string it was originally parsed from and does not
-	// reflect RuntimeParams set on it afterward (e.g. testdb's per-test
-	// search_path) — OpenDBFromPool instead draws real connections from the
-	// pool itself, so migrations run against the same database/schema this
-	// process actually talks to.
-	sqlDB := stdlib.OpenDBFromPool(pool)
-	defer sqlDB.Close()
+	ctx, cancel := context.WithTimeout(ctx, initLockTimeout)
+	defer cancel()
 
-	locker, err := lock.NewPostgresSessionLocker()
+	pc, err := pool.Acquire(ctx)
 	if err != nil {
 		return false, err
 	}
-	// WithSessionLocker: goose takes one *sql.Conn from sqlDB, locks the
-	// session on it (pg_try_advisory_lock, retried for up to 5 minutes),
-	// and runs every migration on that same connection — never a second
-	// one from the pool. A hand-rolled advisory lock held on a connection
-	// pinned separately from the one migrations run on can self-deadlock
-	// when the pool has no headroom to spare (MaxConns=1: the lock holder
-	// and the migration runner would each need their own connection from
-	// the same exhausted pool). See https://github.com/at-least/crashcart/issues/1
-	// (RunAsLeader hit the same shape) and TestInitSingleConnection.
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrationsDir, goose.WithSessionLocker(locker))
+	conn := pc.Hijack() // ours until closed: tern's session-level advisory lock cannot go back to the pool
+	defer conn.Close(context.WithoutCancel(ctx))
+
+	m, err := migrate.NewMigrator(ctx, conn, VersionTable)
 	if err != nil {
 		return false, err
 	}
-	// GetVersions doesn't take the session lock (goose's own doc note), so
-	// two replicas racing here could each read a stale version — but this
-	// is just a "refuse rather than run against a schema I don't know"
-	// guard; a stale read only means Up (which does lock) proceeds and
-	// does the right idempotent thing, never a wrong one.
-	current, target, err := provider.GetVersions(ctx)
+	if err := m.LoadMigrations(migrationsDir); err != nil {
+		return false, err
+	}
+
+	// GetCurrentVersion doesn't take the advisory lock (it's a plain
+	// SELECT), so two replicas racing here could each read a stale
+	// version — but this is just a "refuse rather than run against a
+	// schema I don't know" guard; a stale read only means Migrate (which
+	// does lock) proceeds and does the right idempotent thing, never a
+	// wrong one.
+	before, err := m.GetCurrentVersion(ctx)
 	if err != nil {
 		return false, err
 	}
-	if current > target {
+	target := int32(len(m.Migrations))
+	if before > target {
 		return false, fmt.Errorf("%w: database is at migration %d, this binary only knows up to %d — upgrade the binary first",
-			ErrDatabaseAhead, current, target)
+			ErrDatabaseAhead, before, target)
 	}
-	results, err := provider.Up(ctx)
-	if err != nil {
-		return false, err
-	}
-	// created means the baseline (version 1, the empty-database case) was
-	// applied by this call, not merely that some migration was — a later
-	// migration reaching an existing, populated database is an upgrade,
-	// not a creation.
-	for _, r := range results {
-		if r.Source != nil && r.Source.Version == 1 {
+
+	// created means the baseline was applied by *this* call, not merely
+	// that the database ended up at version >= 1 — under
+	// TestInitConcurrently every racing caller's pre-lock GetCurrentVersion
+	// above reads the same stale 0, so `before == 0` can't tell the winner
+	// from the five callers who found the schema already there and
+	// applied nothing. OnStart only fires for a migration this call's
+	// Migrator actually runs (tern re-reads the version after acquiring
+	// its advisory lock; a losing caller's loop body never executes), so
+	// it's the one signal scoped to this call. Sequence 1 is specifically
+	// the baseline — a future 1→2 upgrade must report created=false.
+	m.OnStart = func(sequence int32, name, direction, sql string) {
+		if sequence == 1 {
 			created = true
 		}
+	}
+	if err := m.Migrate(ctx); err != nil {
+		return false, err
 	}
 	return created, nil
 }

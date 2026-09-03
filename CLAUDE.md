@@ -20,7 +20,7 @@ tests, do not "update the docs" with a second copy.
 ## Stack
 
 Go 1.27+ (std `net/http` mux, pgx/v5 with hand-written queries, templ,
-goose for migrations), plain Postgres 15+ (no extensions; the one store —
+tern for migrations), plain Postgres 15+ (no extensions; the one store —
 payloads, symbol files included by default), htmx + Tailwind v4 +
 shadless for the viewer. Optional: symbol files and event payloads in an
 S3-compatible bucket (`BLOB_STORE=s3`, minio-go), dSYM symbolication
@@ -46,7 +46,7 @@ internal/
   blob/               optional object store (BLOB_STORE=s3): Store (Memory for tests, S3 via minio-go)
   config/             env → Config
   sentry/             envelope parser, Frame, Fingerprint, Culprit, ID
-  db/                 migrations/*.sql (goose, applied on every start; 00001_baseline.sql is
+  db/                 migrations/*.sql (tern, applied on every start; 00001_baseline.sql is
                       the whole schema), db.go (Init)
   store/              Store = pool + Blobs; one file per domain, each a package-level
                       function per query (`func X(ctx, db DB, args...) (Row, error)`) plus
@@ -101,11 +101,13 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   (partitions, rollup). A handler package (`internal/api`, `internal/web`,
   …) never writes a query string itself — it calls a `store` function.
 - A schema change is a new file in `internal/db/migrations/` (never an
-  edit to an existing one) — sequential 5-digit prefix, `-- +goose Up` /
-  `-- +goose Down` (forward-only: leave Down a no-op comment; this project
-  restores from `crashcart export` instead of rolling back), `-- +goose
-  StatementBegin`/`StatementEnd` around any statement with a `;` inside
-  its body (a plpgsql function). An export-format change bumps the format
+  edit to an existing one) — sequential digit prefix (`\d+_name.sql`),
+  plain SQL with no per-statement markers (tern runs a migration's whole
+  file as one multi-statement `Exec`, so a plpgsql function body with a
+  `;` inside needs no special handling). Forward-only: omit the
+  `---- create above / drop below ----` separator so the migration is
+  irreversible; this project restores from `crashcart export` instead of
+  rolling back. An export-format change bumps the format
   in `internal/export` and its spec `docs/reference/export-format.md`
   together — independent of schema versioning.
 - There is one store by default — Postgres. Symbol files and event
