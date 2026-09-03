@@ -275,3 +275,21 @@ rows written before it where they are (by design). For a large existing
 instance the honest way to move *them* is a background job that reads
 `events.payload` rows a partition at a time, spools and packs them, and
 NULLs the column — not `export`/`import` of a 300 GB database. Not built.
+
+**`crashcart push-relay`.** The iOS/Android companion apps (planned,
+`crashcart-ios` / `crashcart-android`, separate repos) are one published
+App Store / Play Store binary, so every install shares the one Firebase
+project baked into that binary — an instance's own
+`FCM_SERVICE_ACCOUNT_JSON` (`internal/alerts/push.go`) cannot send to
+those devices (FCM refuses a token from a different project), and
+handing every self-hosted instance the maintainer's real service account
+so it *could* would let any one of them push to any other instance's
+users. The fix is a small relay subcommand the maintainer alone runs,
+holding the one real `FCM_SERVICE_ACCOUNT_JSON`; `sendPush` calls it
+instead of FCM directly by default. It needs no billing or entitlement
+check of its own — the paid part is the App Store/Play Store
+subscription, not the relay — only a rate limit (per device token or
+source IP, `internal/auth.RateLimit`'s pattern) to bound abuse and FCM
+quota. `FCM_SERVICE_ACCOUNT_JSON` stays as a direct-to-FCM override for
+anyone who builds the app themselves against their own Firebase project.
+Not built: the apps themselves don't exist yet.
