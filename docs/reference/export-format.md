@@ -1,4 +1,4 @@
-# CrashCart export format (NDJSON, format 3)
+# CrashCart export format (NDJSON, format 4)
 
 The file `crashcart export` writes and `crashcart import` reads: a full,
 portable copy of one or all projects for backups and for moving between
@@ -75,7 +75,7 @@ so a dump loads into any database:
 ## `_meta`
 
 ```json
-{"t":"_meta","format":3,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
+{"t":"_meta","format":4,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
 ```
 
 - `format` — integer. A reader that supports format *N* must refuse a file
@@ -128,7 +128,6 @@ platform?         str    one of: ios android flutter react-native web backend ot
 public_key        str    DSN public key; unique per database
 sample_keep_first int    default 100
 sample_rate       float  0 < x ≤ 1; default 1
-daily_quota?      int    default 0 (unlimited)
 created_at        ts
 ```
 
@@ -391,6 +390,10 @@ up); the rest expire or belong to the target database.
 
 ## Format history
 
+- **4** — `projects.daily_quota` is gone: the daily quota was removed
+  (sampling bounds storage, the per-process in-memory rate limit is the
+  one remaining ingest guard). A format-3 file's `daily_quota` is ignored
+  on import.
 - **3** — issue status `triaged` is gone (Sentry has no such state); a
   format-2 file's `triaged` imports as `unresolved`. Culprits are Sentry's
   `module-or-file in function`. Later, additively (format unchanged):
@@ -404,7 +407,7 @@ up); the rest expire or belong to the target database.
 
 ## Evolving the format
 
-- **Additive change** (new optional field, new table): keep `format` at 3.
+- **Additive change** (new optional field, new table): keep `format` at 4.
   Old readers ignore unknown fields and unknown `t`.
 - **Breaking change** (renamed/removed required field, changed encoding):
   bump `format`, keep reading the previous one for at least one release.

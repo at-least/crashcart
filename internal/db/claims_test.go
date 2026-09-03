@@ -52,7 +52,7 @@ func TestProjectTablesCascade(t *testing.T) {
 	rows.Close()
 	// The enumeration itself must see the tables ARCHITECTURE.md lists
 	// (partitions included: they inherit the constraint).
-	for _, want := range []string{"events", "events_default", "attachments", "sessions", "releases", "issues", "symbol_files", "project_usage", "jobs", "alert_rules", "alert_channels", "event_stats_dirty", "session_stats_dirty", "event_stats_hourly_rolled", "issue_stats_hourly_rolled", "release_health_hourly_rolled"} {
+	for _, want := range []string{"events", "events_default", "attachments", "sessions", "releases", "issues", "symbol_files", "jobs", "alert_rules", "alert_channels", "event_stats_dirty", "session_stats_dirty", "event_stats_hourly_rolled", "issue_stats_hourly_rolled", "release_health_hourly_rolled"} {
 		found := false
 		for _, have := range tables {
 			found = found || have == want
@@ -197,7 +197,7 @@ func TestInitConcurrently(t *testing.T) {
 		t.Fatalf("schema created %d times, want 1", created)
 	}
 	var v int32
-	if err := pool.QueryRow(ctx, "SELECT version FROM "+db.VersionTable).Scan(&v); err != nil || v != 1 {
-		t.Fatalf("baseline migration version = %d %v", v, err)
+	if err := pool.QueryRow(ctx, "SELECT version FROM "+db.VersionTable).Scan(&v); err != nil || v != latestMigration {
+		t.Fatalf("migration version = %d %v (want %d)", v, err, latestMigration)
 	}
 }

@@ -203,14 +203,7 @@ func TestProjectsAndAuth(t *testing.T) {
 	if rec.Code != 200 || out["name"] != "Renamed" || out["sample_rate"] != 0.5 || out["sample_keep_first"] != float64(10) {
 		t.Errorf("patch: %d %v", rec.Code, out)
 	}
-	// Daily quota and key rotation.
-	rec, out = e.do("PATCH", "/api/projects/demo", map[string]any{"daily_quota": 5000})
-	if rec.Code != 200 || out["daily_quota"] != float64(5000) {
-		t.Errorf("daily_quota: %d %v", rec.Code, out)
-	}
-	if rec, _ = e.do("PATCH", "/api/projects/demo", map[string]any{"daily_quota": -1}); rec.Code != 400 {
-		t.Errorf("negative quota accepted: %d", rec.Code)
-	}
+	// Key rotation.
 	before := e.get("/api/projects/demo", 200)["dsn"]
 	rec, out = e.do("POST", "/api/projects/demo/rotate-key", nil)
 	if rec.Code != 200 || out["dsn"] == before || out["dsn"] == nil {

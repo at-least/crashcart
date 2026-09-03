@@ -42,10 +42,10 @@ per-project table cascades from `projects`: deleting a project deletes
 its data. Lists page by keyset (`store.Cursor`), never by offset.
 
 **Ingest is one transaction, no hot rows.** An envelope is written in a
-single transaction so a failure (including the daily quota) leaves
-nothing behind; no aggregate row is written at ingest. The one row every
-envelope of a project touches — the quota counter — is bumped last, so
-its lock is held only from that statement to the commit. Order and
+single transaction so a failure leaves nothing behind; no aggregate row
+is written at ingest, and no row is bumped on every envelope of a
+project — the only per-project row-level contention in the write path
+is `issues`, one row per fingerprint, not per envelope. Order and
 details: `ingest.Ingest` (`internal/ingest/ingest.go`).
 
 **Statistics are rollups with dirty keys, exact for late data.** Hourly
@@ -197,13 +197,15 @@ signed-in user, the JSON API and sentry-cli an API key; secrets are
 stored hashed, never plain. No roles; who acts is recorded on issue
 status changes. `internal/auth`.
 
-**Rate limiting is in memory, the daily quota is in Postgres.** A rate
-limit is a per-process, per-credential window (each replica enforces it
-on its own share — cheap, and good enough against a burst). The daily
-quota is exact because it is the ingest transaction's last statement and
-rolls it back; the process then refuses that project before doing any
-work until the next UTC day, and the SDKs are told to back off through
-the standard header. `auth.RateLimit`, `ingest.Ingest` / `quotaExhausted`.
+**Rate limiting is in memory — the one ingest guard, approximate on
+purpose.** A rate limit is a per-process, per-credential 60 s window
+(each replica enforces it on its own share, so the effective ceiling
+scales with replica count); the SDK is told to back off through the
+standard header. There is no daily quota: sampling already bounds
+storage, and an exact, Postgres-backed cost cap would need a row every
+envelope of a project touches — the "no hot rows" cost this design
+avoids — for a guarantee (a total daily budget, not just a burst limit)
+most deployments do not need. `auth.RateLimit`, `ingest.Ingest`.
 
 **Viewer is server-rendered.** templ + htmx, all state in the URL
 (`web.ViewState`), charts as inline SVG from the server; `app.js` only

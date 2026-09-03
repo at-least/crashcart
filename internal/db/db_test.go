@@ -23,8 +23,8 @@ func TestInitIdempotent(t *testing.T) {
 		t.Fatalf("Init on an already-migrated database: created=%v err=%v", created, err)
 	}
 	var v int32
-	if err := p.QueryRow(ctx, "SELECT version FROM "+db.VersionTable).Scan(&v); err != nil || v != 1 {
-		t.Fatalf("baseline migration version: %d %v", v, err)
+	if err := p.QueryRow(ctx, "SELECT version FROM "+db.VersionTable).Scan(&v); err != nil || v != latestMigration {
+		t.Fatalf("migration version: %d %v (want %d)", v, err, latestMigration)
 	}
 }
 
@@ -63,7 +63,7 @@ func TestInitFreshDatabase(t *testing.T) {
 // latestMigration is the highest file in internal/db/migrations; bump it
 // with every new migration so TestInitFreshDatabase keeps proving Init
 // reaches the end.
-const latestMigration = 1
+const latestMigration = 2
 
 // TestInitSingleConnection: Init must not need more than one pool
 // connection at a time. Before the fix it pinned a connection for the
@@ -90,18 +90,17 @@ func TestInitSingleConnection(t *testing.T) {
 	}
 }
 
-// A new project accepts everything by default: sampling bounds the
-// database, a daily quota is an explicit cost cap.
+// A new project accepts everything by default: sampling is what bounds
+// the database.
 func TestProjectDefaults(t *testing.T) {
 	p := testdb.New(t).Pool
 	ctx := context.Background()
-	var quota int32
 	var rate float64
-	if err := p.QueryRow(ctx, "INSERT INTO projects (slug, name, public_key) VALUES ('d', 'D', 'k') RETURNING daily_quota, sample_rate").Scan(&quota, &rate); err != nil {
+	if err := p.QueryRow(ctx, "INSERT INTO projects (slug, name, public_key) VALUES ('d', 'D', 'k') RETURNING sample_rate").Scan(&rate); err != nil {
 		t.Fatal(err)
 	}
-	if quota != 0 || rate != 1 {
-		t.Fatalf("defaults: daily_quota=%d sample_rate=%v (want 0 = unlimited, 1)", quota, rate)
+	if rate != 1 {
+		t.Fatalf("defaults: sample_rate=%v (want 1)", rate)
 	}
 }
 

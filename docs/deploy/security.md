@@ -51,7 +51,7 @@ front; every [install guide](/deploy/docker) does this.
   API key; SDKs honour `429` and resend later.
 - Oversize envelopes are rejected with `413` before anything is read
   into the database.
-- Per-project **daily quota** and **sampling** cap how much one runaway
-  bug can store, while the issue's count stays exact.
+- Per-project **sampling** caps how much one runaway bug can store,
+  while the issue's count stays exact.
 
 See [Before going live](./checklist) for the short version.

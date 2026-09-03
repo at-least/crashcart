@@ -211,12 +211,6 @@ func TestBulkAndMutations(t *testing.T) {
 	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.SampleKeepFirst != 10 || got.SampleRate != 0.5 {
 		t.Errorf("sampling not saved: %+v", got)
 	}
-	if r := hx("PATCH", "/p/shop/settings/sampling", "keep_first=10&rate=0.5&daily_quota=2000"); r.Code != 303 {
-		t.Errorf("quota = %d %s", r.Code, r.Body)
-	}
-	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.DailyQuota != 2000 {
-		t.Errorf("quota not saved: %d", got.DailyQuota)
-	}
 	oldKey := ""
 	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); true {
 		oldKey = got.PublicKey

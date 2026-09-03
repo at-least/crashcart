@@ -274,28 +274,3 @@ func CountDirtyStats(ctx context.Context, db DB) (int32, error) {
 	err := db.QueryRow(ctx, "SELECT (SELECT count(*) FROM event_stats_dirty) + (SELECT count(*) FROM session_stats_dirty)").Scan(&n)
 	return n, err
 }
-
-// AddProjectUsage counts n received events against the project's UTC day
-// and returns the day's total (the caller compares it with daily_quota
-// and rolls back).
-func AddProjectUsage(ctx context.Context, db DB, projectID int64, day time.Time, n int64) (int64, error) {
-	var events int64
-	err := db.QueryRow(ctx, `INSERT INTO project_usage (project_id, day, events) VALUES ($1, $2, $3)
-ON CONFLICT (project_id, day) DO UPDATE SET events = project_usage.events + EXCLUDED.events
-RETURNING events`, projectID, day, n).Scan(&events)
-	return events, err
-}
-
-func ProjectUsage(ctx context.Context, db DB, projectID int64, day time.Time) (int64, error) {
-	var n int64
-	err := db.QueryRow(ctx, "SELECT COALESCE((SELECT events FROM project_usage WHERE project_id = $1 AND day = $2), 0)::bigint", projectID, day).Scan(&n)
-	return n, err
-}
-
-func ExpireProjectUsage(ctx context.Context, db DB, before time.Time) (int64, error) {
-	tag, err := db.Exec(ctx, "DELETE FROM project_usage WHERE day < $1", before)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
-}

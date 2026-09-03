@@ -9,8 +9,8 @@ import (
 
 // UpsertClientReportCounts adds one client_report item's discarded_events
 // to their (reason, category) bucket for that hour — not one row per
-// report, a running sum (project_usage's increment idiom, not the
-// events/sessions rollup one: there is no raw-row table under this to
+// report, a running sum kept by an ON CONFLICT increment (not the
+// events/sessions rollup idiom: there is no raw-row table under this to
 // ever recompute from).
 func UpsertClientReportCounts(ctx context.Context, db DB, projectID int64, bucket time.Time, reasons, categories []string, quantities []int64) error {
 	_, err := db.Exec(ctx, `INSERT INTO client_report_counts (project_id, bucket, reason, category, quantity)

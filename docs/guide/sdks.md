@@ -159,7 +159,7 @@ and Flutter (`SentryFlutter.init((o) => o.attachScreenshot = true)`),
 `attachViewHierarchy` for the view tree — and any SDK can add a file with
 `Sentry.addAttachment(...)`. The number and size of attachments per
 event are bounded — extra or oversize ones are dropped, the event is
-kept — and an event that [sampling](./projects#sampling-and-daily-quota)
+kept — and an event that [sampling](./projects#sampling)
 drops loses its attachments too. Attachments are not scrubbed by
 `PII_REDACT`.
 
@@ -174,8 +174,7 @@ and card numbers and user ids before events are stored.
    **Events**; exceptions also appear under **Issues**.
 3. If nothing arrives, check the SDK's debug output for the HTTP status
    from `/api/<id>/envelope/`: `401` is a wrong key or a project id that
-   does not belong to it, `429` the [rate limit](/deploy/configuration)
-   or the project's daily quota.
+   does not belong to it, `429` the [rate limit](/deploy/configuration).
 
 The [compatibility matrix](/reference/sdks) lists the SDK versions
 exercised end to end with real clients.

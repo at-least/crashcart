@@ -25,7 +25,6 @@ type projectOut struct {
 	Name            string    `json:"name"`
 	Platform        *string   `json:"platform"`
 	SampleKeepFirst int32     `json:"sample_keep_first"`
-	DailyQuota      int32     `json:"daily_quota"`
 	SampleRate      float64   `json:"sample_rate"`
 	CreatedAt       time.Time `json:"created_at"`
 	DSN             string    `json:"dsn"`
@@ -34,7 +33,7 @@ type projectOut struct {
 func (h *Handler) projectOut(r *http.Request, p store.Project) projectOut {
 	return projectOut{
 		ID: p.ID, Slug: p.Slug, Name: p.Name, Platform: p.Platform,
-		SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota, CreatedAt: p.CreatedAt.UTC(),
+		SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, CreatedAt: p.CreatedAt.UTC(),
 		DSN: DSN(h.Cfg, r, p),
 	}
 }
@@ -129,13 +128,12 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 		Platform        *string  `json:"platform"`
 		SampleKeepFirst *int32   `json:"sample_keep_first"`
 		SampleRate      *float64 `json:"sample_rate"`
-		DailyQuota      *int32   `json:"daily_quota"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		h.fail(w, err)
 		return
 	}
-	upd := store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, DailyQuota: p.DailyQuota}
+	upd := store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate}
 	if in.Name != nil {
 		if strings.TrimSpace(*in.Name) == "" {
 			writeErr(w, http.StatusBadRequest, "name must not be empty")
@@ -163,13 +161,6 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		upd.SampleRate = *in.SampleRate
-	}
-	if in.DailyQuota != nil {
-		if *in.DailyQuota < 0 {
-			writeErr(w, http.StatusBadRequest, "daily_quota must be >= 0 (0 = unlimited)")
-			return
-		}
-		upd.DailyQuota = *in.DailyQuota
 	}
 	np, err := store.UpdateProject(r.Context(), h.Store.Pool, upd)
 	if err != nil {

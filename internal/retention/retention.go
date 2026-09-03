@@ -209,8 +209,8 @@ func dropExpiredPartitions(ctx context.Context, st *store.Store, cfg config.Conf
 // ── sweep ──────────────────────────────────────────────────────────────
 
 // Sweep runs hourly: partitions (create ahead, drop expired), then the
-// row-level expiries — issues, jobs, usage counters, user sessions, upload
-// chunks, symbol files and rollup history past AggregateRetentionDays.
+// row-level expiries — issues, jobs, user sessions, upload chunks, symbol
+// files and rollup history past AggregateRetentionDays.
 func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) error {
 	now := time.Now()
 	retention := cfg.Retention()
@@ -227,9 +227,6 @@ func Sweep(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Lo
 	jobs, err := store.ExpireJobs(ctx, st.Pool)
 	if err != nil {
 		return fmt.Errorf("expire jobs: %w", err)
-	}
-	if _, err := store.ExpireProjectUsage(ctx, st.Pool, now.Add(-retention)); err != nil {
-		return fmt.Errorf("expire project usage: %w", err)
 	}
 	if _, err := store.ExpireUserSessions(ctx, st.Pool); err != nil {
 		return fmt.Errorf("expire user sessions: %w", err)

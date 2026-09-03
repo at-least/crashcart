@@ -1,8 +1,7 @@
 package ingest
 
 // Tests that pin the documented ingest claims (ARCHITECTURE.md /
-// CLAUDE.md) that no other test could falsify: the whole-envelope quota
-// rollback and what the process remembers of it, id derivation and
+// CLAUDE.md) that no other test could falsify: id derivation and
 // in-envelope duplicates, sampling of handled events and of ungrouped
 // events at rate 1, the dirty marks an envelope leaves, an ignored issue
 // on a new event, the exact clamped time, unstored item types, the
@@ -61,70 +60,6 @@ func count(t *testing.T, st *store.Store, q string, args ...any) int64 {
 		t.Fatalf("%s: %v", q, err)
 	}
 	return n
-}
-
-// TestIngestQuotaRollbackIsWhole: the envelope that crosses the quota
-// leaves nothing behind — no event, no issue, no dirty hour, no job, no
-// usage — and the process then refuses the project's envelopes without
-// touching the database, until the quota is changed or the UTC day ends.
-func TestIngestQuotaRollbackIsWhole(t *testing.T) {
-	st := testdb.New(t)
-	ctx := context.Background()
-	p := newProject(t, st, "q")
-	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
-	now := time.Now().UTC()
-	ts := now.Add(-time.Minute).Format(time.RFC3339)
-	day := now.Truncate(24 * time.Hour)
-	nothing := func(step string) {
-		t.Helper()
-		for _, q := range []string{
-			"SELECT count(*) FROM events WHERE project_id = $1",
-			"SELECT count(*) FROM issues WHERE project_id = $1",
-			"SELECT count(*) FROM event_stats_dirty WHERE project_id = $1",
-			"SELECT count(*) FROM jobs WHERE project_id = $1",
-			"SELECT count(*) FROM releases WHERE project_id = $1",
-		} {
-			if n := count(t, st, q, p.ID); n != 0 {
-				t.Fatalf("%s: %s = %d, want 0", step, q, n)
-			}
-		}
-		if used, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day); used != 0 {
-			t.Fatalf("%s: usage = %d, want 0", step, used)
-		}
-	}
-
-	p.DailyQuota = 1
-	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("a1", ts, "E"), handled("a2", ts, "E")), now), now)
-	if err != ErrQuota || res.Stored != 0 || res.Received != 2 {
-		t.Fatalf("two events into a quota of one: res=%+v err=%v", res, err)
-	}
-	nothing("after rollback")
-	// One event would fit the quota by the database's count (0 so far),
-	// but the process remembers the exhaustion and refuses before any work.
-	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("a3", ts, "E")), now), now); err != ErrQuota {
-		t.Fatalf("remembered exhaustion: err=%v", err)
-	}
-	nothing("after short-circuit")
-	// A changed quota forgets it: the same single event is accepted.
-	p.DailyQuota = 2
-	if res, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("a3", ts, "E")), now), now); err != nil || res.Stored != 1 {
-		t.Fatalf("after quota change: res=%+v err=%v", res, err)
-	}
-	// Exhaust the new quota (1 counted + 2 > 2), then the next UTC day is
-	// a fresh count: the process no longer refuses.
-	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("a4", ts, "E"), handled("a5", ts, "E")), now), now); err != ErrQuota {
-		t.Fatalf("second exhaustion: err=%v", err)
-	}
-	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("a6", ts, "E")), now), now); err != ErrQuota {
-		t.Fatalf("still exhausted today: err=%v", err)
-	}
-	tomorrow := nextUTCDay(now).Add(time.Second)
-	if res, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("a6", ts, "E")), tomorrow), tomorrow); err != nil || res.Stored != 1 {
-		t.Fatalf("next UTC day: res=%+v err=%v", res, err)
-	}
-	if used, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day); used != 1 {
-		t.Fatalf("today's usage = %d, want 1 (only the accepted event)", used)
-	}
 }
 
 // TestIngestDerivedIDAndInEnvelopeDuplicates: an event with no usable id
@@ -354,7 +289,7 @@ func TestIngestDropsUnstoredItemTypes(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"received":0`) {
 		t.Fatalf("→ %d %s", rec.Code, rec.Body.String())
 	}
-	for _, tbl := range []string{"events", "sessions", "issues", "event_stats_dirty", "project_usage", "client_report_counts"} {
+	for _, tbl := range []string{"events", "sessions", "issues", "event_stats_dirty", "client_report_counts"} {
 		if n := count(t, st, "SELECT count(*) FROM "+tbl+" WHERE project_id = $1", p.ID); n != 0 {
 			t.Errorf("%s rows = %d, want 0", tbl, n)
 		}
@@ -577,13 +512,11 @@ func TestIngestUserReportPIIRedact(t *testing.T) {
 
 // TestIngestClientReportCountsAccumulate: two separate envelopes each
 // reporting the same (reason, category) add up into one bucket rather
-// than overwriting it, and ingesting a client_report-only envelope does
-// not touch the daily event quota.
+// than overwriting it.
 func TestIngestClientReportCountsAccumulate(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
 	p := newProject(t, st, "cr1")
-	p.DailyQuota = 1 // any event quota consumption here would show up as an exhausted quota within this test
 	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
 	now := time.Now().UTC()
 
@@ -610,15 +543,6 @@ func TestIngestClientReportCountsAccumulate(t *testing.T) {
 	}
 	if got["sample_rate/error"] != 5 || got["before_send/error"] != 1 {
 		t.Fatalf("counts did not accumulate: %+v", got)
-	}
-
-	// Neither envelope had an event, so nothing was counted against the
-	// quota — a third envelope with an actual event still fits under 1.
-	id := hexID("cr-event-1")
-	ev := fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":"error","platform":"android","exception":{"values":[{"type":"E","value":"v","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id, now.Format(time.RFC3339))
-	body = "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\"}\n" + ev + "\n"
-	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Stored != 1 {
-		t.Fatalf("quota was consumed by client_report-only envelopes: %+v %v", res, err)
 	}
 }
 
@@ -725,29 +649,6 @@ func TestIngestCheckInOrphanDropped(t *testing.T) {
 	}
 	if n := count(t, st, "SELECT count(*) FROM monitors WHERE project_id = $1", p.ID); n != 0 {
 		t.Fatalf("orphan check-in created a monitor: %d rows", n)
-	}
-}
-
-// TestIngestCheckInDoesNotConsumeQuota: like client_report, a check-in is
-// not an event and must not count against the daily quota.
-func TestIngestCheckInDoesNotConsumeQuota(t *testing.T) {
-	st := testdb.New(t)
-	ctx := context.Background()
-	p := newProject(t, st, "ci4")
-	p.DailyQuota = 1
-	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
-	now := time.Now().UTC()
-
-	cfg := `{"schedule":{"type":"interval","value":1,"unit":"hour"}}`
-	body := "{}\n{\"type\":\"check_in\"}\n" + checkInBody(hexID("q-run"), "quota-job", "ok", cfg) + "\n"
-	if res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.CheckIns != 1 {
-		t.Fatalf("check-in: %+v %v", res, err)
-	}
-	id := hexID("q-event")
-	ev := fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":"error","platform":"android","exception":{"values":[{"type":"E","value":"v","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id, now.Format(time.RFC3339))
-	body = "{\"event_id\":\"" + id + "\"}\n{\"type\":\"event\"}\n" + ev + "\n"
-	if res, err := in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Stored != 1 {
-		t.Fatalf("quota was consumed by the check-in: %+v %v", res, err)
 	}
 }
 

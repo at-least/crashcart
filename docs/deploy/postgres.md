@@ -58,7 +58,7 @@ By default every event is stored (a few hundred bytes of columns plus
 the gzipped payload, typically 2–5 KB), so the database grows with the
 traffic: as a rule of thumb, roughly 1 GB per 300 000 events. When that
 is more than you want to keep, lower the project's **sample rate** under
-[Settings → Sampling](/guide/projects#sampling-and-daily-quota): the
+[Settings → Sampling](/guide/projects#sampling): the
 first events of every issue are always stored, then only that fraction;
 the rest are counted but not stored. From then on the database grows
 with the number of *issues*, not events — a project with a thousand

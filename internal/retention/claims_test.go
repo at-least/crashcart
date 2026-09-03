@@ -345,8 +345,8 @@ func TestRollupHistoryExpiry(t *testing.T) {
 
 // TestSweepRowExpiries: the row-level expiries of the hourly sweep —
 // symbol files at twice the retention, upload chunks after a day, user
-// sessions at their expiry, dead jobs after a week (live ones never),
-// project usage at the retention — each with a row on either side.
+// sessions at their expiry, dead jobs after a week (live ones never) —
+// each with a row on either side.
 func TestSweepRowExpiries(t *testing.T) {
 	st := testdb.New(t)
 	testdb.Projects(t, st, 1)
@@ -366,7 +366,6 @@ func TestSweepRowExpiries(t *testing.T) {
 	exec(`INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES ('keep', 1, $1), ('drop', 1, $2)`, now.Add(time.Hour), now.Add(-time.Hour))
 	exec(`INSERT INTO jobs (kind, project_id, args, attempts, created_at) VALUES
 		('alert', 1, '{"j":"dead-keep"}', 8, $1), ('alert', 1, '{"j":"dead-drop"}', 8, $2), ('alert', 1, '{"j":"live-old"}', 0, $2)`, now.Add(-6*d), now.Add(-8*d))
-	exec(`INSERT INTO project_usage (project_id, day, events) VALUES (1, $1, 1), (1, $2, 1)`, now.Add(-9*d).Truncate(d), now.Add(-11*d).Truncate(d))
 	if err := Sweep(ctx, st, cfg, quiet); err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +384,6 @@ func TestSweepRowExpiries(t *testing.T) {
 	check("jobs (dead 6 d kept, dead 8 d dropped, live 8 d kept)", "SELECT count(*) FROM jobs", 2)
 	check("dead job dropped", "SELECT count(*) FROM jobs WHERE args->>'j' = 'dead-drop'", 0)
 	check("live job kept whatever its age", "SELECT count(*) FROM jobs WHERE args->>'j' = 'live-old'", 1)
-	check("project usage (9 d kept, 11 d dropped)", "SELECT count(*) FROM project_usage", 1)
 }
 
 // TestExpireIssuesFollowsPartitions: the cutoff ExpireIssues uses for

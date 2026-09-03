@@ -62,5 +62,5 @@ data too.
 
 ## Per project
 
-Sampling and daily quota are set per project in the viewer
-(Settings → Sampling). See [Projects & DSNs](/guide/projects#sampling-and-daily-quota).
+Sampling is set per project in the viewer (Settings → Sampling). See
+[Projects & DSNs](/guide/projects#sampling).

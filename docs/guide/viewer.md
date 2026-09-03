@@ -78,8 +78,8 @@ user feedback report if one was submitted.
 `/p/{slug}/feedback` — user feedback reports (name, email, comments a
 person typed into the SDK's crash dialog), newest first, linking back
 to the event when it's still there. A report is kept even if its event
-was never stored — sampling, a daily quota, or the report simply
-arriving first — so this list can hold entries the event list can't.
+was never stored — sampling, or the report simply arriving first — so
+this list can hold entries the event list can't.
 
 ## Releases
 
@@ -104,7 +104,7 @@ by hand.
 - **DSN** and **Rotate key**; **Previous keys** — DSN keys a rotation
   retired but nobody has deleted, with when each was last used
 - **Platform** label
-- **Sampling**: keep first, sample rate, daily quota
+- **Sampling**: keep first, sample rate
 - **Alerts**: enable each detector, add webhook / Slack / Telegram channels
 - **Symbols**: upload and delete symbol files
 - **Discarded events**: what the project's SDKs reported dropping

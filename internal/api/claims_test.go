@@ -200,9 +200,6 @@ func TestProjectDeleteCascadesEveryTable(t *testing.T) {
 	p := e.createProject("demo")
 	e.seed(p)
 	ctx := context.Background()
-	if _, err := e.st.Pool.Exec(ctx, "INSERT INTO project_usage (project_id, day, events) VALUES ($1, date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC', 3) ON CONFLICT DO NOTHING", p.ID); err != nil {
-		t.Fatalf("project_usage seed: %v", err)
-	}
 	rows, err := e.st.Pool.Query(ctx, `SELECT DISTINCT c.table_name FROM information_schema.columns c
 		JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
 		WHERE c.column_name = 'project_id' AND c.table_schema = current_schema() AND t.table_type = 'BASE TABLE'`)

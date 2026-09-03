@@ -51,9 +51,9 @@ crash-spike detection are computed per project, and iOS `2.4.1` and
 Android `2.4.1` are different builds with different crash rates. Mixing
 them blurs both numbers.
 
-## Sampling and daily quota
+## Sampling
 
-A single bug can produce millions of identical events. Three settings under
+A single bug can produce millions of identical events. Two settings under
 **Settings → Sampling** keep storage under control without losing the
 count (the page shows the current values and the defaults):
 
@@ -61,6 +61,9 @@ count (the page shows the current values and the defaults):
 |---|---|
 | Keep first | The first N events of every issue are always stored — more of them when they are unhandled (`exception.mechanism.handled = false`: crashes, uncaught exceptions) |
 | Sample rate | After that, this fraction of the issue's events is stored (`1` = everything); events with nothing to group by use it from the start. Lower it on a busy project: what is stored then grows with the number of issues, not events, and the counts stay exact |
-| Daily quota | Events accepted per day for the whole project; `0` is unlimited. Sampling already bounds the database; set a quota when you want a hard cap on what a runaway client can send in a day |
 
 The issue's event count stays exact whether or not an event was stored.
+
+A runaway client is bounded by `RATE_LIMIT` (requests per minute per DSN
+key; see [Configuration](/deploy/configuration)) rather than a daily cap —
+sampling is what keeps storage bounded.

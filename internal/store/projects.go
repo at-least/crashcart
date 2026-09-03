@@ -16,11 +16,10 @@ type Project struct {
 	PublicKey       string    `json:"public_key"`
 	SampleKeepFirst int32     `json:"sample_keep_first"`
 	SampleRate      float64   `json:"sample_rate"`
-	DailyQuota      int32     `json:"daily_quota"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-const projectColumns = "id, slug, name, platform, public_key, sample_keep_first, sample_rate, daily_quota, created_at"
+const projectColumns = "id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at"
 
 // ProjectKey is a retired-but-still-valid DSN key (RotateProjectKey pushes
 // the outgoing key here instead of discarding it).
@@ -67,12 +66,11 @@ type ProjectUpdate struct {
 	Platform        *string
 	SampleKeepFirst int32
 	SampleRate      float64
-	DailyQuota      int32
 }
 
 func UpdateProject(ctx context.Context, db DB, u ProjectUpdate) (Project, error) {
 	return scanOne[Project](db.Query(ctx,
-		`UPDATE projects SET name = @Name, platform = @Platform, sample_keep_first = @SampleKeepFirst, sample_rate = @SampleRate, daily_quota = @DailyQuota
+		`UPDATE projects SET name = @Name, platform = @Platform, sample_keep_first = @SampleKeepFirst, sample_rate = @SampleRate
 		WHERE id = @ID RETURNING `+projectColumns,
 		pgx.StrictStructArgs(u)))
 }
@@ -121,7 +119,7 @@ type GetProjectByRetiredKeyRow struct {
 
 func GetProjectByRetiredKey(ctx context.Context, db DB, publicKey string) (GetProjectByRetiredKeyRow, error) {
 	return scanOne[GetProjectByRetiredKeyRow](db.Query(ctx,
-		"SELECT k.id AS key_id, p.id, p.slug, p.name, p.platform, p.public_key, p.sample_keep_first, p.sample_rate, p.daily_quota, p.created_at "+
+		"SELECT k.id AS key_id, p.id, p.slug, p.name, p.platform, p.public_key, p.sample_keep_first, p.sample_rate, p.created_at "+
 			"FROM project_keys k JOIN projects p ON p.id = k.project_id WHERE k.public_key = $1", publicKey))
 }
 

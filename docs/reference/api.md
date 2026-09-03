@@ -25,7 +25,7 @@ Overview, issues, releases and (optionally) events take a window:
 GET    /api/projects
 POST   /api/projects                        {"slug","name","platform"}            → 201
 GET    /api/projects/{slug}
-PATCH  /api/projects/{slug}                 any of {"name","platform","sample_keep_first","sample_rate","daily_quota"}
+PATCH  /api/projects/{slug}                 any of {"name","platform","sample_keep_first","sample_rate"}
 DELETE /api/projects/{slug}
 POST   /api/projects/{slug}/rotate-key      new current DSN key → project object (the old key keeps working, see below)
 GET    /api/projects/{slug}/keys            retired-but-still-valid DSN keys → {"keys": [...]}
@@ -35,7 +35,7 @@ DELETE /api/projects/{slug}/keys/{id}       delete one retired key
 Validation: `slug` matches `^[a-z0-9][a-z0-9._-]{0,63}$` and is not
 reserved (`409` if it exists); `platform` is one of `ios`, `android`,
 `flutter`, `react-native`, `web`, `backend`, `other`; `sample_keep_first ≥ 0`;
-`0 ≤ sample_rate ≤ 1`; `daily_quota ≥ 0` (`0` = unlimited).
+`0 ≤ sample_rate ≤ 1`.
 
 Project object:
 
@@ -47,7 +47,6 @@ Project object:
   "platform": "ios",
   "sample_keep_first": 100,
   "sample_rate": 1.0,
-  "daily_quota": 100000,
   "created_at": "2026-08-01T09:00:00Z",
   "dsn": "https://<key>@crashcart.example.com/1"
 }
@@ -389,7 +388,7 @@ SDK as `X-Sentry-Auth` or the `sentry_key` query parameter. Accepts gzip.
 | `200` | Accepted |
 | `401` | Wrong or missing key |
 | `413` | Envelope over 20 MB, or too many events in one envelope |
-| `429` | Rate limit, or the project's daily quota exceeded |
+| `429` | Rate limit exceeded |
 
 Envelope items handled: `event`, `session`, `sessions`, `attachment`,
 `user_report`, `client_report`, `check_in`. Others (`transaction`,

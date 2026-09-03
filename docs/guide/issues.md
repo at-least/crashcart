@@ -60,7 +60,7 @@ in the list. The condition is shown under the status; from the
   culprit (`com.example.CartFragment in onCreateView`) and the
   transaction under it; the causes are listed in the stack trace
 - **Events** — exact count, including events dropped by
-  [sampling](./projects#sampling-and-daily-quota)
+  [sampling](./projects#sampling)
 - **Users** — how many distinct users hit it
 - **First / last seen**, and the **release** each happened on
 - **Stack trace** of the latest event, symbolicated when possible, and its

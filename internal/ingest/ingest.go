@@ -27,7 +27,6 @@ import (
 	mrand "math/rand/v2"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,79 +72,9 @@ type Ingester struct {
 	Symbols Symbolicator // may be nil
 	Log     *slog.Logger
 
-	mu          sync.Mutex
-	byKey       map[string]cachedProject
-	warned      map[int64]time.Time // last platform-mismatch warning per project
-	quotaWarned map[int64]time.Time // last quota warning per project
-	exhausted   map[int64]exhaustedQuota
-}
-
-// exhaustedQuota remembers that a project's daily quota was hit, so the
-// envelopes that follow are refused before any work is done (the SDKs
-// also stop sending on the rate-limit header, but not every one does).
-// It expires at the next UTC day, or when the quota is changed.
-type exhaustedQuota struct {
-	quota int32
-	until time.Time
-}
-
-func nextUTCDay(t time.Time) time.Time {
-	t = t.UTC()
-	return time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, time.UTC)
-}
-
-// quotaExhausted reports whether the project's quota is known to be used
-// up for the day (see exhaustedQuota).
-func (in *Ingester) quotaExhausted(p store.Project, now time.Time) bool {
-	if p.DailyQuota <= 0 {
-		return false
-	}
-	in.mu.Lock()
-	defer in.mu.Unlock()
-	e, ok := in.exhausted[p.ID]
-	return ok && e.quota == p.DailyQuota && now.Before(e.until)
-}
-
-// checkQuota is the last statement of the ingest transaction: it counts n
-// events against the project's UTC day and fails with ErrQuota (rolling
-// everything back) when that crosses the daily quota (0 = unlimited, and
-// nothing is counted — no reader looks at project_usage for such a
-// project, so the write would only cost every envelope a lock on the
-// project's row for no reason). The count lives in project_usage, so it
-// is exact across replicas; being last, the row lock — the one row every
-// envelope of a project touches — is held only until the commit, not
-// across the whole write. Turning a quota on starts its count from then,
-// not from the day's true total. Sessions ride along with events, so a
-// rejected envelope loses its sessions too — acceptable for a project
-// that is being flooded.
-func (in *Ingester) checkQuota(ctx context.Context, db store.DB, p store.Project, n int, now time.Time) error {
-	if n == 0 || p.DailyQuota <= 0 {
-		return nil
-	}
-	total, err := store.AddProjectUsage(ctx, db, p.ID, now.UTC().Truncate(24*time.Hour), int64(n))
-	if err != nil {
-		return fmt.Errorf("quota: %w", err)
-	}
-	if total <= int64(p.DailyQuota) {
-		return nil
-	}
-	in.mu.Lock()
-	if in.exhausted == nil {
-		in.exhausted = map[int64]exhaustedQuota{}
-	}
-	in.exhausted[p.ID] = exhaustedQuota{quota: p.DailyQuota, until: nextUTCDay(now)}
-	warn := now.Sub(in.quotaWarned[p.ID]) > time.Minute
-	if warn {
-		if in.quotaWarned == nil {
-			in.quotaWarned = map[int64]time.Time{}
-		}
-		in.quotaWarned[p.ID] = now
-	}
-	in.mu.Unlock()
-	if warn {
-		in.Log.Warn("ingest: daily quota exceeded", "project", p.Slug, "quota", p.DailyQuota, "today", total-int64(n))
-	}
-	return ErrQuota
+	mu     sync.Mutex
+	byKey  map[string]cachedProject
+	warned map[int64]time.Time // last platform-mismatch warning per project
 }
 
 type cachedProject struct {
@@ -228,9 +157,6 @@ func (in *Ingester) Project(r *http.Request) (store.Project, error) {
 }
 
 var errUnauthorized = errors.New("unauthorized")
-
-// ErrQuota: the project's daily quota is used up; nothing was written.
-var ErrQuota = errors.New("daily quota exceeded")
 
 func (in *Ingester) serveEnvelope(w http.ResponseWriter, r *http.Request) {
 	p, err := in.Project(r)
@@ -347,14 +273,6 @@ func (in *Ingester) fail(w http.ResponseWriter, err error) {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if errors.Is(err, ErrQuota) {
-		// Sentry's rate-limit header: SDKs stop sending until the next UTC day.
-		secs := int(time.Until(nextUTCDay(time.Now())).Seconds()) + 1
-		w.Header().Set("X-Sentry-Rate-Limits", strconv.Itoa(secs)+":error;transaction;session:project:quota")
-		w.Header().Set("Retry-After", strconv.Itoa(secs))
-		http.Error(w, `{"error":"daily quota exceeded"}`, http.StatusTooManyRequests)
-		return
-	}
 	in.Log.Error("ingest", "err", err)
 	http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
 }
@@ -379,9 +297,6 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 	}
 
 	res.Invalid = env.Invalid
-	if len(env.Events) > 0 && in.quotaExhausted(p, now) {
-		return res, ErrQuota
-	}
 	expected := ""
 	if p.Platform != nil {
 		expected = *p.Platform
@@ -430,8 +345,7 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 	}
 
 	// 2. One transaction: drop resends, fold by fingerprint, upsert issues,
-	//    decide sampling, write events, sessions, jobs; the quota bump
-	//    last, so its per-project row lock is held only until the commit.
+	//    decide sampling, write events, sessions, jobs.
 	var jobs []store.EnqueueJobParams
 	err := in.Store.Tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		// An envelope the SDK resends (after a timeout, or from its crash
@@ -679,9 +593,8 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 		}
 
 		// A user_report is kept regardless of what happened to its event —
-		// sampled out, quota-dropped, or (the usual case: the SDK sends it in
-		// its own envelope after the app restarts) not arrived at all. It does
-		// not touch the daily quota (a report is not an event).
+		// sampled out, or (the usual case: the SDK sends it in its own
+		// envelope after the app restarts) not arrived at all.
 		if ur := env.UserReport; ur != nil {
 			name, email, comments := ur.Name, ur.Email, ur.Comments
 			if in.Cfg.PIIRedact {
@@ -696,7 +609,7 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 
 		// client_report counts are added to their hour bucket regardless of
 		// what happened to any event in the same envelope — pure SDK-side
-		// diagnostics, no PII, no daily quota (not an event).
+		// diagnostics, no PII.
 		if len(env.ClientReportCounts) > 0 {
 			reasons := make([]string, len(env.ClientReportCounts))
 			categories := make([]string, len(env.ClientReportCounts))
@@ -711,7 +624,7 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 		}
 
 		// check_in: a run's status against a monitor, tied by slug — not
-		// gated on sampling/quota (not an event). monitor_config on this
+		// gated on sampling (not an event). monitor_config on this
 		// item upserts the monitor; a check-in against a monitor CrashCart
 		// has no config for is dropped, like Sentry does for an orphan
 		// check-in, rather than creating a bare, unscheduled monitor.
@@ -830,7 +743,7 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 			}
 		}
 		res.Jobs = len(jobs)
-		return in.checkQuota(ctx, tx, p, len(env.Events), now)
+		return nil
 	})
 	if err != nil {
 		res = Result{Received: res.Received, Invalid: res.Invalid}

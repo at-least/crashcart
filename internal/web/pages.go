@@ -181,8 +181,6 @@ type ChartData struct {
 type OverviewData struct {
 	Received      []string // platform families seen in the window
 	Mismatch      bool
-	Today         int64 // events received today (UTC)
-	QuotaReached  bool
 	LatestRelease string
 	CrashFree     string
 	Unhandled     int64
@@ -203,10 +201,6 @@ func (w *Web) overview(rw http.ResponseWriter, r *http.Request) {
 	win := s.Window(n)
 	var d OverviewData
 	d.Received, d.Mismatch = w.receivedPlatforms(ctx, p, win)
-	if p.DailyQuota > 0 {
-		d.Today, _ = store.ProjectUsage(ctx, w.Store.Pool, p.ID, n.UTC().Truncate(day))
-		d.QuotaReached = d.Today >= int64(p.DailyQuota)
-	}
 	d.LatestRelease, d.CrashFree = w.latestHealth(ctx, p.ID, n, win.Days)
 	totals, err := store.Totals(ctx, w.Store.Pool, p.ID, win.From, win.To)
 	if err != nil {

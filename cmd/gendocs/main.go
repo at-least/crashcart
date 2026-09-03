@@ -117,7 +117,7 @@ func renderConfiguration() string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("## Per project\n\nSampling and daily quota are set per project in the viewer\n(Settings → Sampling). See [Projects & DSNs](/guide/projects#sampling-and-daily-quota).\n")
+	b.WriteString("## Per project\n\nSampling is set per project in the viewer (Settings → Sampling). See\n[Projects & DSNs](/guide/projects#sampling).\n")
 	return b.String()
 }
 

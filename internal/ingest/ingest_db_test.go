@@ -5,11 +5,9 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -171,49 +169,6 @@ func TestIngestLifecycle(t *testing.T) {
 	}
 	p.Platform = nil
 
-	// Daily quota: uncounted while unlimited (nothing reads it), exact
-	// from the moment a quota is set, and the envelope that would cross
-	// it is rejected whole.
-	day := now.Truncate(24 * time.Hour)
-	if used, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day); used != 0 {
-		t.Fatalf("usage counted while unlimited: %d", used)
-	}
-	p.DailyQuota = 4
-	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 20)), now), now)
-	if err != nil || res.Received != 1 {
-		t.Fatalf("first event against a fresh quota: res=%+v err=%v", res, err)
-	}
-	usedBefore, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day)
-	if usedBefore != 1 {
-		t.Fatalf("usage = %d, want 1 (counting starts when the quota is set, not the day's true total)", usedBefore)
-	}
-	items = []string{crash("1.1", now.Format(time.RFC3339), 21), crash("1.1", now.Format(time.RFC3339), 22),
-		crash("1.1", now.Format(time.RFC3339), 23), crash("1.1", now.Format(time.RFC3339), 24)} // 1 + 4 > quota of 4
-	res, err = in.Ingest(ctx, p, sentry.Parse(envelope(items...), now), now)
-	if !errors.Is(err, ErrQuota) || res.Stored != 0 {
-		t.Fatalf("quota: res=%+v err=%v", res, err)
-	}
-	// The rollback left the day's count where it was, and the next
-	// envelope is refused before any work (the count does not move).
-	usedAfter, _ := store.ProjectUsage(ctx, st.Pool, p.ID, day)
-	if usedAfter != usedBefore {
-		t.Fatalf("usage after rejected envelope = %d, want %d", usedAfter, usedBefore)
-	}
-	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 25)), now), now); !errors.Is(err, ErrQuota) {
-		t.Fatalf("exhausted quota: %v", err)
-	}
-	if usedAfter, _ = store.ProjectUsage(ctx, st.Pool, p.ID, day); usedAfter != usedBefore {
-		t.Fatalf("usage after short-circuit = %d, want %d", usedAfter, usedBefore)
-	}
-	// Lifting the quota stops counting again: accepted, usage untouched.
-	p.DailyQuota = 0
-	if _, err := in.Ingest(ctx, p, sentry.Parse(envelope(crash("1.1", now.Format(time.RFC3339), 26)), now), now); err != nil {
-		t.Fatalf("unlimited quota: %v", err)
-	}
-	if usedAfter, _ = store.ProjectUsage(ctx, st.Pool, p.ID, day); usedAfter != usedBefore {
-		t.Fatalf("usage after unlimited accept = %d, want %d (writes skipped again)", usedAfter, usedBefore)
-	}
-
 	// Every release the envelopes mentioned is on record — those seen only
 	// through sessions (1.2) too — with the platforms of its events (a
 	// session names none) and the earliest time it was seen.
@@ -293,26 +248,6 @@ func TestIngestHTTP(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 413 {
 		t.Fatalf("corrupt gzip → %d", rec.Code)
-	}
-	// Over the daily quota: counting starts fresh when the quota is set
-	// (nothing was counted while unlimited), so an envelope with more
-	// events than the quota crosses it right away. 429 with Sentry's
-	// rate-limit header, so the SDK stops sending (all categories) until
-	// the next UTC day.
-	if _, err := st.Pool.Exec(ctx, "UPDATE projects SET daily_quota = 1 WHERE id = $1", p.ID); err != nil {
-		t.Fatal(err)
-	}
-	in.byKey = nil // the DSN-key cache holds the project for a minute
-	over := envelope(crash("1.0", now, 2), crash("1.0", now, 3))
-	req = newRequest("POST", fmt.Sprintf("/api/%d/envelope/", p.ID), over)
-	req.Header.Set("X-Sentry-Auth", "Sentry sentry_key=secretkey")
-	rec = newRecorder()
-	h.ServeHTTP(rec, req)
-	limits := rec.Header().Get("X-Sentry-Rate-Limits")
-	secs, _, _ := strings.Cut(limits, ":")
-	n, _ := strconv.Atoi(secs)
-	if rec.Code != 429 || !strings.HasSuffix(limits, ":error;transaction;session:project:quota") || n < 1 || n > 24*3600+1 || rec.Header().Get("Retry-After") != secs {
-		t.Fatalf("over quota → %d %q retry-after=%q", rec.Code, limits, rec.Header().Get("Retry-After"))
 	}
 }
 
