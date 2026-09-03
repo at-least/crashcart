@@ -95,6 +95,11 @@ func (h *Handler) routes() map[string]http.HandlerFunc {
 		"PATCH /api/projects/{slug}/alerts/{type}":         h.updateAlertRule,
 		"POST /api/projects/{slug}/alerts/channels":        h.createAlertChannel,
 		"DELETE /api/projects/{slug}/alerts/channels/{id}": h.deleteAlertChannel,
+		// devices (mobile companion apps' push registration)
+		"POST /api/devices":                        h.registerDevice,
+		"DELETE /api/devices/{id}":                 h.deleteDevice,
+		"POST /api/projects/{slug}/devices/{id}":   h.subscribeDevice,
+		"DELETE /api/projects/{slug}/devices/{id}": h.unsubscribeDevice,
 		// symbols
 		"GET /api/projects/{slug}/symbols":         h.listSymbols,
 		"POST /api/projects/{slug}/symbols":        h.uploadSymbols,

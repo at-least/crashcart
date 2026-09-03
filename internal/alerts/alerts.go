@@ -52,13 +52,18 @@ var TelegramAPI = "https://api.telegram.org"
 
 // Notifier sends alerts to a project's channels, honoring rule cooldowns.
 type Notifier struct {
-	Store *store.Store
-	Cfg   config.Config
-	Log   *slog.Logger
-	HTTP  *http.Client // tests; nil = the hardened client (see client)
+	Store    *store.Store
+	Cfg      config.Config
+	Log      *slog.Logger
+	HTTP     *http.Client                                                   // tests; nil = the hardened client (see client)
+	FCMToken func(ctx context.Context) (token, projectID string, err error) // tests; nil = FCM_SERVICE_ACCOUNT_JSON via google.CredentialsFromJSON
 
 	once sync.Once
 	http *http.Client
+
+	fcmOnce  sync.Once
+	fcmCreds *fcmCredentials
+	fcmErr   error
 }
 
 // Payload is the JSON body of a webhook call (and the source of the
@@ -281,6 +286,19 @@ func (n *Notifier) notify(ctx context.Context, projectID int64, payload Payload)
 		}
 		sent++
 		n.log().Info("alert: sent", "project", projectID, "channel", ch.ID, "kind", ch.Kind, "type", payload.Type, "fingerprint", payload.Fingerprint)
+	}
+	devices, err := store.ListPushSubscribers(ctx, n.Store.Pool, projectID)
+	if err != nil {
+		n.log().Error("alert: list push devices", "project", projectID, "err", err)
+		return sent
+	}
+	for _, d := range devices {
+		if err := n.sendPush(ctx, d, payload); err != nil {
+			n.log().Error("alert: push failed", "project", projectID, "device", d.ID, "type", payload.Type, "err", err)
+			continue
+		}
+		sent++
+		n.log().Info("alert: push sent", "project", projectID, "device", d.ID, "type", payload.Type, "fingerprint", payload.Fingerprint)
 	}
 	return sent
 }

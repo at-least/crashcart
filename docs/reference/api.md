@@ -349,6 +349,28 @@ a plain `text` message instead of the raw JSON); a Telegram channel
 needs `chat_id` and `TELEGRAM_BOT_TOKEN` on the server. The webhook
 payload is documented in [Alerts](/guide/alerts#where-alerts-go).
 
+## Devices
+
+```
+POST   /api/devices                         {"token","platform"}   → 201
+DELETE /api/devices/{id}
+POST   /api/projects/{slug}/devices/{id}    subscribe → 204
+DELETE /api/projects/{slug}/devices/{id}    unsubscribe → 204
+```
+
+Push registration for the iOS/Android companion apps. `platform` is `ios`
+or `android`. `POST /api/devices` is an upsert keyed by `token`: calling it
+again with the same token (app relaunch, token refresh) updates the
+existing device instead of creating a duplicate. A device belongs to the
+API key that registered it — `DELETE /api/devices/{id}` (or deleting the
+key itself) removes it and every subscription with it.
+
+A subscription follows a whole project's alerts (every enabled type),
+the same granularity as [Alerts](#alerts); there is no per-type filter.
+Delivery is [FCM HTTP v1](https://firebase.google.com/docs/cloud-messaging),
+configured with `FCM_SERVICE_ACCOUNT_JSON` — see
+[Configuration](../deploy/configuration).
+
 ## Symbols
 
 ```

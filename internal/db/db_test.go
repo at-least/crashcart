@@ -63,7 +63,7 @@ func TestInitFreshDatabase(t *testing.T) {
 // latestMigration is the highest file in internal/db/migrations; bump it
 // with every new migration so TestInitFreshDatabase keeps proving Init
 // reaches the end.
-const latestMigration = 1
+const latestMigration = 2
 
 // TestInitSingleConnection: Init must not need more than one pool
 // connection at a time. Before the fix it pinned a connection for the

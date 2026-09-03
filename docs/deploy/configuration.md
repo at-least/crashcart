@@ -40,6 +40,7 @@ data too.
 | `SYMBOLICATE_CACHE_DIR` | `$TMPDIR/crashcart-symbols` | `crashcart symbolicate` only: where the sidecar keeps the dSYMs it has used |
 | `SYMBOLICATE_CACHE_MAX_MB` | `4096` | `crashcart symbolicate` only: bound of that cache; least recently used dSYMs are dropped |
 | `TELEGRAM_BOT_TOKEN` | — | Bot token for Telegram alerts |
+| `FCM_SERVICE_ACCOUNT_JSON` | off | Firebase service account key (the whole JSON document, not a file path) for push notifications to the iOS/Android companion apps. The project id is read from the document itself |
 | `WEBHOOK_ALLOW_PRIVATE` | `false` | Let webhooks target private addresses (10/8, 172.16/12, 192.168/16, fc00::/7) — a service on your LAN. Loopback, link-local (cloud metadata) and redirects are always refused |
 | `CUSTOM_TAGS` | — | Comma-separated tag keys to offer as filters in the viewer, e.g. `tenant,feature_flag` |
 | `BLOB_STORE` | `postgres` | Where the big bytes go — uploaded symbol files (ProGuard mappings, dSYMs, source maps) and raw event payloads: `postgres` — in the database, nothing else to run; `s3` — an S3-compatible bucket, which keeps the database to metadata (a fiftieth of the size) so backups, replication and exports stay small. Rows already written stay where they are |

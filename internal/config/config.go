@@ -27,16 +27,17 @@ type Config struct {
 	RateLimit     int    // requests / minute / credential; 0 = off
 	TrustProxy    bool   // X-Forwarded-For names the client (behind a reverse proxy)
 
-	RetentionDays       int
-	SymbolicateCacheDir string // crashcart symbolicate: where the sidecar keeps dSYMs
-	SymbolicateCacheMB  int    // … and its bound
-	AlertInterval       time.Duration
-	Workers             int
-	SymbolicateURL      string // dSYM sidecar
-	TelegramBotToken    string
-	WebhookAllowPrivate bool // webhooks may target RFC 1918 / ULA addresses (a service on the LAN)
-	PIIRedact           bool
-	CustomTags          []string // tag keys the viewer shows as filters
+	RetentionDays         int
+	SymbolicateCacheDir   string // crashcart symbolicate: where the sidecar keeps dSYMs
+	SymbolicateCacheMB    int    // … and its bound
+	AlertInterval         time.Duration
+	Workers               int
+	SymbolicateURL        string // dSYM sidecar
+	TelegramBotToken      string
+	FCMServiceAccountJSON string // push notifications for the mobile companion apps (Firebase Cloud Messaging HTTP v1)
+	WebhookAllowPrivate   bool   // webhooks may target RFC 1918 / ULA addresses (a service on the LAN)
+	PIIRedact             bool
+	CustomTags            []string // tag keys the viewer shows as filters
 
 	BlobStore string        // where symbol files and event payloads are stored: "postgres" (default) or "s3"
 	S3        blob.S3Config // BLOB_STORE=s3
@@ -89,6 +90,8 @@ var Vars = []Var{
 	{Name: "SYMBOLICATE_CACHE_MAX_MB", Group: "Optional features", Default: "4096",
 		Doc: "`crashcart symbolicate` only: bound of that cache; least recently used dSYMs are dropped"},
 	{Name: "TELEGRAM_BOT_TOKEN", Group: "Optional features", Doc: "Bot token for Telegram alerts"},
+	{Name: "FCM_SERVICE_ACCOUNT_JSON", Group: "Optional features", Shown: "off",
+		Doc: "Firebase service account key (the whole JSON document, not a file path) for push notifications to the iOS/Android companion apps. The project id is read from the document itself"},
 	{Name: "WEBHOOK_ALLOW_PRIVATE", Group: "Optional features", Default: "false",
 		Doc: "Let webhooks target private addresses (10/8, 172.16/12, 192.168/16, fc00::/7) — a service on your LAN. Loopback, link-local (cloud metadata) and redirects are always refused"},
 	{Name: "CUSTOM_TAGS", Group: "Optional features",
@@ -129,19 +132,20 @@ func def(name string) string {
 // values fall back to defaults and DATABASE_URL is validated by the caller.
 func Load() (Config, error) {
 	c := Config{
-		Addr:                get("LISTEN_ADDR"),
-		DatabaseURL:         get("DATABASE_URL"),
-		PublicURL:           strings.TrimSuffix(get("PUBLIC_URL"), "/"),
-		CORSOrigin:          get("CORS_ORIGIN"),
-		APICORSOrigin:       get("API_CORS_ORIGIN"),
-		SymbolicateURL:      strings.TrimSuffix(get("SYMBOLICATE_URL"), "/"),
-		SymbolicateCacheDir: get("SYMBOLICATE_CACHE_DIR"),
-		TelegramBotToken:    get("TELEGRAM_BOT_TOKEN"),
-		PIIRedact:           get("PII_REDACT") == "true",
-		TrustProxy:          get("TRUST_PROXY") == "true",
-		WebhookAllowPrivate: get("WEBHOOK_ALLOW_PRIVATE") == "true",
-		CustomTags:          SplitCSV(get("CUSTOM_TAGS")),
-		BlobStore:           get("BLOB_STORE"),
+		Addr:                  get("LISTEN_ADDR"),
+		DatabaseURL:           get("DATABASE_URL"),
+		PublicURL:             strings.TrimSuffix(get("PUBLIC_URL"), "/"),
+		CORSOrigin:            get("CORS_ORIGIN"),
+		APICORSOrigin:         get("API_CORS_ORIGIN"),
+		SymbolicateURL:        strings.TrimSuffix(get("SYMBOLICATE_URL"), "/"),
+		SymbolicateCacheDir:   get("SYMBOLICATE_CACHE_DIR"),
+		TelegramBotToken:      get("TELEGRAM_BOT_TOKEN"),
+		FCMServiceAccountJSON: get("FCM_SERVICE_ACCOUNT_JSON"),
+		PIIRedact:             get("PII_REDACT") == "true",
+		TrustProxy:            get("TRUST_PROXY") == "true",
+		WebhookAllowPrivate:   get("WEBHOOK_ALLOW_PRIVATE") == "true",
+		CustomTags:            SplitCSV(get("CUSTOM_TAGS")),
+		BlobStore:             get("BLOB_STORE"),
 		S3: blob.S3Config{
 			Bucket: get("S3_BUCKET"), Endpoint: get("S3_ENDPOINT"), Region: get("S3_REGION"),
 			AccessKey: get("S3_ACCESS_KEY"), SecretKey: get("S3_SECRET_KEY"), Prefix: get("S3_PREFIX"),
