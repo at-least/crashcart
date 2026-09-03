@@ -42,16 +42,20 @@ const issueColumns = `project_id, fingerprint, title, level, error_type, transac
 	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases,
 	ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at`
 
-func scanIssue(row pgx.Row) (Issue, error) {
-	var is Issue
-	err := row.Scan(&is.ProjectID, &is.Fingerprint, &is.Title, &is.Level, &is.ErrorType, &is.Transaction, &is.Platform, &is.Status, &is.StatusBy,
-		&is.EventCount, &is.StoredCount, &is.FirstSeen, &is.LastSeen, &is.FirstRelease, &is.LastRelease, &is.Releases, &is.ResolvedReleases,
-		&is.IgnoreUntil, &is.IgnoreUntilCount, &is.IgnoreUntilEscalating, &is.IgnoreBaseline, &is.CreatedAt, &is.UpdatedAt)
-	return is, err
+// scanIssue matches columns to Issue fields by name (RowToStructByName), not
+// position — two adjacent same-typed columns silently swap under
+// RowToStructByPos-style scanning if either side's column order drifts;
+// by-name scanning errors loudly on a mismatch instead. Takes (Rows, error)
+// so call sites read the same as the old scanIssue(db.QueryRow(...)).
+func scanIssue(rows pgx.Rows, err error) (Issue, error) {
+	if err != nil {
+		return Issue{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Issue])
 }
 
 func GetIssue(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID) (Issue, error) {
-	return scanIssue(db.QueryRow(ctx, "SELECT "+issueColumns+" FROM issues WHERE project_id = $1 AND fingerprint = $2", projectID, fingerprint))
+	return scanIssue(db.Query(ctx, "SELECT "+issueColumns+" FROM issues WHERE project_id = $1 AND fingerprint = $2", projectID, fingerprint))
 }
 
 // UpsertIssueParams is called once per (project, fingerprint) per envelope
@@ -89,8 +93,7 @@ type UpsertIssueRow struct {
 }
 
 func UpsertIssue(ctx context.Context, db DB, p UpsertIssueParams) (UpsertIssueRow, error) {
-	var r UpsertIssueRow
-	err := db.QueryRow(ctx, `WITH prev AS (SELECT status FROM issues WHERE project_id = @ProjectID AND fingerprint = @Fingerprint)
+	rows, err := db.Query(ctx, `WITH prev AS (SELECT status FROM issues WHERE project_id = @ProjectID AND fingerprint = @Fingerprint)
 INSERT INTO issues (project_id, fingerprint, title, level, error_type, transaction, platform,
                     event_count, stored_count, first_seen, last_seen, first_release, last_release, releases)
 VALUES (@ProjectID, @Fingerprint, @Title, @Level, @ErrorType, @Transaction, @Platform, @EventCount, @StoredCount,
@@ -110,11 +113,11 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     updated_at   = now()
 RETURNING `+issueColumns+`, (xmax = 0) AS created,
           COALESCE(issues.status = 'regression' AND (SELECT status FROM prev) = 'resolved', false)::bool AS regressed`,
-		pgx.StrictStructArgs(&p)).
-		Scan(&r.ProjectID, &r.Fingerprint, &r.Title, &r.Level, &r.ErrorType, &r.Transaction, &r.Platform, &r.Status, &r.StatusBy,
-			&r.EventCount, &r.StoredCount, &r.FirstSeen, &r.LastSeen, &r.FirstRelease, &r.LastRelease, &r.Releases, &r.ResolvedReleases,
-			&r.IgnoreUntil, &r.IgnoreUntilCount, &r.IgnoreUntilEscalating, &r.IgnoreBaseline, &r.CreatedAt, &r.UpdatedAt, &r.Created, &r.Regressed)
-	return r, err
+		pgx.StrictStructArgs(&p))
+	if err != nil {
+		return UpsertIssueRow{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[UpsertIssueRow])
 }
 
 // SetIssueStatusParams: resolving records the releases seen so far
@@ -146,7 +149,7 @@ const setIssueStatusSQL = `SET status = @Status::issue_status, status_by = @Stat
     updated_at = now()`
 
 func SetIssueStatus(ctx context.Context, db DB, p SetIssueStatusParams) (Issue, error) {
-	return scanIssue(db.QueryRow(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = @ProjectID AND issues.fingerprint = @Fingerprint RETURNING "+issueColumns,
+	return scanIssue(db.Query(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = @ProjectID AND issues.fingerprint = @Fingerprint RETURNING "+issueColumns,
 		pgx.StrictStructArgs(&p)))
 }
 
@@ -230,7 +233,7 @@ WHERE i.status = 'ignored' AND i.ignore_until_escalating`, recentFrom)
 // EscalateIssue flips one escalating issue back to unresolved (only while
 // it is still ignored-until-escalating: a concurrent status change wins).
 func EscalateIssue(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID) (Issue, error) {
-	return scanIssue(db.QueryRow(ctx, `UPDATE issues SET status = 'unresolved', ignore_until = NULL, ignore_until_count = NULL,
+	return scanIssue(db.Query(ctx, `UPDATE issues SET status = 'unresolved', ignore_until = NULL, ignore_until_count = NULL,
     ignore_until_escalating = false, ignore_baseline = NULL, updated_at = now()
 WHERE project_id = $1 AND fingerprint = $2 AND status = 'ignored' AND ignore_until_escalating
 RETURNING `+issueColumns, projectID, fingerprint))
@@ -416,6 +419,15 @@ const (
 	MaxFilterLen = 200
 )
 
+// issuesPageRow is one row of ListIssues' page query: an Issue plus the
+// unpaged match count carried on every row (RowToStructByName flattens the
+// embedded Issue, matching its fields by column name same as issueColumns
+// alone would).
+type issuesPageRow struct {
+	Issue
+	Total int64
+}
+
 // ListIssues returns one page of issues matching f plus the total count.
 // Limit defaults to 50 and caps at 500, Offset at MaxOffset.
 func (s *Store) ListIssues(ctx context.Context, f IssueFilter) (issues []Issue, total int64, err error) {
@@ -435,24 +447,20 @@ func (s *Store) ListIssues(ctx context.Context, f IssueFilter) (issues []Issue, 
 	// The page and the total in one round trip: count(*) OVER () is the
 	// unpaged match count on every row. An empty page (offset past the
 	// end) carries no rows, so the total is re-counted only then.
-	sql := "SELECT " + issueColumns + ", count(*) OVER () FROM issues WHERE " + where + " ORDER BY " + order +
+	sql := "SELECT " + issueColumns + ", count(*) OVER () AS total FROM issues WHERE " + where + " ORDER BY " + order +
 		" LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
 	r, err := s.Pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer r.Close()
-	for r.Next() {
-		var is Issue
-		if err := r.Scan(&is.ProjectID, &is.Fingerprint, &is.Title, &is.Level, &is.ErrorType, &is.Transaction, &is.Platform, &is.Status, &is.StatusBy,
-			&is.EventCount, &is.StoredCount, &is.FirstSeen, &is.LastSeen, &is.FirstRelease, &is.LastRelease, &is.Releases, &is.ResolvedReleases,
-			&is.IgnoreUntil, &is.IgnoreUntilCount, &is.IgnoreUntilEscalating, &is.IgnoreBaseline, &is.CreatedAt, &is.UpdatedAt, &total); err != nil {
-			return nil, 0, err
-		}
-		issues = append(issues, is)
-	}
-	if err := r.Err(); err != nil {
+	pageRows, err := pgx.CollectRows(r, pgx.RowToStructByName[issuesPageRow])
+	if err != nil {
 		return nil, 0, err
+	}
+	issues = make([]Issue, len(pageRows))
+	for i, pr := range pageRows {
+		issues[i] = pr.Issue
+		total = pr.Total
 	}
 	if len(issues) == 0 && offset > 0 {
 		if err := s.Pool.QueryRow(ctx, "SELECT count(*) FROM issues WHERE "+where, args...).Scan(&total); err != nil {
