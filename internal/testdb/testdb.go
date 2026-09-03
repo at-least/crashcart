@@ -21,8 +21,8 @@ import (
 	"github.com/jackc/tern/v2/migrate"
 	"github.com/peterldowns/pgtestdb"
 
-	"github.com/at-least/crashcart/internal/db"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/db"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // New returns a Store on a database cloned from a template migrated by
@@ -37,7 +37,7 @@ func New(t testing.TB) *store.Store {
 // NewWithMaxConns is New with Pool's MaxConns pinned to n (pgxpool's own
 // default when n is 0) — for tests that need to constrain the *query* pool
 // specifically, such as proving RunAsLeader can't starve it regardless of
-// how small it is (github.com/at-least/crashcart/issues/1).
+// how small it is (github.com/crashcartapp/crashcart/issues/1).
 func NewWithMaxConns(t testing.TB, n int32) *store.Store {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")

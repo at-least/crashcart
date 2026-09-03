@@ -15,9 +15,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/blob"
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/blob"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // Symbol-file kinds (symbol_files.kind).

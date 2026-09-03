@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // Handler processes one job; returning an error schedules a retry.

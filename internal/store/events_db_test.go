@@ -10,9 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 func TestTagsFilterAndBreakdowns(t *testing.T) {

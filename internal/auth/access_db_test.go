@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/store"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 // TestSessionStorage: the cookie carries the token, the row holds only its

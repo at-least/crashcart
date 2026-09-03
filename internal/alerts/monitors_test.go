@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 func upsertTestMonitor(t *testing.T, ctx context.Context, st *store.Store, projectID int64, slug string, failureThreshold, recoveryThreshold int32) store.Monitor {

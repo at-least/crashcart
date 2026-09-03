@@ -11,7 +11,7 @@ import templruntime "github.com/a-h/templ/runtime"
 import (
 	"strconv"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 func monitorHref(pg Page, m store.Monitor) string {

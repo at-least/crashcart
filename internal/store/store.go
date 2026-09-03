@@ -35,7 +35,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/at-least/crashcart/internal/blob"
+	"github.com/crashcartapp/crashcart/internal/blob"
 )
 
 // DB is a pool or a transaction — whichever a hand-written query function
@@ -80,7 +80,7 @@ type Store struct {
 	// enough concurrent leader locks (one per tick() key in cmd/crashcart)
 	// exhaust every connection on lock-holding alone, leaving none for fn
 	// to actually run: a self-inflicted deadlock, not a load problem. See
-	// https://github.com/at-least/crashcart/issues/1.
+	// https://github.com/crashcartapp/crashcart/issues/1.
 	lockPool *pgxpool.Pool
 }
 

@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/blob"
+	"github.com/crashcartapp/crashcart/internal/blob"
 )
 
 // Event payloads in the blob store (BLOB_STORE=s3). Ingest writes the

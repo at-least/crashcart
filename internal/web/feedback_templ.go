@@ -8,7 +8,7 @@ package web
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-import "github.com/at-least/crashcart/internal/store"
+import "github.com/crashcartapp/crashcart/internal/store"
 
 func feedbackEventHref(pg Page, r store.UserReport) string {
 	return pg.S.Persist().Href("/events/" + string(r.EventID))

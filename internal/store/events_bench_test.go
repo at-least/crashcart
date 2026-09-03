@@ -14,7 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 // sinkArgs exists only so BenchmarkInsertEventArgs_Positional's slice

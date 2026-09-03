@@ -6,7 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 // Attachment is the full row (with bytes) — GetAttachment's shape.

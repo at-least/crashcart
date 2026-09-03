@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // userCmd: `user add <email> [name]`, `user passwd <email>`.

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 // Cursor is a keyset position in the newest-first event order

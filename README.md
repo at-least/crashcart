@@ -13,7 +13,7 @@ files is optional.
 ## Quick start
 
 ```sh
-git clone https://github.com/at-least/crashcart
+git clone https://github.com/crashcartapp/crashcart
 cd crashcart
 docker compose up -d
 docker compose exec crashcart /crashcart project shop-ios "Shop app (iOS)" ios
@@ -23,7 +23,7 @@ docker compose exec crashcart /crashcart project shop-ios "Shop app (iOS)" ios
 
 Paste the DSN into the SDK and open <http://localhost:8080>.
 
-No Docker? Download a [release binary](https://github.com/at-least/crashcart/releases)
+No Docker? Download a [release binary](https://github.com/crashcartapp/crashcart/releases)
 and follow [Go binary + systemd](https://crashcart.app/deploy/binary).
 
 ## What you get

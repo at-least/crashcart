@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/monitors"
+	"github.com/crashcartapp/crashcart/internal/monitors"
 )
 
 // Breadcrumb is a normalized Sentry breadcrumb (the last 20 are kept).

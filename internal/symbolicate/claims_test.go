@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/ingest"
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/ingest"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 // TestEventWrongTimeIsNoop: the symbolicate job addresses the event by its

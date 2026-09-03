@@ -70,7 +70,7 @@ const initLockTimeout = 5 * time.Minute
 // run on can self-deadlock when the pool has no headroom to spare
 // (MaxConns=1: the lock holder and the migration runner would each need
 // their own connection from the same exhausted pool). See
-// https://github.com/at-least/crashcart/issues/1 (RunAsLeader hit the
+// https://github.com/crashcartapp/crashcart/issues/1 (RunAsLeader hit the
 // same shape) and TestInitSingleConnection.
 func Init(ctx context.Context, pool *pgxpool.Pool) (created bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, initLockTimeout)

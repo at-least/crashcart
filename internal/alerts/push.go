@@ -12,7 +12,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // FCMEndpoint is the Firebase Cloud Messaging HTTP v1 base; tests override it.

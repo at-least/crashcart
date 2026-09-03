@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 type alertLabel struct{ Title, Desc string }

@@ -23,10 +23,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/ingest"
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/ingest"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // Days of history written, and the per-Ingest batch size.

@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/at-least/crashcart/internal/alerts"
+	"github.com/crashcartapp/crashcart/internal/alerts"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 var alertTypes = map[string]bool{

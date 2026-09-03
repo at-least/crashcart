@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 func ptr[T any](v T) *T { return &v }
@@ -153,7 +153,7 @@ func TestRunAsLeader(t *testing.T) {
 }
 
 // TestRunAsLeaderDoesNotStarveQueryPool: regression test for
-// https://github.com/at-least/crashcart/issues/1 — every distinct
+// https://github.com/crashcartapp/crashcart/issues/1 — every distinct
 // RunAsLeader key that cmd/crashcart ticks concurrently used to Acquire its
 // advisory-lock connection from the same pool fn does its real work
 // through. With Pool pinned to a single connection here, the pre-fix

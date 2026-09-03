@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/at-least/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/sentry"
 )
 
 func TestRedactText(t *testing.T) {

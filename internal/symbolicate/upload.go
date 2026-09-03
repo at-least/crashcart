@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // MaxUpload caps one symbol upload (and one zip entry) — large enough for

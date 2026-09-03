@@ -7,7 +7,7 @@ or [Go binary + systemd](/deploy/binary) instead.
 ## 1. Run CrashCart
 
 ```sh
-git clone https://github.com/at-least/crashcart
+git clone https://github.com/crashcartapp/crashcart
 cd crashcart
 docker compose up -d
 ```

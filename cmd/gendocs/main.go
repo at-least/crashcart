@@ -30,12 +30,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/at-least/crashcart/internal/api"
-	"github.com/at-least/crashcart/internal/cli"
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/db"
-	"github.com/at-least/crashcart/internal/export"
-	"github.com/at-least/crashcart/internal/server"
+	"github.com/crashcartapp/crashcart/internal/api"
+	"github.com/crashcartapp/crashcart/internal/cli"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/db"
+	"github.com/crashcartapp/crashcart/internal/export"
+	"github.com/crashcartapp/crashcart/internal/server"
 )
 
 const (

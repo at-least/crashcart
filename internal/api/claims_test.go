@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/symbolicate"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/symbolicate"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 // TestRateLimitBeforeKeyCheck: the limiter runs before the key lookup, so

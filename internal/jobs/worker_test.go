@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/store"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 func TestBackoff(t *testing.T) {

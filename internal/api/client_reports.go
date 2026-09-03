@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 type clientReportCountOut struct {

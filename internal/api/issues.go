@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // sparklineHours is the length of the per-issue sparkline (7 days, hourly).

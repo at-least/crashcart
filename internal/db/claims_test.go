@@ -11,8 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/at-least/crashcart/internal/db"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/db"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 // TestProjectTablesCascade: every table with a project_id column has a

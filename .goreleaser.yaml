@@ -54,13 +54,13 @@ dockers:
     dockerfile: Dockerfile.goreleaser
     use: buildx
     image_templates:
-      - ghcr.io/at-least/crashcart:{{ .Version }}-amd64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-amd64
     build_flag_templates:
       - --platform=linux/amd64
       - --label=org.opencontainers.image.title={{ .ProjectName }}
       - --label=org.opencontainers.image.version={{ .Version }}
       - --label=org.opencontainers.image.revision={{ .FullCommit }}
-      - --label=org.opencontainers.image.source=https://github.com/at-least/crashcart
+      - --label=org.opencontainers.image.source=https://github.com/crashcartapp/crashcart
       - --label=org.opencontainers.image.licenses=MIT
   - id: arm64
     goos: linux
@@ -68,32 +68,32 @@ dockers:
     dockerfile: Dockerfile.goreleaser
     use: buildx
     image_templates:
-      - ghcr.io/at-least/crashcart:{{ .Version }}-arm64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-arm64
     build_flag_templates:
       - --platform=linux/arm64
       - --label=org.opencontainers.image.title={{ .ProjectName }}
       - --label=org.opencontainers.image.version={{ .Version }}
       - --label=org.opencontainers.image.revision={{ .FullCommit }}
-      - --label=org.opencontainers.image.source=https://github.com/at-least/crashcart
+      - --label=org.opencontainers.image.source=https://github.com/crashcartapp/crashcart
       - --label=org.opencontainers.image.licenses=MIT
 
 docker_manifests:
-  - name_template: ghcr.io/at-least/crashcart:{{ .Version }}
+  - name_template: ghcr.io/crashcartapp/crashcart:{{ .Version }}
     image_templates:
-      - ghcr.io/at-least/crashcart:{{ .Version }}-amd64
-      - ghcr.io/at-least/crashcart:{{ .Version }}-arm64
-  - name_template: ghcr.io/at-least/crashcart:{{ .Major }}.{{ .Minor }}
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-amd64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-arm64
+  - name_template: ghcr.io/crashcartapp/crashcart:{{ .Major }}.{{ .Minor }}
     image_templates:
-      - ghcr.io/at-least/crashcart:{{ .Version }}-amd64
-      - ghcr.io/at-least/crashcart:{{ .Version }}-arm64
-  - name_template: ghcr.io/at-least/crashcart:latest
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-amd64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-arm64
+  - name_template: ghcr.io/crashcartapp/crashcart:latest
     image_templates:
-      - ghcr.io/at-least/crashcart:{{ .Version }}-amd64
-      - ghcr.io/at-least/crashcart:{{ .Version }}-arm64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-amd64
+      - ghcr.io/crashcartapp/crashcart:{{ .Version }}-arm64
 
 release:
   github:
-    owner: at-least
+    owner: crashcartapp
     name: crashcart
   draft: false
   prerelease: auto
@@ -101,5 +101,5 @@ release:
     ## Docker
 
     ```
-    docker pull ghcr.io/at-least/crashcart:{{ .Version }}
+    docker pull ghcr.io/crashcartapp/crashcart:{{ .Version }}
     ```

@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/at-least/crashcart/internal/db"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/db"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 func TestInitIdempotent(t *testing.T) {
@@ -69,7 +69,7 @@ const latestMigration = 2
 // connection at a time. Before the fix it pinned a connection for the
 // advisory lock and ran migrations through a second acquisition on the
 // same pool — with MaxConns=1 that is a self-deadlock (see
-// https://github.com/at-least/crashcart/issues/1, the same shape as
+// https://github.com/crashcartapp/crashcart/issues/1, the same shape as
 // RunAsLeader's).
 func TestInitSingleConnection(t *testing.T) {
 	pool := emptyDatabase(t)

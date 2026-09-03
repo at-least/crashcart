@@ -7,14 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/alerts"
-	"github.com/at-least/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/alerts"
+	"github.com/crashcartapp/crashcart/internal/auth"
 
 	"github.com/a-h/templ"
 
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
-	"github.com/at-least/crashcart/internal/symbolicate"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/symbolicate"
 )
 
 // AlertTypes are the rule types in display order (alert_rules CHECK).

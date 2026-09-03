@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/blob"
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/retention"
-	"github.com/at-least/crashcart/internal/store"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/blob"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/retention"
+	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 const mappingA = "com.example.Foo -> a.b:\n    void bar() -> c\n"

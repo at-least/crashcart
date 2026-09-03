@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
-	"github.com/at-least/crashcart/internal/testdb"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/testdb"
 )
 
 // fcmSink is an FCM HTTP v1 stand-in: it records every send request and

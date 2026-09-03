@@ -1,8 +1,8 @@
 package web
 
 import (
-	"github.com/at-least/crashcart/internal/sentry"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/sentry"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // Short aliases so templates stay readable.

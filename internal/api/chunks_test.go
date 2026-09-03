@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 func sha(b []byte) string {

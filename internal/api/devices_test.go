@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/at-least/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/auth"
 )
 
 // doAs is e.do with an explicit key, for cross-key ownership checks.

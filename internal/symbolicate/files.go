@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/at-least/crashcart/internal/blob"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/blob"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // Where a symbol file's bytes live is a property of its row, not of the

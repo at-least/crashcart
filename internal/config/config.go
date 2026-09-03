@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/blob"
+	"github.com/crashcartapp/crashcart/internal/blob"
 )
 
 // Config is everything the binary needs; loaded once in main.

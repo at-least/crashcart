@@ -23,7 +23,7 @@ docker compose version
 ## 2. Get the compose file
 
 ```sh
-git clone https://github.com/at-least/crashcart
+git clone https://github.com/crashcartapp/crashcart
 cd crashcart
 ```
 
@@ -121,7 +121,7 @@ docker compose up -d
 ```
 
 `latest` follows the newest release. To pin a version, set
-`image: ghcr.io/at-least/crashcart:0.1.0` (or `:0.1` for the newest
+`image: ghcr.io/crashcartapp/crashcart:0.1.0` (or `:0.1` for the newest
 patch release of that line) in `docker-compose.yml`. See
 [Operations → Upgrading](./operations#upgrading) for what changes if a
 release bumps the schema.

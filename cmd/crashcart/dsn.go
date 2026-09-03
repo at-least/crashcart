@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/config"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/config"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 func dsn(cfg config.Config, p store.Project) string {

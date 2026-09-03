@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // ignore is the condition an issue is ignored under (Sentry's archive

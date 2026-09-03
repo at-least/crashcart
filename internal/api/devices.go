@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/at-least/crashcart/internal/auth"
-	"github.com/at-least/crashcart/internal/store"
+	"github.com/crashcartapp/crashcart/internal/auth"
+	"github.com/crashcartapp/crashcart/internal/store"
 )
 
 // registerDevice upserts the calling key's mobile device (by push token) —
