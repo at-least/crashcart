@@ -103,9 +103,17 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   binds by name instead of position too: `@Field` placeholders with
   `pgx.StrictStructArgs(p)` when every field of `p` is used by the query,
   `pgx.StrictNamedArgs{...}` when the values come from more than one
-  source (`SetIssuesStatus`). Plain `$1, $2` stays fine for one or two
-  differently-typed params (`GetIssue`'s project_id/fingerprint) — the
-  point is removing the silent-swap class of bug, not banning `$N`.
+  source (`SetIssuesStatus`). When a query's params have no natural
+  existing struct and all come from the one call (`LatestReleaseHealth`,
+  `UnhandledSpikeInputs`, `SymbolFileBlobKey`), a private `xxxArgs` struct
+  scoped to that function buys the same compile-time field-name check —
+  it is deliberately not a `XxxParams` type: those are exported and are a
+  function's actual parameter (`UpsertMonitorParams`, `ProjectUpdate`,
+  …), while `xxxArgs` exists solely to typecheck one `StrictStructArgs`
+  call and is never part of any signature. Plain `$1, $2` stays fine for
+  one or two differently-typed params (`GetIssue`'s
+  project_id/fingerprint) — the point is removing the silent-swap class
+  of bug, not banning `$N`.
   `internal/store/tx_scope_test.go` greps every
   `Tx(func(ctx, tx) {...})` callback in the repo for a `.Pool` reference
   and fails the build if it finds one — the mechanical check that
