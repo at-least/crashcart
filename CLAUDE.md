@@ -99,7 +99,7 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   A multi-argument INSERT/UPDATE with several same-typed params (adjacent
   `*string`/`*time.Time` fields, a placeholder reused for two columns)
   binds by name instead of position too: `@Field` placeholders with
-  `pgx.StrictStructArgs(&p)` when every field of `p` is used by the query,
+  `pgx.StrictStructArgs(p)` when every field of `p` is used by the query,
   `pgx.StrictNamedArgs{...}` when the values come from more than one
   source (`SetIssuesStatus`). Plain `$1, $2` stays fine for one or two
   differently-typed params (`GetIssue`'s project_id/fingerprint) — the

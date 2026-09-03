@@ -113,7 +113,7 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     updated_at   = now()
 RETURNING `+issueColumns+`, (xmax = 0) AS created,
           COALESCE(issues.status = 'regression' AND (SELECT status FROM prev) = 'resolved', false)::bool AS regressed`,
-		pgx.StrictStructArgs(&p))
+		pgx.StrictStructArgs(p))
 	if err != nil {
 		return UpsertIssueRow{}, err
 	}
@@ -150,14 +150,14 @@ const setIssueStatusSQL = `SET status = @Status::issue_status, status_by = @Stat
 
 func SetIssueStatus(ctx context.Context, db DB, p SetIssueStatusParams) (Issue, error) {
 	return scanIssue(db.Query(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = @ProjectID AND issues.fingerprint = @Fingerprint RETURNING "+issueColumns,
-		pgx.StrictStructArgs(&p)))
+		pgx.StrictStructArgs(p)))
 }
 
 // SetIssuesStatus is the bulk form of SetIssueStatus (same rules). p's
 // ProjectID and Fingerprint are ignored — the target set comes from
 // projectID and fingerprints instead — so its args are bound by a
 // StrictNamedArgs map (mixing p's fields with the two extra params) rather
-// than StrictStructArgs(&p), which would reject p's unreferenced fields.
+// than StrictStructArgs(p), which would reject p's unreferenced fields.
 func SetIssuesStatus(ctx context.Context, db DB, projectID int64, fingerprints []sentry.ID, p SetIssueStatusParams) (int64, error) {
 	tag, err := db.Exec(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = @TargetProjectID AND issues.fingerprint = ANY(@Fingerprints::uuid[])",
 		pgx.StrictNamedArgs{
