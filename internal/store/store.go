@@ -8,16 +8,17 @@
 // visible choice between the pool and the transaction (`X(ctx, s.Pool,
 // ...)` vs `X(ctx, tx, ...)`) instead of an implicit one via method
 // receiver. *Store methods remain only for composite/dynamic operations
-// that pick pool-vs-tx internally (ListEvents, RotateProjectKey,
-// PackWeek, InsertEvents). Row structs and enum types live in this
-// package (no separate models package: every consumer already needs the
-// pool/Tx to do anything with them). Scanning uses pgx.CollectRows /
-// pgx.CollectExactlyOneRow with pgx.RowToStructByName[T] or a hand-written
-// Scan helper — a plain `type X string` needs no Scan/Value methods for
-// pgx to decode/encode a Postgres enum column, and CollectRows starts
-// from []T{} (empty slice, not nil, preserved on the JSON wire for
-// :many-shaped API responses). A struct that crosses the HTTP API
-// boundary keeps its exact json:"snake_case" tags.
+// that pick pool-vs-tx internally (ListEvents, RotateProjectKey, Pack,
+// InsertEvents). Row structs and enum types live in this package (no
+// separate models package: every consumer already needs the pool/Tx to
+// do anything with them). Scanning uses pgx.CollectRows with
+// pgx.RowToStructByPos[T] for multi-row queries, or a hand-written
+// scanX(row pgx.Row) helper for a single row — a plain `type X string`
+// needs no Scan/Value methods for pgx to decode/encode a Postgres enum
+// column, and CollectRows starts from []T{} (empty slice, not nil,
+// preserved on the JSON wire for :many-shaped API responses). A struct
+// that crosses the HTTP API boundary keeps its exact json:"snake_case"
+// tags.
 package store
 
 import (
