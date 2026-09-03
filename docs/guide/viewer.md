@@ -104,7 +104,7 @@ by hand.
 - **DSN** and **Rotate key**; **Previous keys** — DSN keys a rotation
   retired but nobody has deleted, with when each was last used
 - **Platform** label
-- **Sampling**: keep first, sample rate
+- **Sampling**: sample rate
 - **Alerts**: enable each detector, add webhook / Slack / Telegram channels
 - **Symbols**: upload and delete symbol files
 - **Discarded events**: what the project's SDKs reported dropping

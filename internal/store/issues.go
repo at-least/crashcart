@@ -335,11 +335,6 @@ ORDER BY b`, from, to, width, projectID, fingerprint)
 	return pgx.CollectRows(rows, pgx.RowToStructByName[IssueTimelineRow])
 }
 
-func AddIssueStored(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID, storedCount int64) error {
-	_, err := db.Exec(ctx, "UPDATE issues SET stored_count = stored_count + $3 WHERE project_id = $1 AND fingerprint = $2", projectID, fingerprint, storedCount)
-	return err
-}
-
 // IssueFilter is the optional WHERE / ORDER of ListIssues. Zero values are
 // ignored. From/To bound last_seen; Sort must be one of
 // last_seen, first_seen, events (default last_seen), always descending.

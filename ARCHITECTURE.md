@@ -45,8 +45,11 @@ its data. Lists page by keyset (`store.Cursor`), never by offset.
 single transaction so a failure leaves nothing behind; no aggregate row
 is written at ingest, and no row is bumped on every envelope of a
 project — the only per-project row-level contention in the write path
-is `issues`, one row per fingerprint, not per envelope. Order and
-details: `ingest.Ingest` (`internal/ingest/ingest.go`).
+is `issues`, one row per fingerprint, not per envelope. The store
+decision for each event is a plain probability computed before that
+upsert, not derived from its result, so the row lock covers exactly one
+statement per fingerprint per envelope, nothing more. Order and details:
+`ingest.Ingest` (`internal/ingest/ingest.go`).
 
 **Statistics are rollups with dirty keys, exact for late data.** Hourly
 rollup tables are read through views that take the rolled row for clean
@@ -79,17 +82,22 @@ issue outlives its events and is expired by `retention` only once nothing
 could re-create it. Definitions: `issues` in `internal/db/migrations/`,
 `UpsertIssue` (`internal/db/queries/issues.sql`), `retention.ExpireIssues`.
 
-**Sampling is per issue, counts stay exact — and it is what bounds the
-database.** The first N events of each issue are always stored (more for
-unhandled ones), then a project's `sample_rate` of them; dropped events
-still count. The default stores everything; a project that outgrows its
+**Sampling is per event, counts stay exact — and it is what bounds the
+database.** Every event is an independent `sample_rate` coin flip
+(unhandled ones — crashes, uncaught exceptions — at `UnhandledKeepFactor`×
+that, capped at 1); dropped events still count on their issue. There is
+no per-issue "first N always kept" guarantee: the goal is debugging, not
+an audit trail, so a real, recurring issue surfaces through volume
+instead of a stored sequence number — and removing that guarantee also
+means the store decision no longer needs the issue row's post-upsert
+count, so it is made before the upsert, not after (see "no hot rows"
+above). The default stores everything; a project that outgrows its
 machine lowers the rate, and what is stored then grows with the number of
 *issues*, not events — the ten-thousandth copy of the same
 NullPointerException adds nothing the issue row does not already say.
 That is why payloads can simply live in Postgres and one setting lets a
 single machine cover a project of any volume. Knobs and the decision:
-`projects.sample_keep_first` / `sample_rate`, `ingest.UnhandledKeepFactor`,
-`ingest.Ingest`.
+`projects.sample_rate`, `ingest.UnhandledKeepFactor`, `ingest.sampleStore`.
 
 **The payload lives with the row.** `events.payload` is the event JSON as
 the SDK sent it, gzipped once at ingest and never rewritten; everything

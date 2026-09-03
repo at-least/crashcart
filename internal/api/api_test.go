@@ -199,8 +199,8 @@ func TestProjectsAndAuth(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"dsn":"https://`) || !strings.Contains(rec.Body.String(), "@public.example.org/") {
 		t.Errorf("forwarded dsn behind trusted proxy: %s", rec.Body.String())
 	}
-	rec, out = e.do("PATCH", "/api/projects/demo", map[string]any{"name": "Renamed", "sample_rate": 0.5, "sample_keep_first": 10})
-	if rec.Code != 200 || out["name"] != "Renamed" || out["sample_rate"] != 0.5 || out["sample_keep_first"] != float64(10) {
+	rec, out = e.do("PATCH", "/api/projects/demo", map[string]any{"name": "Renamed", "sample_rate": 0.5})
+	if rec.Code != 200 || out["name"] != "Renamed" || out["sample_rate"] != 0.5 {
 		t.Errorf("patch: %d %v", rec.Code, out)
 	}
 	// Key rotation.
@@ -237,7 +237,7 @@ func TestProjectsAndAuth(t *testing.T) {
 	}
 	e.get("/api/projects/nope", 404)
 	e.get("/api/projects/nope/issues", 404)
-	e.do("PATCH", "/api/projects/demo", map[string]any{"sample_rate": 1, "sample_keep_first": 100})
+	e.do("PATCH", "/api/projects/demo", map[string]any{"sample_rate": 1})
 	p, err := store.GetProject(context.Background(), e.st.Pool, "demo")
 	if err != nil {
 		t.Fatal(err)

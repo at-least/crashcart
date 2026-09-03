@@ -205,10 +205,10 @@ func TestBulkAndMutations(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		return rec
 	}
-	if r := hx("PATCH", "/p/shop/settings/sampling", "keep_first=10&rate=0.5"); r.Code != 303 {
+	if r := hx("PATCH", "/p/shop/settings/sampling", "rate=0.5"); r.Code != 303 {
 		t.Errorf("sampling = %d %s", r.Code, r.Body)
 	}
-	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.SampleKeepFirst != 10 || got.SampleRate != 0.5 {
+	if got, _ := store.GetProject(ctx, w.Store.Pool, "shop"); got.SampleRate != 0.5 {
 		t.Errorf("sampling not saved: %+v", got)
 	}
 	oldKey := ""

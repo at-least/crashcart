@@ -130,14 +130,12 @@ func (w *Web) settingsSampling(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "bad form", http.StatusBadRequest)
 		return
 	}
-	// 32-bit parse: the column is INTEGER, and a wider value would wrap negative.
-	keep, err1 := strconv.ParseInt(r.Form.Get("keep_first"), 10, 32)
-	rate, err2 := strconv.ParseFloat(r.Form.Get("rate"), 64)
-	if err1 != nil || err2 != nil || keep < 0 || rate < 0 || rate > 1 {
-		http.Error(rw, "keep_first >= 0 and 0 <= rate <= 1 required", http.StatusBadRequest)
+	rate, err := strconv.ParseFloat(r.Form.Get("rate"), 64)
+	if err != nil || rate < 0 || rate > 1 {
+		http.Error(rw, "0 <= rate <= 1 required", http.StatusBadRequest)
 		return
 	}
-	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: int32(keep), SampleRate: rate}); err != nil {
+	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleRate: rate}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -158,7 +156,7 @@ func (w *Web) settingsName(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "name must not be empty", http.StatusBadRequest)
 		return
 	}
-	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate}); err != nil {
+	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: name, Platform: p.Platform, SampleRate: p.SampleRate}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}
@@ -183,7 +181,7 @@ func (w *Web) settingsPlatform(rw http.ResponseWriter, r *http.Request) {
 	if platform != "" {
 		plat = &platform
 	}
-	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: plat, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate}); err != nil {
+	if _, err := store.UpdateProject(r.Context(), w.Store.Pool, store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: plat, SampleRate: p.SampleRate}); err != nil {
 		w.fail(rw, r, err)
 		return
 	}

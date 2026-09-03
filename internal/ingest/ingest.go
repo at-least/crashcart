@@ -51,9 +51,9 @@ const (
 	// are left to the job worker.
 	SymbolicateBudget = 3 * time.Second
 	// UnhandledKeepFactor: unhandled events (exception.mechanism.handled =
-	// false: a crash, an uncaught exception) get this many times
-	// sample_keep_first before sampling starts — more samples of what
-	// matters most, still bounded (a crash loop must not fill the database).
+	// false: a crash, an uncaught exception) are sampled at this many times
+	// a project's sample_rate (capped at 1) — more samples of what matters
+	// most, still a probability, not a guarantee.
 	UnhandledKeepFactor = 5
 )
 
@@ -448,7 +448,7 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 		var order []sentry.ID
 		for _, pr := range preps {
 			if pr.fingerprint == "" {
-				pr.store = p.SampleRate >= 1 || mrand.Float64() < p.SampleRate
+				pr.store = sampleStore(p.SampleRate, pr.ev.IsUnhandled())
 				continue
 			}
 			if _, seen := groups[pr.fingerprint]; !seen {
@@ -465,6 +465,7 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 			level := first.ev.Level
 			seenRel := map[string]bool{}
 			var releases []string
+			var stored int64
 			for _, pr := range g {
 				if !seenRel[pr.ev.Release] {
 					seenRel[pr.ev.Release] = true
@@ -479,19 +480,14 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 					lastRelease = nilIfEmpty(pr.ev.Release)
 					level = pr.ev.Level // the issue shows its latest event's level
 				}
-			}
-			// Sampling: keep the first N per issue (UnhandledKeepFactor × N
-			// for unhandled), then a fraction. When nothing can be sampled
-			// out (sample_rate 1) the stored count is known up front and
-			// goes into the upsert; otherwise the decision needs the
-			// issue's count and is a second update.
-			keepAll := p.SampleRate >= 1
-			stored := int64(0)
-			if keepAll {
-				for _, pr := range g {
-					pr.store = true
+				// Sampling: every event is its own sample_rate coin flip
+				// (UnhandledKeepFactor× for unhandled) — no per-issue
+				// guarantee, so the stored count is known before the upsert
+				// and needs no follow-up update.
+				pr.store = sampleStore(p.SampleRate, pr.ev.IsUnhandled())
+				if pr.store {
+					stored++
 				}
-				stored = int64(len(g))
 			}
 			row, err := store.UpsertIssue(ctx, tx, store.UpsertIssueParams{
 				ProjectID: p.ID, Fingerprint: fp, Title: first.ev.IssueTitle(), Level: store.EventLevel(level),
@@ -508,28 +504,6 @@ func (in *Ingester) Ingest(ctx context.Context, p store.Project, env sentry.Enve
 			} else if row.Regressed { // this envelope flipped it; a regressed issue crashing on does not re-alert
 				res.Regressions = append(res.Regressions, fp)
 				jobs = append(jobs, alertJob(p.ID, "regression", fp))
-			}
-			if keepAll {
-				continue
-			}
-			// The upsert held the row lock, so row.EventCount is the exact
-			// sequence position of this group's events.
-			prev := row.EventCount - int64(len(g))
-			for i, pr := range g {
-				seq := prev + int64(i) + 1
-				keep := int64(p.SampleKeepFirst)
-				if pr.ev.IsUnhandled() {
-					keep *= UnhandledKeepFactor
-				}
-				pr.store = seq <= keep || mrand.Float64() < p.SampleRate
-				if pr.store {
-					stored++
-				}
-			}
-			if stored > 0 {
-				if err := store.AddIssueStored(ctx, tx, p.ID, fp, stored); err != nil {
-					return err
-				}
 			}
 		}
 
@@ -834,6 +808,17 @@ func clampPast(t, past, now time.Time) time.Time {
 		return now.UTC().Truncate(time.Microsecond)
 	}
 	return t
+}
+
+// sampleStore rolls the keep decision for one event: a plain probability,
+// unhandled crashes at UnhandledKeepFactor× rate (capped at 1) since a
+// crash matters more than a handled error. No per-issue guarantee — a
+// recurring issue surfaces through volume instead.
+func sampleStore(rate float64, unhandled bool) bool {
+	if unhandled {
+		rate = min(1, rate*UnhandledKeepFactor)
+	}
+	return rate >= 1 || mrand.Float64() < rate
 }
 
 func nilIfEmpty(s string) *string {

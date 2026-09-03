@@ -53,14 +53,15 @@ them blurs both numbers.
 
 ## Sampling
 
-A single bug can produce millions of identical events. Two settings under
-**Settings → Sampling** keep storage under control without losing the
-count (the page shows the current values and the defaults):
-
-| Setting | Effect |
-|---|---|
-| Keep first | The first N events of every issue are always stored — more of them when they are unhandled (`exception.mechanism.handled = false`: crashes, uncaught exceptions) |
-| Sample rate | After that, this fraction of the issue's events is stored (`1` = everything); events with nothing to group by use it from the start. Lower it on a busy project: what is stored then grows with the number of issues, not events, and the counts stay exact |
+A single bug can produce millions of identical events. **Settings →
+Sampling**'s `sample_rate` keeps storage under control without losing the
+count: each event is stored independently at this fraction (`1` =
+everything), with unhandled ones (`exception.mechanism.handled = false`:
+crashes, uncaught exceptions) more likely to be kept. There is no
+guarantee that any specific event of an issue is stored — the point is
+debugging, not an audit trail, so a real, recurring issue surfaces
+through volume. Lower the rate on a busy project: what is stored then
+grows with the number of issues, not events, and the counts stay exact.
 
 The issue's event count stays exact whether or not an event was stored.
 

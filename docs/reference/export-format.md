@@ -1,4 +1,4 @@
-# CrashCart export format (NDJSON, format 4)
+# CrashCart export format (NDJSON, format 5)
 
 The file `crashcart export` writes and `crashcart import` reads: a full,
 portable copy of one or all projects for backups and for moving between
@@ -75,7 +75,7 @@ so a dump loads into any database:
 ## `_meta`
 
 ```json
-{"t":"_meta","format":4,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
+{"t":"_meta","format":5,"exported_at":"2026-08-29T10:00:00Z","app":"crashcart"}
 ```
 
 - `format` — integer. A reader that supports format *N* must refuse a file
@@ -126,7 +126,6 @@ slug              str    natural key
 name              str
 platform?         str    one of: ios android flutter react-native web backend other
 public_key        str    DSN public key; unique per database
-sample_keep_first int    default 100
 sample_rate       float  0 < x ≤ 1; default 1
 created_at        ts
 ```
@@ -390,6 +389,9 @@ up); the rest expire or belong to the target database.
 
 ## Format history
 
+- **5** — `projects.sample_keep_first` is gone: sampling is now a plain
+  per-event probability, no per-issue "first N always kept" guarantee. A
+  format-4 file's `sample_keep_first` is ignored on import.
 - **4** — `projects.daily_quota` is gone: the daily quota was removed
   (sampling bounds storage, the per-process in-memory rate limit is the
   one remaining ingest guard). A format-3 file's `daily_quota` is ignored
@@ -407,7 +409,7 @@ up); the rest expire or belong to the target database.
 
 ## Evolving the format
 
-- **Additive change** (new optional field, new table): keep `format` at 4.
+- **Additive change** (new optional field, new table): keep `format` at 5.
   Old readers ignore unknown fields and unknown `t`.
 - **Breaking change** (renamed/removed required field, changed encoding):
   bump `format`, keep reading the previous one for at least one release.

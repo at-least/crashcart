@@ -47,15 +47,15 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.SampleKeepFirst, p.SampleRate = 2, 0 // keep first 2 per issue (× UnhandledKeepFactor for unhandled), then nothing
+	p.SampleRate = 1 // store everything for this initial batch; sampling itself is tested elsewhere
 	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
 	now := time.Now().UTC()
 	ts := now.Add(-time.Minute).Format(time.RFC3339)
 
-	// keep+1 unhandled events of one issue on 1.0: keep stored, 1 sampled out; count exact.
-	const keep = 2 * UnhandledKeepFactor
+	// keep unhandled events of one issue, all stored at rate 1.
+	const keep = 5
 	var items []string
-	for i := 1; i <= keep+1; i++ {
+	for i := 1; i <= keep; i++ {
 		items = append(items, crash("1.0", ts, i))
 	}
 	env := sentry.Parse(envelope(items...), now)
@@ -63,7 +63,7 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Stored != keep || res.Sampled != 1 || len(res.NewIssues) != 1 {
+	if res.Stored != keep || res.Sampled != 0 || len(res.NewIssues) != 1 {
 		t.Fatalf("result = %+v", res)
 	}
 	fp := res.NewIssues[0]
@@ -71,7 +71,7 @@ func TestIngestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if iss.EventCount != keep+1 || iss.StoredCount != keep || iss.Status != "unresolved" || *iss.LastRelease != "1.0" || iss.Title != "NullPointerException: boom" {
+	if iss.EventCount != keep || iss.StoredCount != keep || iss.Status != "unresolved" || *iss.LastRelease != "1.0" || iss.Title != "NullPointerException: boom" {
 		t.Fatalf("issue = %+v", iss)
 	}
 	var n int
@@ -82,6 +82,7 @@ func TestIngestLifecycle(t *testing.T) {
 	if n, _ := store.CountJobs(ctx, st.Pool); n != 1 { // one new_issue alert job
 		t.Fatalf("jobs = %d", n)
 	}
+	p.SampleRate = 0 // nothing further in this issue is stored, however many more envelopes arrive
 
 	// An older build reports it too before it is resolved: both releases
 	// are in the issue's set.
@@ -190,7 +191,7 @@ func TestIngestLifecycle(t *testing.T) {
 	// Hourly stats via the view (the hour is dirty, so computed live).
 	var unhandled int64
 	st.Pool.QueryRow(ctx, "SELECT sum(unhandled) FROM event_stats_hourly WHERE project_id=$1", p.ID).Scan(&unhandled)
-	if unhandled != keep { // only the first keep were stored (rate 0); later ones were counted but sampled out
+	if unhandled != keep { // only the initial batch was stored (rate 0 since); later ones were counted but sampled out
 		t.Fatalf("unhandled = %d", unhandled)
 	}
 }
@@ -559,13 +560,15 @@ func TestIngestAttachments(t *testing.T) {
 		t.Fatalf("resend: %+v %v rows=%d", res, err, count())
 	}
 	// A sampled-out event takes its attachments with it.
-	p.SampleKeepFirst, p.SampleRate = 1, 0
+	p.SampleRate = 0
 	id2 := "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2"
 	body = "{\"event_id\":\"" + id2 + "\"}\n{\"type\":\"event\"}\n" + event(id2, "E") + "\n" + shot
 	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Sampled != 1 || res.Attachments != 0 || count() != 2 {
 		t.Fatalf("sampled out: %+v %v rows=%d", res, err, count())
 	}
-	// No header id: a lone event is the one.
+	// No header id: a lone event is the one (rate back to 1 — this checks
+	// attachment targeting, not sampling).
+	p.SampleRate = 1
 	id3 := "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3"
 	body = "{}\n{\"type\":\"event\"}\n" + event(id3, "F") + "\n" + shot
 	if res, err = in.Ingest(ctx, p, sentry.Parse([]byte(body), now), now); err != nil || res.Stored != 1 || res.Attachments != 1 || count() != 3 {

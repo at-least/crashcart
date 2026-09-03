@@ -50,7 +50,7 @@ import (
 )
 
 // Format is the NDJSON format version written in the _meta line.
-const Format = 4 // 4: no daily_quota (quota removed; rate limiting is the one ingest guard); 3: no triaged status; 2: transaction / culprit / unhandled_spike (was screen / error_location / crash_spike)
+const Format = 5 // 5: no sample_keep_first (sampling is pure per-event probability); 4: no daily_quota (quota removed; rate limiting is the one ingest guard); 3: no triaged status; 2: transaction / culprit / unhandled_spike (was screen / error_location / crash_spike)
 
 // Tables lists the exported tables in the order they are written (and the
 // order import expects: projects first so later rows can reference them).
@@ -106,14 +106,13 @@ type apiKeyRow struct {
 }
 
 type projectRow struct {
-	T               string  `json:"t"`
-	Slug            string  `json:"slug"`
-	Name            string  `json:"name"`
-	Platform        *string `json:"platform,omitempty"`
-	PublicKey       string  `json:"public_key"`
-	SampleKeepFirst int32   `json:"sample_keep_first"`
-	SampleRate      float64 `json:"sample_rate"`
-	CreatedAt       ts      `json:"created_at"`
+	T          string  `json:"t"`
+	Slug       string  `json:"slug"`
+	Name       string  `json:"name"`
+	Platform   *string `json:"platform,omitempty"`
+	PublicKey  string  `json:"public_key"`
+	SampleRate float64 `json:"sample_rate"`
+	CreatedAt  ts      `json:"created_at"`
 }
 
 type releaseRow struct {
@@ -386,7 +385,7 @@ func Export(ctx context.Context, st *store.Store, w io.Writer, opt Options) erro
 	for _, p := range projects {
 		if err := enc.Encode(projectRow{
 			T: "projects", Slug: p.Slug, Name: p.Name, Platform: p.Platform, PublicKey: p.PublicKey,
-			SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, CreatedAt: at(p.CreatedAt),
+			SampleRate: p.SampleRate, CreatedAt: at(p.CreatedAt),
 		}); err != nil {
 			return err
 		}
@@ -552,7 +551,7 @@ func exportProjects(ctx context.Context, tx pgx.Tx, opt Options) ([]store.Projec
 		}
 		return []store.Project{p}, err
 	}
-	r, err := tx.Query(ctx, "SELECT id, slug, name, platform, public_key, sample_keep_first, sample_rate, created_at FROM projects ORDER BY slug")
+	r, err := tx.Query(ctx, "SELECT id, slug, name, platform, public_key, sample_rate, created_at FROM projects ORDER BY slug")
 	if err != nil {
 		return nil, err
 	}
@@ -670,10 +669,10 @@ const (
 	insertAPIKey = `INSERT INTO api_keys (name, key_hash, prefix, created_by, created_at, last_used_at, revoked_at)
 	VALUES ($1, $2, $3, (SELECT id FROM users WHERE email = $4), $5, $6, $7)
 	ON CONFLICT (key_hash) DO NOTHING`
-	upsertProject = `INSERT INTO projects (slug, name, platform, public_key, sample_keep_first, sample_rate, created_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7)
+	upsertProject = `INSERT INTO projects (slug, name, platform, public_key, sample_rate, created_at)
+	VALUES ($1, $2, $3, $4, $5, $6)
 	ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, platform = EXCLUDED.platform,
-	    sample_keep_first = EXCLUDED.sample_keep_first, sample_rate = EXCLUDED.sample_rate,
+	    sample_rate = EXCLUDED.sample_rate,
 	    created_at = EXCLUDED.created_at
 	RETURNING id`
 	upsertIssue = `INSERT INTO issues (project_id, fingerprint, title, level, error_type, transaction, platform, status, status_by, event_count,
@@ -897,7 +896,7 @@ func (im *importer) line(b []byte) error {
 			r.SampleRate = 1
 		}
 		var id int64
-		err := im.tx.QueryRow(im.ctx, upsertProject, r.Slug, r.Name, r.Platform, r.PublicKey, r.SampleKeepFirst, r.SampleRate, tsOrNow(r.CreatedAt)).Scan(&id)
+		err := im.tx.QueryRow(im.ctx, upsertProject, r.Slug, r.Name, r.Platform, r.PublicKey, r.SampleRate, tsOrNow(r.CreatedAt)).Scan(&id)
 		if err != nil {
 			return fmt.Errorf("upsert project %q: %w", r.Slug, err)
 		}

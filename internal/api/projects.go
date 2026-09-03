@@ -20,20 +20,19 @@ import (
 
 // projectOut is the JSON shape of a project (public key exposed as the DSN).
 type projectOut struct {
-	ID              int64     `json:"id"`
-	Slug            string    `json:"slug"`
-	Name            string    `json:"name"`
-	Platform        *string   `json:"platform"`
-	SampleKeepFirst int32     `json:"sample_keep_first"`
-	SampleRate      float64   `json:"sample_rate"`
-	CreatedAt       time.Time `json:"created_at"`
-	DSN             string    `json:"dsn"`
+	ID         int64     `json:"id"`
+	Slug       string    `json:"slug"`
+	Name       string    `json:"name"`
+	Platform   *string   `json:"platform"`
+	SampleRate float64   `json:"sample_rate"`
+	CreatedAt  time.Time `json:"created_at"`
+	DSN        string    `json:"dsn"`
 }
 
 func (h *Handler) projectOut(r *http.Request, p store.Project) projectOut {
 	return projectOut{
 		ID: p.ID, Slug: p.Slug, Name: p.Name, Platform: p.Platform,
-		SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate, CreatedAt: p.CreatedAt.UTC(),
+		SampleRate: p.SampleRate, CreatedAt: p.CreatedAt.UTC(),
 		DSN: DSN(h.Cfg, r, p),
 	}
 }
@@ -124,16 +123,15 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Name            *string  `json:"name"`
-		Platform        *string  `json:"platform"`
-		SampleKeepFirst *int32   `json:"sample_keep_first"`
-		SampleRate      *float64 `json:"sample_rate"`
+		Name       *string  `json:"name"`
+		Platform   *string  `json:"platform"`
+		SampleRate *float64 `json:"sample_rate"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		h.fail(w, err)
 		return
 	}
-	upd := store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleKeepFirst: p.SampleKeepFirst, SampleRate: p.SampleRate}
+	upd := store.ProjectUpdate{ID: p.ID, Name: p.Name, Platform: p.Platform, SampleRate: p.SampleRate}
 	if in.Name != nil {
 		if strings.TrimSpace(*in.Name) == "" {
 			writeErr(w, http.StatusBadRequest, "name must not be empty")
@@ -147,13 +145,6 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		upd.Platform = nilIfEmpty(*in.Platform)
-	}
-	if in.SampleKeepFirst != nil {
-		if *in.SampleKeepFirst < 0 {
-			writeErr(w, http.StatusBadRequest, "sample_keep_first must be >= 0")
-			return
-		}
-		upd.SampleKeepFirst = *in.SampleKeepFirst
 	}
 	if in.SampleRate != nil {
 		if *in.SampleRate < 0 || *in.SampleRate > 1 {

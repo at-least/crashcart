@@ -25,7 +25,7 @@ Overview, issues, releases and (optionally) events take a window:
 GET    /api/projects
 POST   /api/projects                        {"slug","name","platform"}            → 201
 GET    /api/projects/{slug}
-PATCH  /api/projects/{slug}                 any of {"name","platform","sample_keep_first","sample_rate"}
+PATCH  /api/projects/{slug}                 any of {"name","platform","sample_rate"}
 DELETE /api/projects/{slug}
 POST   /api/projects/{slug}/rotate-key      new current DSN key → project object (the old key keeps working, see below)
 GET    /api/projects/{slug}/keys            retired-but-still-valid DSN keys → {"keys": [...]}
@@ -34,7 +34,7 @@ DELETE /api/projects/{slug}/keys/{id}       delete one retired key
 
 Validation: `slug` matches `^[a-z0-9][a-z0-9._-]{0,63}$` and is not
 reserved (`409` if it exists); `platform` is one of `ios`, `android`,
-`flutter`, `react-native`, `web`, `backend`, `other`; `sample_keep_first ≥ 0`;
+`flutter`, `react-native`, `web`, `backend`, `other`;
 `0 ≤ sample_rate ≤ 1`.
 
 Project object:
@@ -45,7 +45,6 @@ Project object:
   "slug": "shop-ios",
   "name": "Shop app (iOS)",
   "platform": "ios",
-  "sample_keep_first": 100,
   "sample_rate": 1.0,
   "created_at": "2026-08-01T09:00:00Z",
   "dsn": "https://<key>@crashcart.example.com/1"

@@ -35,7 +35,7 @@ func newProject(t *testing.T, st *store.Store, key string) store.Project {
 }
 
 // handled is a handled exception event (mechanism.handled = true), so
-// sample_keep_first applies without UnhandledKeepFactor.
+// sample_rate applies without the UnhandledKeepFactor boost.
 func handled(id, ts, typ string) string {
 	return fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":"error","platform":"android","release":"1.0",
 	 "exception":{"values":[{"type":%q,"value":"v","mechanism":{"handled":true},"stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id, ts, typ)
@@ -108,15 +108,14 @@ func TestIngestDerivedIDAndInEnvelopeDuplicates(t *testing.T) {
 	}
 }
 
-// TestIngestSamplingHandledAndRateOne: handled events keep exactly
-// sample_keep_first per issue (no factor) across envelopes; sampled-out
-// events count in event_count but not stored_count; at sample_rate 1
-// everything is stored again; an ungrouped event at rate 1 is stored.
+// TestIngestSamplingHandledAndRateOne: at sample_rate 0 handled events are
+// never stored, though event_count keeps accumulating exactly; at rate 1
+// everything is stored, grouped or not.
 func TestIngestSamplingHandledAndRateOne(t *testing.T) {
 	st := testdb.New(t)
 	ctx := context.Background()
 	p := newProject(t, st, "s")
-	p.SampleKeepFirst, p.SampleRate = 2, 0
+	p.SampleRate = 0
 	in := &Ingester{Store: st, Cfg: config.Config{}, Log: slog.Default()}
 	now := time.Now().UTC()
 	ts := now.Add(-time.Minute).Format(time.RFC3339)
@@ -129,24 +128,24 @@ func TestIngestSamplingHandledAndRateOne(t *testing.T) {
 		if i == 1 {
 			fp = res.NewIssues[0]
 		}
-		if wantStored := i <= 2; (res.Stored == 1) != wantStored || res.Sampled != 1-res.Stored {
-			t.Fatalf("event %d: %+v, want stored=%v", i, res, wantStored)
+		if res.Stored != 0 || res.Sampled != 1 {
+			t.Fatalf("event %d: %+v, want none stored", i, res)
 		}
 	}
 	iss, _ := store.GetIssue(ctx, st.Pool, p.ID, fp)
-	if iss.EventCount != 5 || iss.StoredCount != 2 {
-		t.Fatalf("counts = %d/%d, want 5/2", iss.EventCount, iss.StoredCount)
+	if iss.EventCount != 5 || iss.StoredCount != 0 {
+		t.Fatalf("counts = %d/%d, want 5/0", iss.EventCount, iss.StoredCount)
 	}
-	if n := count(t, st, "SELECT count(*) FROM events WHERE project_id = $1 AND fingerprint = $2", p.ID, fp); n != 2 {
-		t.Fatalf("stored rows = %d, want 2", n)
+	if n := count(t, st, "SELECT count(*) FROM events WHERE project_id = $1 AND fingerprint = $2", p.ID, fp); n != 0 {
+		t.Fatalf("stored rows = %d, want 0", n)
 	}
 	p.SampleRate = 1
 	if res, err := in.Ingest(ctx, p, sentry.Parse(envelope(handled("h6", ts, "E"), handled("h7", ts, "E")), now), now); err != nil || res.Stored != 2 || res.Sampled != 0 {
 		t.Fatalf("rate 1: %+v %v", res, err)
 	}
 	iss, _ = store.GetIssue(ctx, st.Pool, p.ID, fp)
-	if iss.EventCount != 7 || iss.StoredCount != 4 {
-		t.Fatalf("counts after rate 1 = %d/%d, want 7/4", iss.EventCount, iss.StoredCount)
+	if iss.EventCount != 7 || iss.StoredCount != 2 {
+		t.Fatalf("counts after rate 1 = %d/%d, want 7/2", iss.EventCount, iss.StoredCount)
 	}
 	info := fmt.Sprintf(`{"event_id":"i1","timestamp":%q,"level":"info","platform":"android","message":"opened cart"}`, ts)
 	res, err := in.Ingest(ctx, p, sentry.Parse(envelope(info), now), now)
@@ -468,8 +467,8 @@ func TestIngestUserReportKeptRegardlessOfEvent(t *testing.T) {
 		t.Fatalf("resend did not overwrite: %+v %v", ur, err)
 	}
 
-	// An event that per-issue sampling drops: the report on it survives.
-	p.SampleKeepFirst, p.SampleRate = 0, 0
+	// An event that sampling drops: the report on it survives.
+	p.SampleRate = 0
 	id2 := hexID("ur-event-2")
 	ts := now.Add(-time.Minute).Format(time.RFC3339)
 	ev := fmt.Sprintf(`{"event_id":%q,"timestamp":%q,"level":"error","platform":"android","exception":{"values":[{"type":"E","value":"v","stacktrace":{"frames":[{"filename":"A.java","function":"a","lineno":1,"in_app":true}]}}]}}`, id2, ts)
