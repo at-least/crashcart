@@ -23,7 +23,7 @@ in `internal/db/migrations/`.
 | **Platform** | The SDK family an event is folded into (`sentry.Families`) | ~~OS~~ ~~device type~~ |
 | **Transaction** | `event.transaction`: the screen, route or request the event happened in | ~~screen~~ ~~page~~ |
 | **Culprit** | Sentry's stack culprit, `module-or-file in function` (`sentry.Culprit`); shown under the title | ~~location~~ |
-| **Session** | One app run / page load reported for release health (`session` / `sessions` items) | |
+| **Session** | One app run / page load / request-response cycle reported for release health (`session` / `sessions` items) — the unit varies by SDK: mobile and browser SDKs report one per app launch or page load; backend SDKs typically report one per request instead, batched into count buckets | |
 | **Attachment** | A file the SDK attached to an event (an envelope `attachment` item): a screenshot, a view hierarchy, a log | ~~upload~~ ~~asset~~ |
 | **User Feedback** | A user-typed name/email/comments about a crash (an envelope `user_report` item), tied to one event | ~~user report~~ (only as the wire item type) ~~feedback~~ (Sentry's newer, session-replay-linked item; not accepted) |
 | **Monitor** | A named, scheduled job CrashCart expects to hear from (an envelope `check_in` item's `monitor_slug` and `monitor_config`); created only by the SDK's own upsert, never by hand | ~~cron~~ ~~schedule~~ |

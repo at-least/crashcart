@@ -11,16 +11,28 @@ SDKs read the app version; web and backend SDKs usually need
 
 ## Crash-free rate
 
-Sentry SDKs report **sessions** — one per app launch or page load — and
-whether each ended normally or in a crash. From those CrashCart shows:
+Sentry SDKs report **sessions** and whether each ended normally or in a
+crash. What counts as one session depends on the SDK: mobile and browser
+SDKs report one per app launch or page load, live for as long as the app
+runs; backend SDKs typically report one per request-response cycle
+instead, batched into periodic count buckets rather than one envelope
+per request. CrashCart treats both the same way — from these it shows:
 
 - the **crash-free rate** of the latest release on the overview
 - every release in the window under **Releases**, with sessions, crash-free
   rate and how many issues it introduced
 - one release's health day by day on its own page
 
-Session tracking is on by default in the mobile and browser SDKs. Backend
-SDKs usually have it off; enable it if you want release health there.
+For a backend project this reads as *the share of requests that did not
+end in an unhandled exception reaching the framework's error handler* —
+not whether the server process itself stayed alive. That is a far more
+common event than a process crash, so don't expect it to sit at 100%: an
+occasional uncaught exception on one endpoint is exactly what this
+number is meant to surface, release over release.
+
+Whether your SDK sends sessions by default, and how to turn request-mode
+tracking on or off, varies by language and framework integration — check
+your SDK's own release health / session tracking docs.
 
 ## What did this release break?
 
