@@ -18,6 +18,8 @@ type UserReport struct {
 	Comments   string    `json:"comments"`
 }
 
+const userReportColumns = "project_id, event_id, received_at, name, email, comments"
+
 // UpsertUserReport: one report per event, as the protocol requires; a
 // resend overwrites (received_at keeps the report's original arrival time).
 func UpsertUserReport(ctx context.Context, db DB, projectID int64, eventID sentry.ID, name, email *string, comments string) error {
@@ -32,10 +34,8 @@ func UpsertUserReport(ctx context.Context, db DB, projectID int64, eventID sentr
 // GetUserReport: whether an event has a report, for the event page / API
 // — no join to events (the report outlives a sampled-out or
 // not-yet-arrived event).
-// GetUserReport scans by name: Name/Email are adjacent *string fields,
-// exactly what a positional Scan silently misbinds on reorder.
 func GetUserReport(ctx context.Context, db DB, projectID int64, eventID sentry.ID) (UserReport, error) {
-	return scanOne[UserReport](db.Query(ctx, "SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 AND event_id = $2",
+	return scanOne[UserReport](db.Query(ctx, "SELECT "+userReportColumns+" FROM user_reports WHERE project_id = $1 AND event_id = $2",
 		projectID, eventID))
 }
 
@@ -43,7 +43,7 @@ func GetUserReport(ctx context.Context, db DB, projectID int64, eventID sentry.I
 // its API endpoint. Not tied to events, so a report whose event was
 // sampled out still shows.
 func ListUserReports(ctx context.Context, db DB, projectID int64, limit, offset int32) ([]UserReport, error) {
-	rows, err := db.Query(ctx, "SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 ORDER BY received_at DESC, event_id DESC LIMIT $2 OFFSET $3",
+	rows, err := db.Query(ctx, "SELECT "+userReportColumns+" FROM user_reports WHERE project_id = $1 ORDER BY received_at DESC, event_id DESC LIMIT $2 OFFSET $3",
 		projectID, limit, offset)
 	if err != nil {
 		return nil, err
