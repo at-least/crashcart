@@ -18,17 +18,8 @@ type AlertRule struct {
 
 const alertRuleColumns = "project_id, type, enabled, cooldown_minutes, last_triggered"
 
-// scanAlertRule matches columns to AlertRule fields by name — see
-// scanIssue (issues.go) for why.
-func scanAlertRule(rows pgx.Rows, err error) (AlertRule, error) {
-	if err != nil {
-		return AlertRule{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[AlertRule])
-}
-
 func GetAlertRule(ctx context.Context, db DB, projectID int64, typ AlertType) (AlertRule, error) {
-	return scanAlertRule(db.Query(ctx, "SELECT "+alertRuleColumns+" FROM alert_rules WHERE project_id = $1 AND type = $2", projectID, typ))
+	return scanOne[AlertRule](db.Query(ctx, "SELECT "+alertRuleColumns+" FROM alert_rules WHERE project_id = $1 AND type = $2", projectID, typ))
 }
 
 func ListAlertRules(ctx context.Context, db DB, projectID int64) ([]AlertRule, error) {
@@ -40,7 +31,7 @@ func ListAlertRules(ctx context.Context, db DB, projectID int64) ([]AlertRule, e
 }
 
 func UpsertAlertRule(ctx context.Context, db DB, projectID int64, typ AlertType, enabled bool, cooldownMinutes int32) (AlertRule, error) {
-	return scanAlertRule(db.Query(ctx, `INSERT INTO alert_rules (project_id, type, enabled, cooldown_minutes) VALUES ($1, $2, $3, $4)
+	return scanOne[AlertRule](db.Query(ctx, `INSERT INTO alert_rules (project_id, type, enabled, cooldown_minutes) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (project_id, type) DO UPDATE SET enabled = EXCLUDED.enabled, cooldown_minutes = EXCLUDED.cooldown_minutes
 		RETURNING `+alertRuleColumns, projectID, typ, enabled, cooldownMinutes))
 }
@@ -87,15 +78,6 @@ type AlertChannel struct {
 
 const alertChannelColumns = "id, project_id, kind, config, created_at"
 
-// scanAlertChannel matches columns to AlertChannel fields by name — see
-// scanIssue (issues.go) for why.
-func scanAlertChannel(rows pgx.Rows, err error) (AlertChannel, error) {
-	if err != nil {
-		return AlertChannel{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[AlertChannel])
-}
-
 func ListAlertChannels(ctx context.Context, db DB, projectID int64) ([]AlertChannel, error) {
 	rows, err := db.Query(ctx, "SELECT "+alertChannelColumns+" FROM alert_channels WHERE project_id = $1 ORDER BY id", projectID)
 	if err != nil {
@@ -105,7 +87,7 @@ func ListAlertChannels(ctx context.Context, db DB, projectID int64) ([]AlertChan
 }
 
 func CreateAlertChannel(ctx context.Context, db DB, projectID int64, kind ChannelKind, config json.RawMessage) (AlertChannel, error) {
-	return scanAlertChannel(db.Query(ctx, "INSERT INTO alert_channels (project_id, kind, config) VALUES ($1, $2, $3) RETURNING "+alertChannelColumns,
+	return scanOne[AlertChannel](db.Query(ctx, "INSERT INTO alert_channels (project_id, kind, config) VALUES ($1, $2, $3) RETURNING "+alertChannelColumns,
 		projectID, kind, config))
 }
 

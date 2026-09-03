@@ -12,8 +12,10 @@
 // InsertEvents). Row structs and enum types live in this package (no
 // separate models package: every consumer already needs the pool/Tx to
 // do anything with them). Scanning uses pgx.CollectRows with
-// pgx.RowToStructByName[T] for multi-row queries, or a hand-written
-// scanX(row pgx.Row) helper for a single row — a query's SELECT list
+// pgx.RowToStructByName[T] for multi-row queries, or
+// scanOne[T](db.Query(ctx, ...)) for a single row (pgx.CollectOneRow
+// takes only pgx.Rows, not the (pgx.Rows, error) pair Query returns, so
+// scanOne exists to keep that a one-liner) — a query's SELECT list
 // aliases every column to match its row struct's field names (no `db`
 // tags needed: pgx folds away case and underscores, and RowToStructByName
 // errors loudly on a mismatch instead of silently binding by position). A
@@ -44,6 +46,20 @@ type DB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 	QueryRow(context.Context, string, ...any) pgx.Row
 	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+}
+
+// scanOne matches columns to T's fields by name (RowToStructByName): two
+// adjacent same-typed columns silently swap under position-based scanning
+// if either side's column order drifts; by-name scanning errors loudly on
+// a mismatch instead. Takes (Rows, error) — what db.Query returns — since
+// pgx.CollectOneRow only accepts Rows, so call sites read as one line:
+// scanOne[Issue](db.Query(ctx, ...)).
+func scanOne[T any](rows pgx.Rows, err error) (T, error) {
+	var zero T
+	if err != nil {
+		return zero, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[T])
 }
 
 // Store wraps the pool. Queries are usable directly (auto-commit) or via Tx.

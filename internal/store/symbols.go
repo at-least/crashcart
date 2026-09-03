@@ -25,15 +25,6 @@ type SymbolFile struct {
 
 const symbolFileColumns = "id, project_id, kind, release, debug_id, filename, size, data, blob_key, uploaded_at"
 
-// scanSymbolFile matches columns to SymbolFile fields by name — see
-// scanIssue (issues.go) for why.
-func scanSymbolFile(rows pgx.Rows, err error) (SymbolFile, error) {
-	if err != nil {
-		return SymbolFile{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[SymbolFile])
-}
-
 // SymbolFileMeta is a symbol_files row without its bytes (data/blob_key) —
 // list/metadata views that never need to move the payload.
 type SymbolFileMeta struct {
@@ -48,15 +39,6 @@ type SymbolFileMeta struct {
 }
 
 const symbolFileMetaColumns = "id, project_id, kind, release, debug_id, filename, size, uploaded_at"
-
-// scanSymbolFileMeta matches columns to SymbolFileMeta fields by name —
-// see scanIssue (issues.go) for why.
-func scanSymbolFileMeta(rows pgx.Rows, err error) (SymbolFileMeta, error) {
-	if err != nil {
-		return SymbolFileMeta{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[SymbolFileMeta])
-}
 
 // UpsertSymbolFileParams: exactly one of Data / BlobKey is set (the row's
 // location, see internal/symbolicate/files.go); DO UPDATE sets both so a
@@ -73,7 +55,7 @@ type UpsertSymbolFileParams struct {
 }
 
 func UpsertSymbolFile(ctx context.Context, db DB, p UpsertSymbolFileParams) (SymbolFileMeta, error) {
-	return scanSymbolFileMeta(db.Query(ctx, `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, blob_key)
+	return scanOne[SymbolFileMeta](db.Query(ctx, `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, blob_key)
 		VALUES (@ProjectID, @Kind, @Release, @DebugID, @Filename, @Size, @Data, @BlobKey)
 		ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET
 		    debug_id = EXCLUDED.debug_id, size = EXCLUDED.size, data = EXCLUDED.data, blob_key = EXCLUDED.blob_key, uploaded_at = now()
@@ -144,7 +126,7 @@ func SymbolFilesForRelease(ctx context.Context, db DB, projectID int64, kind Sym
 }
 
 func SymbolFileByDebugID(ctx context.Context, db DB, projectID int64, debugID *string) (SymbolFile, error) {
-	return scanSymbolFile(db.Query(ctx, "SELECT "+symbolFileColumns+" FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1", projectID, debugID))
+	return scanOne[SymbolFile](db.Query(ctx, "SELECT "+symbolFileColumns+" FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1", projectID, debugID))
 }
 
 func SymbolFileExists(ctx context.Context, db DB, projectID int64, kind SymbolKind, release string, debugIDs []string) (bool, error) {
@@ -198,7 +180,7 @@ func SetSymbolFileRelease(ctx context.Context, db DB, release string, projectID 
 // sidecar keeps the bytes, SymbolFileData fetches them only when it does
 // not have them yet).
 func SymbolFileMetaByDebugID(ctx context.Context, db DB, projectID int64, debugID *string) (SymbolFileMeta, error) {
-	return scanSymbolFileMeta(db.Query(ctx, "SELECT "+symbolFileMetaColumns+" FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1", projectID, debugID))
+	return scanOne[SymbolFileMeta](db.Query(ctx, "SELECT "+symbolFileMetaColumns+" FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1", projectID, debugID))
 }
 
 func SymbolFileMetasForRelease(ctx context.Context, db DB, projectID int64, kind SymbolKind, release string) ([]SymbolFileMeta, error) {

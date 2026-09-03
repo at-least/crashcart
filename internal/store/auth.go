@@ -18,15 +18,6 @@ type User struct {
 
 const userColumns = "id, email, name, password_hash, created_at"
 
-// scanUser matches columns to User fields by name — see scanIssue
-// (issues.go) for why.
-func scanUser(rows pgx.Rows, err error) (User, error) {
-	if err != nil {
-		return User{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[User])
-}
-
 func CountUsers(ctx context.Context, db DB) (int64, error) {
 	var n int64
 	err := db.QueryRow(ctx, "SELECT count(*) FROM users").Scan(&n)
@@ -34,12 +25,12 @@ func CountUsers(ctx context.Context, db DB) (int64, error) {
 }
 
 func CreateUser(ctx context.Context, db DB, email, name, passwordHash string) (User, error) {
-	return scanUser(db.Query(ctx, "INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING "+userColumns,
+	return scanOne[User](db.Query(ctx, "INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING "+userColumns,
 		email, name, passwordHash))
 }
 
 func GetUserByEmail(ctx context.Context, db DB, email string) (User, error) {
-	return scanUser(db.Query(ctx, "SELECT "+userColumns+" FROM users WHERE email = $1", email))
+	return scanOne[User](db.Query(ctx, "SELECT "+userColumns+" FROM users WHERE email = $1", email))
 }
 
 func ListUsers(ctx context.Context, db DB) ([]User, error) {
@@ -73,7 +64,7 @@ func CreateUserSession(ctx context.Context, db DB, tokenHash []byte, userID int6
 
 // GetUserSession is the user behind a live session token.
 func GetUserSession(ctx context.Context, db DB, tokenHash []byte) (User, error) {
-	return scanUser(db.Query(ctx, "SELECT u.id, u.email, u.name, u.password_hash, u.created_at FROM user_sessions s JOIN users u ON u.id = s.user_id "+
+	return scanOne[User](db.Query(ctx, "SELECT u.id, u.email, u.name, u.password_hash, u.created_at FROM user_sessions s JOIN users u ON u.id = s.user_id "+
 		"WHERE s.token_hash = $1 AND s.expires_at > now()", tokenHash))
 }
 
@@ -104,17 +95,8 @@ type APIKey struct {
 
 const apiKeyColumns = "id, name, prefix, created_by, created_at, last_used_at, revoked_at"
 
-// scanAPIKey matches columns to APIKey fields by name — see scanIssue
-// (issues.go) for why.
-func scanAPIKey(rows pgx.Rows, err error) (APIKey, error) {
-	if err != nil {
-		return APIKey{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[APIKey])
-}
-
 func CreateAPIKey(ctx context.Context, db DB, name string, keyHash []byte, prefix string, createdBy *int64) (APIKey, error) {
-	return scanAPIKey(db.Query(ctx, "INSERT INTO api_keys (name, key_hash, prefix, created_by) VALUES ($1, $2, $3, $4) RETURNING "+apiKeyColumns,
+	return scanOne[APIKey](db.Query(ctx, "INSERT INTO api_keys (name, key_hash, prefix, created_by) VALUES ($1, $2, $3, $4) RETURNING "+apiKeyColumns,
 		name, keyHash, prefix, createdBy))
 }
 
@@ -127,7 +109,7 @@ func ListAPIKeys(ctx context.Context, db DB) ([]APIKey, error) {
 }
 
 func GetAPIKeyByHash(ctx context.Context, db DB, keyHash []byte) (APIKey, error) {
-	return scanAPIKey(db.Query(ctx, "SELECT "+apiKeyColumns+" FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL", keyHash))
+	return scanOne[APIKey](db.Query(ctx, "SELECT "+apiKeyColumns+" FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL", keyHash))
 }
 
 // TouchAPIKey records use at most once a minute (one write per key per

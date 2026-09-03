@@ -35,12 +35,8 @@ func UpsertUserReport(ctx context.Context, db DB, projectID int64, eventID sentr
 // GetUserReport scans by name: Name/Email are adjacent *string fields,
 // exactly what a positional Scan silently misbinds on reorder.
 func GetUserReport(ctx context.Context, db DB, projectID int64, eventID sentry.ID) (UserReport, error) {
-	rows, err := db.Query(ctx, "SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 AND event_id = $2",
-		projectID, eventID)
-	if err != nil {
-		return UserReport{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[UserReport])
+	return scanOne[UserReport](db.Query(ctx, "SELECT project_id, event_id, received_at, name, email, comments FROM user_reports WHERE project_id = $1 AND event_id = $2",
+		projectID, eventID))
 }
 
 // ListUserReports: newest first, project-scoped: the Feedback page and

@@ -33,17 +33,6 @@ const monitorColumns = `project_id, slug, schedule_type, schedule_value, schedul
 	max_runtime_min, failure_threshold, recovery_threshold, last_status, consecutive_failures, consecutive_successes,
 	alerting, next_expected_at, last_checkin_at, created_at`
 
-// scanMonitor matches columns to Monitor fields by name — see scanIssue
-// (issues.go) for why; Monitor has four consecutive int32 fields
-// (CheckinMarginMin, MaxRuntimeMin, FailureThreshold, RecoveryThreshold),
-// exactly the shape a positional Scan silently misbinds on reorder.
-func scanMonitor(rows pgx.Rows, err error) (Monitor, error) {
-	if err != nil {
-		return Monitor{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Monitor])
-}
-
 // UpsertMonitorParams is the SDK's monitor_config upsert: schedule/thresholds
 // are overwritten, state (last_status, consecutive_*, next_expected_at,
 // last_checkin_at) is untouched — a re-upload of the same schedule must
@@ -62,7 +51,7 @@ type UpsertMonitorParams struct {
 }
 
 func UpsertMonitor(ctx context.Context, db DB, p UpsertMonitorParams) (Monitor, error) {
-	return scanMonitor(db.Query(ctx, `INSERT INTO monitors (project_id, slug, schedule_type, schedule_value, schedule_unit, timezone,
+	return scanOne[Monitor](db.Query(ctx, `INSERT INTO monitors (project_id, slug, schedule_type, schedule_value, schedule_unit, timezone,
 		                      checkin_margin_min, max_runtime_min, failure_threshold, recovery_threshold)
 		VALUES (@ProjectID, @Slug, @ScheduleType, @ScheduleValue, @ScheduleUnit, @Timezone,
 		        @CheckinMarginMin, @MaxRuntimeMin, @FailureThreshold, @RecoveryThreshold)
@@ -75,7 +64,7 @@ func UpsertMonitor(ctx context.Context, db DB, p UpsertMonitorParams) (Monitor, 
 }
 
 func GetMonitor(ctx context.Context, db DB, projectID int64, slug string) (Monitor, error) {
-	return scanMonitor(db.Query(ctx, "SELECT "+monitorColumns+" FROM monitors WHERE project_id = $1 AND slug = $2", projectID, slug))
+	return scanOne[Monitor](db.Query(ctx, "SELECT "+monitorColumns+" FROM monitors WHERE project_id = $1 AND slug = $2", projectID, slug))
 }
 
 // ListMonitors: project-scoped, alphabetical: the Monitors page and its API.
@@ -172,21 +161,12 @@ type MonitorCheckin struct {
 
 const checkinColumns = "started_at, project_id, monitor_slug, check_in_id, status, duration_s, release, environment"
 
-// scanCheckin matches columns to MonitorCheckin fields by name — see
-// scanIssue (issues.go) for why.
-func scanCheckin(rows pgx.Rows, err error) (MonitorCheckin, error) {
-	if err != nil {
-		return MonitorCheckin{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[MonitorCheckin])
-}
-
 // FindOpenCheckIn: the row a check-in item resolves to before writing: by
 // its own check_in_id, or — the all-zero shorthand — the monitor's
 // latest in_progress row. No match means a fresh row (a new check_in_id,
 // or a zero id with nothing open to update).
 func FindOpenCheckIn(ctx context.Context, db DB, projectID int64, monitorSlug string, zero bool, checkInID sentry.ID) (MonitorCheckin, error) {
-	return scanCheckin(db.Query(ctx, `SELECT `+checkinColumns+` FROM monitor_checkins
+	return scanOne[MonitorCheckin](db.Query(ctx, `SELECT `+checkinColumns+` FROM monitor_checkins
 		WHERE project_id = $1 AND monitor_slug = $2
 		  AND (($3::bool AND status = 'in_progress') OR (NOT $3::bool AND check_in_id = $4::uuid))
 		ORDER BY started_at DESC LIMIT 1`, projectID, monitorSlug, zero, checkInID))

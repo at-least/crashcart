@@ -432,27 +432,17 @@ const eventColumns = `occurred_at, project_id, event_id, level, message, platfor
 	device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated,
 	tags, symbols, payload`
 
-// scanEvent matches columns to Event fields by name — see scanIssue's
-// comment (issues.go) for why: nine adjacent *string fields here make a
-// silent position-based rebind the realistic failure mode.
-func scanEvent(rows pgx.Rows, err error) (Event, error) {
-	if err != nil {
-		return Event{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Event])
-}
-
 // GetEvent is by Sentry event_id alone (the viewer and the API: URLs carry
 // only the id). Without a time this touches every partition; the newest
 // row wins when a resend carried another timestamp.
 func GetEvent(ctx context.Context, db DB, projectID int64, eventID sentry.ID) (Event, error) {
-	return scanEvent(db.Query(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1", projectID, eventID))
+	return scanOne[Event](db.Query(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1", projectID, eventID))
 }
 
 // GetEventAt is by primary key: the time lets the planner open one
 // partition. Jobs carry it.
 func GetEventAt(ctx context.Context, db DB, projectID int64, eventID sentry.ID, occurredAt time.Time) (Event, error) {
-	return scanEvent(db.Query(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3", projectID, eventID, occurredAt))
+	return scanOne[Event](db.Query(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3", projectID, eventID, occurredAt))
 }
 
 func SetEventSymbols(ctx context.Context, db DB, projectID int64, eventID sentry.ID, symbols json.RawMessage, fingerprint *sentry.ID, culprit *string, occurredAt time.Time) error {
@@ -489,15 +479,11 @@ type IssueEventRangeRow struct {
 // when none are stored), within the issue's own [first_seen, last_seen] so
 // only those partitions are read.
 func IssueEventRange(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID, from, to time.Time) (IssueEventRangeRow, error) {
-	rows, err := db.Query(ctx, `SELECT (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
+	return scanOne[IssueEventRangeRow](db.Query(ctx, `SELECT (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
           AND e.occurred_at >= $3::timestamptz AND e.occurred_at < $4::timestamptz ORDER BY e.occurred_at DESC LIMIT 1)::uuid AS latest,
        (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
           AND e.occurred_at >= $3::timestamptz AND e.occurred_at < $4::timestamptz ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest`,
-		projectID, fingerprint, from, to)
-	if err != nil {
-		return IssueEventRangeRow{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[IssueEventRangeRow])
+		projectID, fingerprint, from, to))
 }
 
 // ExistingEventIDs is which of ids are already stored (resent envelopes). A

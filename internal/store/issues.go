@@ -42,20 +42,8 @@ const issueColumns = `project_id, fingerprint, title, level, error_type, transac
 	stored_count, first_seen, last_seen, first_release, last_release, releases, resolved_releases,
 	ignore_until, ignore_until_count, ignore_until_escalating, ignore_baseline, created_at, updated_at`
 
-// scanIssue matches columns to Issue fields by name (RowToStructByName), not
-// position — two adjacent same-typed columns silently swap under
-// RowToStructByPos-style scanning if either side's column order drifts;
-// by-name scanning errors loudly on a mismatch instead. Takes (Rows, error)
-// so call sites read the same as the old scanIssue(db.QueryRow(...)).
-func scanIssue(rows pgx.Rows, err error) (Issue, error) {
-	if err != nil {
-		return Issue{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Issue])
-}
-
 func GetIssue(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID) (Issue, error) {
-	return scanIssue(db.Query(ctx, "SELECT "+issueColumns+" FROM issues WHERE project_id = $1 AND fingerprint = $2", projectID, fingerprint))
+	return scanOne[Issue](db.Query(ctx, "SELECT "+issueColumns+" FROM issues WHERE project_id = $1 AND fingerprint = $2", projectID, fingerprint))
 }
 
 // UpsertIssueParams is called once per (project, fingerprint) per envelope
@@ -93,7 +81,7 @@ type UpsertIssueRow struct {
 }
 
 func UpsertIssue(ctx context.Context, db DB, p UpsertIssueParams) (UpsertIssueRow, error) {
-	rows, err := db.Query(ctx, `WITH prev AS (SELECT status FROM issues WHERE project_id = @ProjectID AND fingerprint = @Fingerprint)
+	return scanOne[UpsertIssueRow](db.Query(ctx, `WITH prev AS (SELECT status FROM issues WHERE project_id = @ProjectID AND fingerprint = @Fingerprint)
 INSERT INTO issues (project_id, fingerprint, title, level, error_type, transaction, platform,
                     event_count, stored_count, first_seen, last_seen, first_release, last_release, releases)
 VALUES (@ProjectID, @Fingerprint, @Title, @Level, @ErrorType, @Transaction, @Platform, @EventCount, @StoredCount,
@@ -113,11 +101,7 @@ ON CONFLICT (project_id, fingerprint) DO UPDATE SET
     updated_at   = now()
 RETURNING `+issueColumns+`, (xmax = 0) AS created,
           COALESCE(issues.status = 'regression' AND (SELECT status FROM prev) = 'resolved', false)::bool AS regressed`,
-		pgx.StrictStructArgs(p))
-	if err != nil {
-		return UpsertIssueRow{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[UpsertIssueRow])
+		pgx.StrictStructArgs(p)))
 }
 
 // SetIssueStatusParams: resolving records the releases seen so far
@@ -149,7 +133,7 @@ const setIssueStatusSQL = `SET status = @Status::issue_status, status_by = @Stat
     updated_at = now()`
 
 func SetIssueStatus(ctx context.Context, db DB, p SetIssueStatusParams) (Issue, error) {
-	return scanIssue(db.Query(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = @ProjectID AND issues.fingerprint = @Fingerprint RETURNING "+issueColumns,
+	return scanOne[Issue](db.Query(ctx, "UPDATE issues "+setIssueStatusSQL+" WHERE issues.project_id = @ProjectID AND issues.fingerprint = @Fingerprint RETURNING "+issueColumns,
 		pgx.StrictStructArgs(p)))
 }
 
@@ -233,7 +217,7 @@ WHERE i.status = 'ignored' AND i.ignore_until_escalating`, recentFrom)
 // EscalateIssue flips one escalating issue back to unresolved (only while
 // it is still ignored-until-escalating: a concurrent status change wins).
 func EscalateIssue(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID) (Issue, error) {
-	return scanIssue(db.Query(ctx, `UPDATE issues SET status = 'unresolved', ignore_until = NULL, ignore_until_count = NULL,
+	return scanOne[Issue](db.Query(ctx, `UPDATE issues SET status = 'unresolved', ignore_until = NULL, ignore_until_count = NULL,
     ignore_until_escalating = false, ignore_baseline = NULL, updated_at = now()
 WHERE project_id = $1 AND fingerprint = $2 AND status = 'ignored' AND ignore_until_escalating
 RETURNING `+issueColumns, projectID, fingerprint))

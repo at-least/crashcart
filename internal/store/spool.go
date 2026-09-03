@@ -144,15 +144,11 @@ func PayloadLocation(ctx context.Context, db DB, projectID int64, eventID sentry
 	// PackOffset/PackLen are adjacent *int32 fields — scanned by name so a
 	// column-list edit can't silently swap them (same risk InsertEventPacks
 	// has on the write side).
-	rows, err := db.Query(ctx, `SELECT s.data AS spooled, p.pack_id, p.pack_offset, p.pack_len, k.week
+	return scanOne[PayloadLocationRow](db.Query(ctx, `SELECT s.data AS spooled, p.pack_id, p.pack_offset, p.pack_len, k.week
 		FROM (SELECT $1::bigint AS project_id, $2::uuid AS event_id, $3::timestamptz AS occurred_at) e
 		LEFT JOIN payload_spool s ON s.project_id = e.project_id AND s.event_id = e.event_id AND s.occurred_at = e.occurred_at
 		LEFT JOIN event_packs p ON p.project_id = e.project_id AND p.event_id = e.event_id AND p.occurred_at = e.occurred_at
-		LEFT JOIN packs k ON k.id = p.pack_id`, projectID, eventID, occurredAt)
-	if err != nil {
-		return PayloadLocationRow{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[PayloadLocationRow])
+		LEFT JOIN packs k ON k.id = p.pack_id`, projectID, eventID, occurredAt))
 }
 
 // ExpiredPacksRow: packs of weeks past retention — the same rule as the

@@ -50,12 +50,8 @@ func ListAttachments(ctx context.Context, db DB, projectID int64, eventID sentry
 // three adjacent plain strings, exactly what a positional Scan silently
 // misbinds if the column list is ever reordered.
 func GetAttachment(ctx context.Context, db DB, projectID int64, eventID sentry.ID, occurredAt time.Time, n int32) (Attachment, error) {
-	rows, err := db.Query(ctx, "SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data "+
-		"FROM attachments WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3 AND n = $4", projectID, eventID, occurredAt, n)
-	if err != nil {
-		return Attachment{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Attachment])
+	return scanOne[Attachment](db.Query(ctx, "SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data "+
+		"FROM attachments WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3 AND n = $4", projectID, eventID, occurredAt, n))
 }
 
 // AttachmentInsert is one row for InsertAttachments: an envelope

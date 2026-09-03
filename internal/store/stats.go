@@ -62,14 +62,10 @@ type TotalsRow struct {
 }
 
 func Totals(ctx context.Context, db DB, projectID int64, from, to time.Time) (TotalsRow, error) {
-	rows, err := db.Query(ctx, `SELECT COALESCE(sum(events), 0)::bigint AS events,
+	return scanOne[TotalsRow](db.Query(ctx, `SELECT COALESCE(sum(events), 0)::bigint AS events,
        COALESCE(sum(unhandled), 0)::bigint AS unhandled,
        COALESCE(sum(errors), 0)::bigint AS errors
-FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz)`, projectID, from, to)
-	if err != nil {
-		return TotalsRow{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[TotalsRow])
+FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz)`, projectID, from, to))
 }
 
 // LevelTotalsRow is a project's event count at one level in a window.
@@ -157,7 +153,7 @@ func LatestReleaseHealth(ctx context.Context, db DB, projectID int64, hourFrom, 
 	// the health-hourly window and the event-stats window — exactly the
 	// shape where a positional arg list silently swaps two same-typed
 	// values, so this binds by name instead.
-	rows, err := db.Query(ctx, `SELECT e.release,
+	return scanOne[LatestReleaseHealthRow](db.Query(ctx, `SELECT e.release,
        COALESCE((SELECT sum(h.total) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
                     AND h.bucket >= @DayFrom::timestamptz AND h.bucket < @To::timestamptz), 0)::bigint AS total,
@@ -173,11 +169,7 @@ LIMIT 1`, pgx.StrictNamedArgs{
 		"HourFrom":  hourFrom,
 		"DayFrom":   dayFrom,
 		"To":        to,
-	})
-	if err != nil {
-		return LatestReleaseHealthRow{}, err
-	}
-	return pgx.CollectOneRow(rows, pgx.RowToStructByName[LatestReleaseHealthRow])
+	}))
 }
 
 // UnhandledSpikeInputsRow is one project's unhandled counts for the spike

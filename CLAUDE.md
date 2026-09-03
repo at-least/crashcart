@@ -90,9 +90,11 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   `internal/store` — no separate models package, since every consumer
   already needs the pool/`Tx` to do anything with them. Scan with
   `pgx.CollectRows`/`pgx.RowToStructByName[T]` for a query's own multi-row
-  shape, or a hand-written `scanX(rows pgx.Rows, err error) (X, error)`
-  (`pgx.CollectOneRow` under the hood — `QueryRow` has no by-name
-  equivalent) when the shape is reused across queries. By-name matching
+  shape, or `scanOne[T](db.Query(ctx, ...))` for a single row — `QueryRow`
+  has no by-name equivalent, and `pgx.CollectOneRow` takes only `pgx.Rows`,
+  not the `(pgx.Rows, error)` pair `Query` returns, so `scanOne` (store.go)
+  is the one shared generic that bridges the two instead of a hand-written
+  `scanX` per row shape. By-name matching
   (case/underscore-folded, no `db` tag needed when the struct's field names
   mirror the SELECT list) errors loudly on a column ↔ field mismatch
   instead of silently rebinding two same-typed columns that got reordered.
