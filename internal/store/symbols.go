@@ -63,6 +63,18 @@ func UpsertSymbolFile(ctx context.Context, db DB, p UpsertSymbolFileParams) (Sym
 		pgx.StrictStructArgs(p)))
 }
 
+// symbolFileBlobKeyArgs: a private params struct so a typo'd @Field is a
+// compile error (unknown struct field) instead of only a runtime one
+// (unknown map key) — see stats.go's latestReleaseHealthArgs for why this
+// beats a bare StrictNamedArgs map when nothing here comes from outside
+// the one call.
+type symbolFileBlobKeyArgs struct {
+	ProjectID int64
+	Kind      SymbolKind
+	Release   *string
+	Filename  string
+}
+
 // SymbolFileBlobKey: the blob_key of the row an upload is about to
 // replace (its unique key; IS NOT DISTINCT FROM so a NULL-release dSYM
 // row matches). Bound by name — release/filename are adjacent params of
@@ -72,12 +84,12 @@ func UpsertSymbolFile(ctx context.Context, db DB, p UpsertSymbolFileParams) (Sym
 func SymbolFileBlobKey(ctx context.Context, db DB, projectID int64, kind SymbolKind, release *string, filename string) (*string, error) {
 	var blobKey *string
 	err := db.QueryRow(ctx, "SELECT blob_key FROM symbol_files WHERE project_id = @ProjectID AND kind = @Kind AND release IS NOT DISTINCT FROM @Release::text AND filename = @Filename",
-		pgx.StrictNamedArgs{
-			"ProjectID": projectID,
-			"Kind":      kind,
-			"Release":   release,
-			"Filename":  filename,
-		}).Scan(&blobKey)
+		pgx.StrictStructArgs(symbolFileBlobKeyArgs{
+			ProjectID: projectID,
+			Kind:      kind,
+			Release:   release,
+			Filename:  filename,
+		})).Scan(&blobKey)
 	return blobKey, err
 }
 

@@ -144,6 +144,20 @@ type LatestReleaseHealthRow struct {
 	Crashed int64  `json:"crashed"`
 }
 
+// latestReleaseHealthArgs: a private params struct purely so
+// pgx.StrictStructArgs gives a typo'd @Field a compile error (an unknown
+// struct field) instead of only a runtime one (an unknown map key) — this
+// query has no natural existing struct to reuse, but nothing about its
+// four params comes from outside this one call either, so unlike
+// SetIssuesStatus there's no risk of a second struct drifting out of sync
+// with a shared one.
+type latestReleaseHealthArgs struct {
+	ProjectID int64
+	HourFrom  time.Time
+	DayFrom   time.Time
+	To        time.Time
+}
+
 // LatestReleaseHealth is the most recently active release in the window
 // (by events; ties by name) with its session totals over the same window
 // (0 without sessions). hourFrom is the event window start aligned to
@@ -164,12 +178,12 @@ FROM crashcart_event_stats(@ProjectID::bigint, @HourFrom::timestamptz, @To::time
 WHERE e.release <> ''
 GROUP BY e.project_id, e.release
 ORDER BY max(e.bucket) DESC, e.release DESC
-LIMIT 1`, pgx.StrictNamedArgs{
-		"ProjectID": projectID,
-		"HourFrom":  hourFrom,
-		"DayFrom":   dayFrom,
-		"To":        to,
-	}))
+LIMIT 1`, pgx.StrictStructArgs(latestReleaseHealthArgs{
+		ProjectID: projectID,
+		HourFrom:  hourFrom,
+		DayFrom:   dayFrom,
+		To:        to,
+	})))
 }
 
 // UnhandledSpikeInputsRow is one project's unhandled counts for the spike
@@ -178,6 +192,14 @@ type UnhandledSpikeInputsRow struct {
 	ProjectID int64 `json:"project_id"`
 	Recent    int64 `json:"recent"`
 	Baseline  int64 `json:"baseline"`
+}
+
+// unhandledSpikeInputsArgs: see latestReleaseHealthArgs for why a private
+// struct beats a StrictNamedArgs map here.
+type unhandledSpikeInputsArgs struct {
+	RecentFrom   time.Time
+	BaselineFrom time.Time
+	BaselineTo   time.Time
 }
 
 // UnhandledSpikeInputs: per project, unhandled in the exact last hour
@@ -200,11 +222,11 @@ baseline AS (
 SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
        COALESCE(recent.n, 0)::bigint AS recent, COALESCE(baseline.n, 0)::bigint AS baseline
 FROM recent FULL OUTER JOIN baseline USING (project_id)
-WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0`, pgx.StrictNamedArgs{
-		"RecentFrom":   recentFrom,
-		"BaselineFrom": baselineFrom,
-		"BaselineTo":   baselineTo,
-	})
+WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0`, pgx.StrictStructArgs(unhandledSpikeInputsArgs{
+		RecentFrom:   recentFrom,
+		BaselineFrom: baselineFrom,
+		BaselineTo:   baselineTo,
+	}))
 	if err != nil {
 		return nil, err
 	}
