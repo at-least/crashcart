@@ -72,9 +72,7 @@ CREATE TABLE projects (
     name              TEXT NOT NULL,
     platform          TEXT,                                   -- ios | android | flutter | web | … (hint only)
     public_key        TEXT NOT NULL UNIQUE,                   -- DSN key: https://<public_key>@host/<id>
-    sample_keep_first INTEGER NOT NULL DEFAULT 100,           -- events stored per issue before sampling kicks in (fatal: ingest.UnhandledKeepFactor times that)
-    sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,  -- kept fraction after that (1 = store everything; lower it to bound the database)
-    daily_quota       INTEGER NOT NULL DEFAULT 0,             -- events accepted per UTC day; 0 = unlimited (sampling bounds the database, a quota is a cost cap)
+    sample_rate       DOUBLE PRECISION NOT NULL DEFAULT 1.0,  -- kept fraction of events stored, per event (unhandled crashes boosted; ingest.UnhandledKeepFactor); 1 = everything
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -105,10 +103,10 @@ CREATE TABLE project_keys (
 -- payload is the event as the SDK sent it, gzipped at ingest (STORAGE
 -- EXTERNAL: TOAST must not compress it again); the database never parses
 -- it — everything filterable is a column or a tags key, extracted at
--- ingest — and it is never rewritten. Per-issue sampling
--- (projects.sample_keep_first / sample_rate) bounds its volume when a
--- project lowers sample_rate: the stored events then grow with the number
--- of issues, not the number of events.
+-- ingest — and it is never rewritten. Per-event sampling
+-- (projects.sample_rate) bounds its volume when a project lowers it: the
+-- stored events then grow with the number of issues, not the number of
+-- events.
 CREATE TABLE events (
     occurred_at    TIMESTAMPTZ NOT NULL,              -- event timestamp (partition key)
     project_id     BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
@@ -398,17 +396,6 @@ CREATE TABLE upload_chunks (
     sha1       TEXT PRIMARY KEY,
     data       BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- ── project usage (daily quota) ────────────────────────────────────────
--- One row per project and UTC day, bumped in the ingest transaction; the
--- envelope that would push it past projects.daily_quota is rolled back.
-
-CREATE TABLE project_usage (
-    project_id BIGINT NOT NULL REFERENCES projects ON DELETE CASCADE,
-    day        TIMESTAMPTZ NOT NULL,                 -- UTC midnight
-    events     BIGINT NOT NULL,                      -- events received (stored or sampled out)
-    PRIMARY KEY (project_id, day)
 );
 
 -- ── jobs (Postgres-backed queue: SKIP LOCKED) ──────────────────────────
