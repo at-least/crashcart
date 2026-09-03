@@ -89,9 +89,22 @@ container/symbolicate/  Dockerfile: the same binary (`crashcart symbolicate`) + 
   `InsertEvents`). Row structs and the enum types (`enums.go`) live in
   `internal/store` — no separate models package, since every consumer
   already needs the pool/`Tx` to do anything with them. Scan with
-  `pgx.CollectRows`/`pgx.RowToStructByPos[T]` for a query's own shape, or
-  a hand-written `scanX(row pgx.Row) (X, error)` helper when the shape is
-  reused across queries. `internal/store/tx_scope_test.go` greps every
+  `pgx.CollectRows`/`pgx.RowToStructByName[T]` for a query's own multi-row
+  shape, or a hand-written `scanX(rows pgx.Rows, err error) (X, error)`
+  (`pgx.CollectOneRow` under the hood — `QueryRow` has no by-name
+  equivalent) when the shape is reused across queries. By-name matching
+  (case/underscore-folded, no `db` tag needed when the struct's field names
+  mirror the SELECT list) errors loudly on a column ↔ field mismatch
+  instead of silently rebinding two same-typed columns that got reordered.
+  A multi-argument INSERT/UPDATE with several same-typed params (adjacent
+  `*string`/`*time.Time` fields, a placeholder reused for two columns)
+  binds by name instead of position too: `@Field` placeholders with
+  `pgx.StrictStructArgs(&p)` when every field of `p` is used by the query,
+  `pgx.StrictNamedArgs{...}` when the values come from more than one
+  source (`SetIssuesStatus`). Plain `$1, $2` stays fine for one or two
+  differently-typed params (`GetIssue`'s project_id/fingerprint) — the
+  point is removing the silent-swap class of bug, not banning `$N`.
+  `internal/store/tx_scope_test.go` greps every
   `Tx(func(ctx, tx) {...})` callback in the repo for a `.Pool` reference
   and fails the build if it finds one — the mechanical check that
   replaces sqlc's inability to compile a query against the wrong
