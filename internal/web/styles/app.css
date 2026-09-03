@@ -138,11 +138,15 @@
   .page { @apply mx-auto w-full max-w-[1400px] px-4 sm:px-6; }
   .app-header { @apply sticky top-0 z-30 border-b border-border bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/75; }
   .app-header-row { @apply flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2.5; }
-  .brand { @apply flex min-w-0 items-center gap-2.5 text-foreground no-underline; }
+  .brand { @apply flex shrink-0 items-center gap-2.5 text-foreground no-underline; }
   .brand-name { @apply text-[15px] font-semibold tracking-tight text-foreground; }
-  .brand-project { @apply truncate text-sm font-medium text-foreground no-underline hover:underline; }
+  .brand-project { @apply max-w-[40vw] shrink-0 truncate text-sm font-medium text-foreground no-underline hover:underline; }
   .brand-sep { @apply h-4 w-px shrink-0 bg-border; }
-  .nav { @apply ml-2 flex items-center gap-0.5; }
+  /* min-w-0 lets nav shrink below its content width in the flex header row;
+     overflow-x-auto makes the overflow scroll instead of forcing .brand
+     (shrink-0) to collapse and visually collide with it on narrow viewports. */
+  .nav { @apply ml-2 flex min-w-0 items-center gap-0.5 overflow-x-auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
   .nav-link { @apply rounded-md px-2 py-1 text-[13px] text-muted-foreground no-underline transition-colors hover:bg-muted hover:text-foreground; }
   .nav-link[data-active="true"] { @apply bg-secondary text-secondary-foreground; }
   .page-title { @apply text-xl font-semibold tracking-tight text-foreground; }
@@ -247,12 +251,12 @@
   .chip-clear { @apply h-6 px-1.5 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline; }
 
   /* ── Bulk bar ── */
-  .bulk-bar { @apply mb-2 flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground; }
+  .bulk-bar { @apply mb-2 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground; }
   .bulk-bar[hidden] { display: none; }
   .bulk-count { @apply font-mono text-foreground tabular-nums; }
 
   /* ── Dense tables (events, issues, releases) ── */
-  .log-frame { @apply mt-3 overflow-hidden rounded-xl border border-border bg-card; }
+  .log-frame { @apply mt-3 overflow-x-auto rounded-xl border border-border bg-card; }
   .log-table { @apply w-full text-sm; }
   .log-table thead th {
     @apply border-b border-border bg-card px-3 py-2 text-left text-[11px] font-medium tracking-wide text-muted-foreground uppercase whitespace-nowrap;
