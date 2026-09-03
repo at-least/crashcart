@@ -62,12 +62,14 @@ type TotalsRow struct {
 }
 
 func Totals(ctx context.Context, db DB, projectID int64, from, to time.Time) (TotalsRow, error) {
-	var r TotalsRow
-	err := db.QueryRow(ctx, `SELECT COALESCE(sum(events), 0)::bigint AS events,
+	rows, err := db.Query(ctx, `SELECT COALESCE(sum(events), 0)::bigint AS events,
        COALESCE(sum(unhandled), 0)::bigint AS unhandled,
        COALESCE(sum(errors), 0)::bigint AS errors
-FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz)`, projectID, from, to).Scan(&r.Events, &r.Unhandled, &r.Errors)
-	return r, err
+FROM crashcart_event_stats($1::bigint, $2::timestamptz, $3::timestamptz)`, projectID, from, to)
+	if err != nil {
+		return TotalsRow{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[TotalsRow])
 }
 
 // LevelTotalsRow is a project's event count at one level in a window.
@@ -151,20 +153,31 @@ type LatestReleaseHealthRow struct {
 // (0 without sessions). hourFrom is the event window start aligned to
 // width, dayFrom the day-aligned start for the session totals.
 func LatestReleaseHealth(ctx context.Context, db DB, projectID int64, hourFrom, dayFrom, to time.Time) (LatestReleaseHealthRow, error) {
-	var r LatestReleaseHealthRow
-	err := db.QueryRow(ctx, `SELECT e.release,
+	// Three of the four params are time.Time and @To is reused across both
+	// the health-hourly window and the event-stats window — exactly the
+	// shape where a positional arg list silently swaps two same-typed
+	// values, so this binds by name instead.
+	rows, err := db.Query(ctx, `SELECT e.release,
        COALESCE((SELECT sum(h.total) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
-                    AND h.bucket >= $1::timestamptz AND h.bucket < $2::timestamptz), 0)::bigint AS total,
+                    AND h.bucket >= @DayFrom::timestamptz AND h.bucket < @To::timestamptz), 0)::bigint AS total,
        COALESCE((SELECT sum(h.crashed) FROM release_health_hourly h
                   WHERE h.project_id = e.project_id AND h.release = e.release
-                    AND h.bucket >= $1::timestamptz AND h.bucket < $2::timestamptz), 0)::bigint AS crashed
-FROM crashcart_event_stats($3::bigint, $4::timestamptz, $2::timestamptz) AS e
+                    AND h.bucket >= @DayFrom::timestamptz AND h.bucket < @To::timestamptz), 0)::bigint AS crashed
+FROM crashcart_event_stats(@ProjectID::bigint, @HourFrom::timestamptz, @To::timestamptz) AS e
 WHERE e.release <> ''
 GROUP BY e.project_id, e.release
 ORDER BY max(e.bucket) DESC, e.release DESC
-LIMIT 1`, dayFrom, to, projectID, hourFrom).Scan(&r.Release, &r.Total, &r.Crashed)
-	return r, err
+LIMIT 1`, pgx.StrictNamedArgs{
+		"ProjectID": projectID,
+		"HourFrom":  hourFrom,
+		"DayFrom":   dayFrom,
+		"To":        to,
+	})
+	if err != nil {
+		return LatestReleaseHealthRow{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[LatestReleaseHealthRow])
 }
 
 // UnhandledSpikeInputsRow is one project's unhandled counts for the spike
@@ -180,19 +193,26 @@ type UnhandledSpikeInputsRow struct {
 // full hourly buckets before that hour. Projects with no unhandled in
 // either are omitted.
 func UnhandledSpikeInputs(ctx context.Context, db DB, recentFrom, baselineFrom, baselineTo time.Time) ([]UnhandledSpikeInputsRow, error) {
+	// recentFrom/baselineFrom/baselineTo are three time.Time in a row —
+	// bound by name so a future edit can't silently transpose the spike
+	// window with the baseline window.
 	rows, err := db.Query(ctx, `WITH recent AS (
     SELECT p.id AS project_id,
-           (SELECT count(*) FROM events e WHERE e.project_id = p.id AND e.occurred_at >= $1::timestamptz
+           (SELECT count(*) FROM events e WHERE e.project_id = p.id AND e.occurred_at >= @RecentFrom::timestamptz
               AND e.handled = false) AS n
     FROM projects p),
 baseline AS (
     SELECT project_id, sum(unhandled) AS n FROM event_stats_hourly
-    WHERE bucket >= $2::timestamptz AND bucket < $3::timestamptz
+    WHERE bucket >= @BaselineFrom::timestamptz AND bucket < @BaselineTo::timestamptz
     GROUP BY project_id)
 SELECT COALESCE(recent.project_id, baseline.project_id)::bigint AS project_id,
        COALESCE(recent.n, 0)::bigint AS recent, COALESCE(baseline.n, 0)::bigint AS baseline
 FROM recent FULL OUTER JOIN baseline USING (project_id)
-WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0`, recentFrom, baselineFrom, baselineTo)
+WHERE COALESCE(recent.n, 0) > 0 OR COALESCE(baseline.n, 0) > 0`, pgx.StrictNamedArgs{
+		"RecentFrom":   recentFrom,
+		"BaselineFrom": baselineFrom,
+		"BaselineTo":   baselineTo,
+	})
 	if err != nil {
 		return nil, err
 	}

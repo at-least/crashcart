@@ -147,6 +147,6 @@ GROUP BY k.project_id`, projectIDs, releases, from, to)
 // so only those partitions are read (the issue row is the exact range of
 // its events).
 func LatestIssueEvent(ctx context.Context, db DB, projectID int64, fingerprint *sentry.ID, from, to time.Time) (Event, error) {
-	return scanEvent(db.QueryRow(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND fingerprint = $2 AND occurred_at >= $3::timestamptz AND occurred_at < $4::timestamptz ORDER BY occurred_at DESC LIMIT 1",
+	return scanEvent(db.Query(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND fingerprint = $2 AND occurred_at >= $3::timestamptz AND occurred_at < $4::timestamptz ORDER BY occurred_at DESC LIMIT 1",
 		projectID, fingerprint, from, to))
 }

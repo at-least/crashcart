@@ -44,20 +44,24 @@ type EventInsert struct {
 const insertEventSQL = `INSERT INTO events (occurred_at, project_id, event_id, level, message, platform, environment, release,
 	device_id, device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id,
 	fingerprint, symbolicated, tags, symbols, payload)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+	VALUES (@OccurredAt, @ProjectID, @EventID, @Level, @Message, @Platform, @Environment, @Release,
+	@DeviceID, @DeviceModel, @OSVersion, @Transaction, @ErrorType, @Culprit, @Handled, @SDKName, @UserID,
+	@Fingerprint, @Symbolicated, @Tags, @Symbols, @Payload)
 	ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING`
 
 // insertEventSpoolSQL is insertEventSQL for a process with a blob store:
-// payload NULL on the row, the bytes ($22) spooled — only when the row
+// payload NULL on the row, the bytes (@Payload) spooled — only when the row
 // was inserted, and only when there are bytes (an import without one).
 const insertEventSpoolSQL = `WITH ins AS (INSERT INTO events (occurred_at, project_id, event_id, level, message, platform, environment, release,
 	device_id, device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id,
 	fingerprint, symbolicated, tags, symbols, payload)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NULL)
+	VALUES (@OccurredAt, @ProjectID, @EventID, @Level, @Message, @Platform, @Environment, @Release,
+	@DeviceID, @DeviceModel, @OSVersion, @Transaction, @ErrorType, @Culprit, @Handled, @SDKName, @UserID,
+	@Fingerprint, @Symbolicated, @Tags, @Symbols, NULL)
 	ON CONFLICT (project_id, event_id, occurred_at) DO NOTHING
 	RETURNING project_id, event_id, occurred_at)
 	INSERT INTO payload_spool (project_id, event_id, occurred_at, data)
-	SELECT project_id, event_id, occurred_at, $22::bytea FROM ins WHERE $22::bytea IS NOT NULL`
+	SELECT project_id, event_id, occurred_at, @Payload::bytea FROM ins WHERE @Payload::bytea IS NOT NULL`
 
 // InsertEvents writes a batch in one round trip (pipelined) and marks
 // the hours it touched dirty in the same batch — the one rule every
@@ -78,9 +82,7 @@ func (s *Store) InsertEvents(ctx context.Context, tx pgx.Tx, rows []EventInsert)
 	b := &pgx.Batch{}
 	hours := map[int64][]time.Time{}
 	for _, r := range rows {
-		b.Queue(sql, r.OccurredAt, r.ProjectID, r.EventID, r.Level, r.Message, r.Platform, r.Environment, r.Release,
-			r.DeviceID, r.DeviceModel, r.OSVersion, r.Transaction, r.ErrorType, r.Culprit, r.Handled, r.SDKName, r.UserID,
-			r.Fingerprint, r.Symbolicated, r.Tags, r.Symbols, r.Payload)
+		b.Queue(sql, pgx.StrictStructArgs(r))
 		hours[r.ProjectID] = addHour(hours[r.ProjectID], r.OccurredAt)
 	}
 	return runBatch(ctx, tx, b, markEventHours, hours)
@@ -136,7 +138,7 @@ type SessionInsert struct {
 // Updates of one session (same sid, same start) overwrite the status,
 // except that a terminal status is never downgraded to 'ok'.
 const insertSessionSQL = `INSERT INTO sessions (started_at, project_id, sid, release, environment, status, count)
-	VALUES ($1, $2, $3, $4, $5, $6, $7)
+	VALUES (@StartedAt, @ProjectID, @Sid, @Release, @Environment, @Status, @Count)
 	ON CONFLICT (project_id, sid, started_at) DO UPDATE SET
 	    status = CASE WHEN sessions.status = 'ok' OR EXCLUDED.status <> 'ok' THEN EXCLUDED.status ELSE sessions.status END`
 
@@ -149,7 +151,7 @@ func InsertSessions(ctx context.Context, tx pgx.Tx, rows []SessionInsert) error 
 	b := &pgx.Batch{}
 	hours := map[int64][]time.Time{}
 	for _, r := range rows {
-		b.Queue(insertSessionSQL, r.StartedAt, r.ProjectID, r.Sid, r.Release, r.Environment, r.Status, r.Count)
+		b.Queue(insertSessionSQL, pgx.StrictStructArgs(r))
 		hours[r.ProjectID] = addHour(hours[r.ProjectID], r.StartedAt)
 	}
 	return runBatch(ctx, tx, b, markSessionHours, hours)
@@ -366,7 +368,7 @@ func (s *Store) Breakdowns(ctx context.Context, f EventFilter, columns []string,
 		return out, nil
 	}
 	args = append(args, limit)
-	sql := fmt.Sprintf(`SELECT col, v, n FROM (
+	sql := fmt.Sprintf(`SELECT col, v AS value, n AS count FROM (
 		SELECT x.col, x.v, count(*) AS n, row_number() OVER (PARTITION BY x.col ORDER BY count(*) DESC, x.v) AS rn
 		FROM events CROSS JOIN LATERAL (VALUES %s) AS x(col, v)
 		WHERE %s GROUP BY x.col, x.v) t
@@ -375,16 +377,23 @@ func (s *Store) Breakdowns(ctx context.Context, f EventFilter, columns []string,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var col string
-		var b Breakdown
-		if err := rows.Scan(&col, &b.Value, &b.Count); err != nil {
-			return nil, err
-		}
-		out[col] = append(out[col], b)
+	brows, err := pgx.CollectRows(rows, pgx.RowToStructByName[breakdownRow])
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	for _, br := range brows {
+		out[br.Col] = append(out[br.Col], br.Breakdown)
+	}
+	return out, nil
+}
+
+// breakdownRow is Breakdowns' own row shape: Col plus the embedded
+// Breakdown (value, count) — col and value are both plain strings, so
+// by-name scanning (not position) is what stops a column-list edit from
+// silently swapping them.
+type breakdownRow struct {
+	Col string
+	Breakdown
 }
 
 // Event is the full row (payload column included — nil when the process
@@ -423,25 +432,27 @@ const eventColumns = `occurred_at, project_id, event_id, level, message, platfor
 	device_model, os_version, transaction, error_type, culprit, handled, sdk_name, user_id, fingerprint, symbolicated,
 	tags, symbols, payload`
 
-func scanEvent(row pgx.Row) (Event, error) {
-	var e Event
-	err := row.Scan(&e.OccurredAt, &e.ProjectID, &e.EventID, &e.Level, &e.Message, &e.Platform, &e.Environment, &e.Release,
-		&e.DeviceID, &e.DeviceModel, &e.OSVersion, &e.Transaction, &e.ErrorType, &e.Culprit, &e.Handled, &e.SDKName, &e.UserID,
-		&e.Fingerprint, &e.Symbolicated, &e.Tags, &e.Symbols, &e.Payload)
-	return e, err
+// scanEvent matches columns to Event fields by name — see scanIssue's
+// comment (issues.go) for why: nine adjacent *string fields here make a
+// silent position-based rebind the realistic failure mode.
+func scanEvent(rows pgx.Rows, err error) (Event, error) {
+	if err != nil {
+		return Event{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Event])
 }
 
 // GetEvent is by Sentry event_id alone (the viewer and the API: URLs carry
 // only the id). Without a time this touches every partition; the newest
 // row wins when a resend carried another timestamp.
 func GetEvent(ctx context.Context, db DB, projectID int64, eventID sentry.ID) (Event, error) {
-	return scanEvent(db.QueryRow(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1", projectID, eventID))
+	return scanEvent(db.Query(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 ORDER BY occurred_at DESC LIMIT 1", projectID, eventID))
 }
 
 // GetEventAt is by primary key: the time lets the planner open one
 // partition. Jobs carry it.
 func GetEventAt(ctx context.Context, db DB, projectID int64, eventID sentry.ID, occurredAt time.Time) (Event, error) {
-	return scanEvent(db.QueryRow(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3", projectID, eventID, occurredAt))
+	return scanEvent(db.Query(ctx, "SELECT "+eventColumns+" FROM events WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3", projectID, eventID, occurredAt))
 }
 
 func SetEventSymbols(ctx context.Context, db DB, projectID int64, eventID sentry.ID, symbols json.RawMessage, fingerprint *sentry.ID, culprit *string, occurredAt time.Time) error {
@@ -465,16 +476,7 @@ func IssueUsers(ctx context.Context, db DB, projectID int64, fingerprints []sent
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []IssueUsersRow{}
-	for rows.Next() {
-		var r IssueUsersRow
-		if err := rows.Scan(&r.Fingerprint, &r.Users); err != nil {
-			return nil, err
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[IssueUsersRow])
 }
 
 // IssueEventRangeRow is the newest and oldest stored event of an issue.
@@ -487,13 +489,15 @@ type IssueEventRangeRow struct {
 // when none are stored), within the issue's own [first_seen, last_seen] so
 // only those partitions are read.
 func IssueEventRange(ctx context.Context, db DB, projectID int64, fingerprint sentry.ID, from, to time.Time) (IssueEventRangeRow, error) {
-	var r IssueEventRangeRow
-	err := db.QueryRow(ctx, `SELECT (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
+	rows, err := db.Query(ctx, `SELECT (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
           AND e.occurred_at >= $3::timestamptz AND e.occurred_at < $4::timestamptz ORDER BY e.occurred_at DESC LIMIT 1)::uuid AS latest,
        (SELECT e.event_id FROM events e WHERE e.project_id = $1::bigint AND e.fingerprint = $2::uuid
           AND e.occurred_at >= $3::timestamptz AND e.occurred_at < $4::timestamptz ORDER BY e.occurred_at ASC LIMIT 1)::uuid AS oldest`,
-		projectID, fingerprint, from, to).Scan(&r.Latest, &r.Oldest)
-	return r, err
+		projectID, fingerprint, from, to)
+	if err != nil {
+		return IssueEventRangeRow{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[IssueEventRangeRow])
 }
 
 // ExistingEventIDs is which of ids are already stored (resent envelopes). A
