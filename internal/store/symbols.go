@@ -25,10 +25,13 @@ type SymbolFile struct {
 
 const symbolFileColumns = "id, project_id, kind, release, debug_id, filename, size, data, blob_key, uploaded_at"
 
-func scanSymbolFile(row pgx.Row) (SymbolFile, error) {
-	var f SymbolFile
-	err := row.Scan(&f.ID, &f.ProjectID, &f.Kind, &f.Release, &f.DebugID, &f.Filename, &f.Size, &f.Data, &f.BlobKey, &f.UploadedAt)
-	return f, err
+// scanSymbolFile matches columns to SymbolFile fields by name — see
+// scanIssue (issues.go) for why.
+func scanSymbolFile(rows pgx.Rows, err error) (SymbolFile, error) {
+	if err != nil {
+		return SymbolFile{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[SymbolFile])
 }
 
 // SymbolFileMeta is a symbol_files row without its bytes (data/blob_key) —
@@ -46,10 +49,13 @@ type SymbolFileMeta struct {
 
 const symbolFileMetaColumns = "id, project_id, kind, release, debug_id, filename, size, uploaded_at"
 
-func scanSymbolFileMeta(row pgx.Row) (SymbolFileMeta, error) {
-	var f SymbolFileMeta
-	err := row.Scan(&f.ID, &f.ProjectID, &f.Kind, &f.Release, &f.DebugID, &f.Filename, &f.Size, &f.UploadedAt)
-	return f, err
+// scanSymbolFileMeta matches columns to SymbolFileMeta fields by name —
+// see scanIssue (issues.go) for why.
+func scanSymbolFileMeta(rows pgx.Rows, err error) (SymbolFileMeta, error) {
+	if err != nil {
+		return SymbolFileMeta{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[SymbolFileMeta])
 }
 
 // UpsertSymbolFileParams: exactly one of Data / BlobKey is set (the row's
@@ -67,21 +73,29 @@ type UpsertSymbolFileParams struct {
 }
 
 func UpsertSymbolFile(ctx context.Context, db DB, p UpsertSymbolFileParams) (SymbolFileMeta, error) {
-	return scanSymbolFileMeta(db.QueryRow(ctx, `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, blob_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	return scanSymbolFileMeta(db.Query(ctx, `INSERT INTO symbol_files (project_id, kind, release, debug_id, filename, size, data, blob_key)
+		VALUES (@ProjectID, @Kind, @Release, @DebugID, @Filename, @Size, @Data, @BlobKey)
 		ON CONFLICT (project_id, kind, release, filename) DO UPDATE SET
 		    debug_id = EXCLUDED.debug_id, size = EXCLUDED.size, data = EXCLUDED.data, blob_key = EXCLUDED.blob_key, uploaded_at = now()
 		RETURNING `+symbolFileMetaColumns,
-		p.ProjectID, p.Kind, p.Release, p.DebugID, p.Filename, p.Size, p.Data, p.BlobKey))
+		pgx.StrictStructArgs(p)))
 }
 
 // SymbolFileBlobKey: the blob_key of the row an upload is about to
 // replace (its unique key; IS NOT DISTINCT FROM so a NULL-release dSYM
-// row matches).
+// row matches). Bound by name — release/filename are adjacent params of
+// unrelated types today, but both are ordinary text at the SQL level, so
+// a future signature reorder would swap them silently under positional
+// binding.
 func SymbolFileBlobKey(ctx context.Context, db DB, projectID int64, kind SymbolKind, release *string, filename string) (*string, error) {
 	var blobKey *string
-	err := db.QueryRow(ctx, "SELECT blob_key FROM symbol_files WHERE project_id = $1 AND kind = $2 AND release IS NOT DISTINCT FROM $4::text AND filename = $3",
-		projectID, kind, filename, release).Scan(&blobKey)
+	err := db.QueryRow(ctx, "SELECT blob_key FROM symbol_files WHERE project_id = @ProjectID AND kind = @Kind AND release IS NOT DISTINCT FROM @Release::text AND filename = @Filename",
+		pgx.StrictNamedArgs{
+			"ProjectID": projectID,
+			"Kind":      kind,
+			"Release":   release,
+			"Filename":  filename,
+		}).Scan(&blobKey)
 	return blobKey, err
 }
 
@@ -118,16 +132,7 @@ func ListSymbolFiles(ctx context.Context, db DB, projectID int64) ([]SymbolFileM
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []SymbolFileMeta{}
-	for rows.Next() {
-		f, err := scanSymbolFileMeta(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, f)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[SymbolFileMeta])
 }
 
 func SymbolFilesForRelease(ctx context.Context, db DB, projectID int64, kind SymbolKind, release string) ([]SymbolFile, error) {
@@ -135,20 +140,11 @@ func SymbolFilesForRelease(ctx context.Context, db DB, projectID int64, kind Sym
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []SymbolFile{}
-	for rows.Next() {
-		f, err := scanSymbolFile(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, f)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[SymbolFile])
 }
 
 func SymbolFileByDebugID(ctx context.Context, db DB, projectID int64, debugID *string) (SymbolFile, error) {
-	return scanSymbolFile(db.QueryRow(ctx, "SELECT "+symbolFileColumns+" FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1", projectID, debugID))
+	return scanSymbolFile(db.Query(ctx, "SELECT "+symbolFileColumns+" FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1", projectID, debugID))
 }
 
 func SymbolFileExists(ctx context.Context, db DB, projectID int64, kind SymbolKind, release string, debugIDs []string) (bool, error) {
@@ -202,7 +198,7 @@ func SetSymbolFileRelease(ctx context.Context, db DB, release string, projectID 
 // sidecar keeps the bytes, SymbolFileData fetches them only when it does
 // not have them yet).
 func SymbolFileMetaByDebugID(ctx context.Context, db DB, projectID int64, debugID *string) (SymbolFileMeta, error) {
-	return scanSymbolFileMeta(db.QueryRow(ctx, "SELECT "+symbolFileMetaColumns+" FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1", projectID, debugID))
+	return scanSymbolFileMeta(db.Query(ctx, "SELECT "+symbolFileMetaColumns+" FROM symbol_files WHERE project_id = $1 AND debug_id = $2 LIMIT 1", projectID, debugID))
 }
 
 func SymbolFileMetasForRelease(ctx context.Context, db DB, projectID int64, kind SymbolKind, release string) ([]SymbolFileMeta, error) {
@@ -210,16 +206,7 @@ func SymbolFileMetasForRelease(ctx context.Context, db DB, projectID int64, kind
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []SymbolFileMeta{}
-	for rows.Next() {
-		f, err := scanSymbolFileMeta(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, f)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[SymbolFileMeta])
 }
 
 // SymbolFilesVersionRow is the rows behind one mapping cache key (a

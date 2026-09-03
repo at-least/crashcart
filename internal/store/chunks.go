@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func PutUploadChunk(ctx context.Context, db DB, sha1 string, data []byte) error {
@@ -40,16 +42,7 @@ func GetUploadChunks(ctx context.Context, db DB, sha1s []string) ([]UploadChunk,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []UploadChunk{}
-	for rows.Next() {
-		var c UploadChunk
-		if err := rows.Scan(&c.Sha1, &c.Data); err != nil {
-			return nil, err
-		}
-		items = append(items, c)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[UploadChunk])
 }
 
 func DeleteUploadChunks(ctx context.Context, db DB, sha1s []string) error {

@@ -43,24 +43,19 @@ func ListAttachments(ctx context.Context, db DB, projectID int64, eventID sentry
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []AttachmentMeta{}
-	for rows.Next() {
-		var a AttachmentMeta
-		if err := rows.Scan(&a.OccurredAt, &a.ProjectID, &a.EventID, &a.N, &a.Filename, &a.ContentType, &a.AttachmentType, &a.Size); err != nil {
-			return nil, err
-		}
-		items = append(items, a)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[AttachmentMeta])
 }
 
+// GetAttachment scans by name: Filename/ContentType/AttachmentType are
+// three adjacent plain strings, exactly what a positional Scan silently
+// misbinds if the column list is ever reordered.
 func GetAttachment(ctx context.Context, db DB, projectID int64, eventID sentry.ID, occurredAt time.Time, n int32) (Attachment, error) {
-	var a Attachment
-	err := db.QueryRow(ctx, "SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data "+
-		"FROM attachments WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3 AND n = $4", projectID, eventID, occurredAt, n).
-		Scan(&a.OccurredAt, &a.ProjectID, &a.EventID, &a.N, &a.Filename, &a.ContentType, &a.AttachmentType, &a.Size, &a.Data)
-	return a, err
+	rows, err := db.Query(ctx, "SELECT occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data "+
+		"FROM attachments WHERE project_id = $1 AND event_id = $2 AND occurred_at = $3 AND n = $4", projectID, eventID, occurredAt, n)
+	if err != nil {
+		return Attachment{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[Attachment])
 }
 
 // AttachmentInsert is one row for InsertAttachments: an envelope
@@ -76,8 +71,11 @@ type AttachmentInsert struct {
 	Data           []byte
 }
 
+// insertAttachmentSQL computes size from length(@Data) instead of taking it
+// as a separate Go-side arg, so every column maps to one AttachmentInsert
+// field and the whole struct binds via pgx.StrictStructArgs.
 const insertAttachmentSQL = `INSERT INTO attachments (occurred_at, project_id, event_id, n, filename, content_type, attachment_type, size, data)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	VALUES (@OccurredAt, @ProjectID, @EventID, @N, @Filename, @ContentType, @AttachmentType, length(@Data::bytea), @Data)
 	ON CONFLICT (project_id, event_id, occurred_at, n) DO NOTHING`
 
 // InsertAttachments writes a batch in one round trip. Duplicate keys (a
@@ -89,7 +87,7 @@ func InsertAttachments(ctx context.Context, tx pgx.Tx, rows []AttachmentInsert) 
 	}
 	b := &pgx.Batch{}
 	for _, r := range rows {
-		b.Queue(insertAttachmentSQL, r.OccurredAt, r.ProjectID, r.EventID, r.N, r.Filename, r.ContentType, r.AttachmentType, int64(len(r.Data)), r.Data)
+		b.Queue(insertAttachmentSQL, pgx.StrictStructArgs(r))
 	}
 	res := tx.SendBatch(ctx, b)
 	defer res.Close()

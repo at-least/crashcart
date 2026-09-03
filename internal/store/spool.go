@@ -35,16 +35,7 @@ func SpoolGroups(ctx context.Context, db DB) ([]SpoolGroupsRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []SpoolGroupsRow{}
-	for rows.Next() {
-		var g SpoolGroupsRow
-		if err := rows.Scan(&g.ProjectID, &g.Week, &g.Bytes, &g.Oldest); err != nil {
-			return nil, err
-		}
-		items = append(items, g)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[SpoolGroupsRow])
 }
 
 type SpoolRowsRow struct {
@@ -65,16 +56,7 @@ func SpoolRows(ctx context.Context, db DB, projectID int64, from, to time.Time, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []SpoolRowsRow{}
-	for rows.Next() {
-		var r SpoolRowsRow
-		if err := rows.Scan(&r.ProjectID, &r.EventID, &r.OccurredAt, &r.Data); err != nil {
-			return nil, err
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[SpoolRowsRow])
 }
 
 func InsertPack(ctx context.Context, db DB, projectID int64, week time.Time) (int64, error) {
@@ -103,13 +85,16 @@ type InsertEventPackParams struct {
 	PackLen    int32
 }
 
+// InsertEventPacks binds by name: PackOffset/PackLen are adjacent int32
+// fields, and a positional swap between them would silently corrupt every
+// payload's byte range in the pack instead of failing.
 func InsertEventPacks(ctx context.Context, db DB, places []InsertEventPackParams) error {
 	const q = `INSERT INTO event_packs (project_id, event_id, occurred_at, pack_id, pack_offset, pack_len)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES (@ProjectID, @EventID, @OccurredAt, @PackID, @PackOffset, @PackLen)
 		ON CONFLICT (project_id, event_id, occurred_at) DO UPDATE SET pack_id = EXCLUDED.pack_id, pack_offset = EXCLUDED.pack_offset, pack_len = EXCLUDED.pack_len`
 	b := &pgx.Batch{}
 	for _, p := range places {
-		b.Queue(q, p.ProjectID, p.EventID, p.OccurredAt, p.PackID, p.PackOffset, p.PackLen)
+		b.Queue(q, pgx.StrictStructArgs(p))
 	}
 	res := db.SendBatch(ctx, b)
 	for range b.Len() {
@@ -156,14 +141,18 @@ type PayloadLocationRow struct {
 }
 
 func PayloadLocation(ctx context.Context, db DB, projectID int64, eventID sentry.ID, occurredAt time.Time) (PayloadLocationRow, error) {
-	var r PayloadLocationRow
-	err := db.QueryRow(ctx, `SELECT s.data AS spooled, p.pack_id, p.pack_offset, p.pack_len, k.week
+	// PackOffset/PackLen are adjacent *int32 fields — scanned by name so a
+	// column-list edit can't silently swap them (same risk InsertEventPacks
+	// has on the write side).
+	rows, err := db.Query(ctx, `SELECT s.data AS spooled, p.pack_id, p.pack_offset, p.pack_len, k.week
 		FROM (SELECT $1::bigint AS project_id, $2::uuid AS event_id, $3::timestamptz AS occurred_at) e
 		LEFT JOIN payload_spool s ON s.project_id = e.project_id AND s.event_id = e.event_id AND s.occurred_at = e.occurred_at
 		LEFT JOIN event_packs p ON p.project_id = e.project_id AND p.event_id = e.event_id AND p.occurred_at = e.occurred_at
-		LEFT JOIN packs k ON k.id = p.pack_id`, projectID, eventID, occurredAt).
-		Scan(&r.Spooled, &r.PackID, &r.PackOffset, &r.PackLen, &r.Week)
-	return r, err
+		LEFT JOIN packs k ON k.id = p.pack_id`, projectID, eventID, occurredAt)
+	if err != nil {
+		return PayloadLocationRow{}, err
+	}
+	return pgx.CollectOneRow(rows, pgx.RowToStructByName[PayloadLocationRow])
 }
 
 // ExpiredPacksRow: packs of weeks past retention — the same rule as the
@@ -180,16 +169,7 @@ func ExpiredPacks(ctx context.Context, db DB, cutoff time.Time) ([]ExpiredPacksR
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []ExpiredPacksRow{}
-	for rows.Next() {
-		var p ExpiredPacksRow
-		if err := rows.Scan(&p.ID, &p.ProjectID, &p.Week); err != nil {
-			return nil, err
-		}
-		items = append(items, p)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[ExpiredPacksRow])
 }
 
 // ExpireSpool deletes spool rows of expired weeks (the partition rule,
@@ -216,16 +196,7 @@ func ProjectPacks(ctx context.Context, db DB, projectID int64) ([]ProjectPacksRo
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []ProjectPacksRow{}
-	for rows.Next() {
-		var p ProjectPacksRow
-		if err := rows.Scan(&p.ID, &p.Week); err != nil {
-			return nil, err
-		}
-		items = append(items, p)
-	}
-	return items, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowToStructByName[ProjectPacksRow])
 }
 
 func SpoolCount(ctx context.Context, db DB) (int64, error) {
